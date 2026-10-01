@@ -1,0 +1,11 @@
+{
+    "name": "FiresAdminPrefabs",
+    "version_number": "1.1.154",
+    "website_url": "https://github.com/fire-VA/FiresAdminPrefabs",
+    "description": "Admin build suite: every vanilla prefab in the hammer with tabs + search, blueprints with full data fidelity and mesh-baking, monster/chest/clutter presets, clutter paint. Requires FiresUnifiedCore.",
+    "dependencies": [
+        "denikson-BepInExPack_Valheim-5.4.2350",
+        "incompletionists-FiresUnifiedCore-0.2.219",
+        "ValheimModding-YamlDotNet-16.3.1"
+    ]
+}
