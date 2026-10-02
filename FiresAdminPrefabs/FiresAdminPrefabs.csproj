@@ -179,12 +179,14 @@
     <Compile Include="Managers\VAPieceManager.cs" />
     <Compile Include="Managers\VAVanillaPieceManager.cs" />
     <Compile Include="Managers\VAExternalBundleLoader.cs" />
+    <Compile Include="Managers\CustomInteractWiring.cs" />
     <Compile Include="Managers\VAFapServerPresence.cs" />
     <Compile Include="Managers\VABundleAssetRouter.cs" />
     <Compile Include="Managers\VAShaderLibrary.cs" />
     <Compile Include="Managers\VATextureLibrary.cs" />
     <Compile Include="Managers\VAScriptTypeResolver.cs" />
     <Compile Include="Managers\VAExternalPieceConfig.cs" />
+    <Compile Include="Managers\VAReadableNames.cs" />
     <Compile Include="Managers\VAMaterialRepair.cs" />
     <Compile Include="Managers\VAInjectedShaders.cs" />
     <Compile Include="Managers\VAHammerTabOrganizer.cs" />

@@ -275,7 +275,39 @@ namespace VerdantsAscent.Sync
             {
                 try { VAFapThreadLog.Info($"[FAP Sync] Compression warmed off the main thread in {VAFapSyncChunker.WarmCompression():F0} ms."); }
                 catch (Exception ex) { VAFapThreadLog.Warning($"[FAP Sync] Compression warm-up failed: {ex.Message}"); }
+                try { VAFapThreadLog.Info($"[FAP Sync] Join path compiled ahead off the main thread: {PrepareJoinPath()} method(s)."); }
+                catch (Exception ex) { VAFapThreadLog.Warning($"[FAP Sync] Join path compile-ahead failed: {ex.Message}"); }
             });
+
+            // The first join's manifest is reassembled on the main thread, so that part is warmed here, on it, while nobody
+            // has joined yet (HR2: 866 ms blocked in OnClientManifest at the first join; see WarmReassembly).
+            try { Debug.Log($"[FAP Sync] Join path warmed on the main thread: reassembly {VAFapSyncChunker.WarmReassembly():F0} ms."); }
+            catch (Exception ex) { Debug.LogWarning($"[FAP Sync] Join path warm-up failed: {ex.Message}"); }
+        }
+
+        // Mono compiles a method on its first call. These run on the main thread at a join (the RPC handlers' lambdas, this
+        // class's manifest coroutine and its state machine, the chunker), so compile them ahead on a worker; the code is
+        // process-wide, so the main thread then finds it ready.
+        private static int PrepareJoinPath()
+        {
+            const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            int prepared = 0;
+            foreach (var owner in new[] { typeof(VAFapAssetSync), typeof(VAFapSyncRpcs), typeof(VAFapSyncChunker) })
+            {
+                var types = new List<Type> { owner };
+                types.AddRange(owner.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic));
+                foreach (var type in types)
+                {
+                    if (type.ContainsGenericParameters) continue;
+                    foreach (var method in type.GetMethods(All))
+                    {
+                        if (method.IsAbstract || method.ContainsGenericParameters) continue;
+                        try { System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(method.MethodHandle); prepared++; }
+                        catch { }
+                    }
+                }
+            }
+            return prepared;
         }
 
         // A client that connects inside ZoneSystem.Start can beat the deferred

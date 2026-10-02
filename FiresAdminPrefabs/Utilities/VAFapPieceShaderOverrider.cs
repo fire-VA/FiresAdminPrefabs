@@ -24,6 +24,16 @@ namespace VerdantsAscent.Utilities
         private static readonly Dictionary<string, Shader> _shaderCache =
             new Dictionary<string, Shader>(StringComparer.Ordinal);
 
+        // An overridden instance gets copies, never the originals changed: one copy per (original material, shader), shared
+        // by every instance with that override. Before 1.1.157 this set .shader on renderer.sharedMaterials, which changed
+        // the material every instance and the prefab share, and, through a Jotunn/PieceManager mock slot, vanilla's own.
+        private static readonly Dictionary<(Material source, Shader shader), Material> _copies =
+            new Dictionary<(Material source, Shader shader), Material>();
+        private static readonly Dictionary<Material, Material> _sourceOf = new Dictionary<Material, Material>();
+
+        // Prefabs given an override this session, so removing one puts the originals back on their live instances.
+        private static readonly HashSet<string> _overridden = new HashSet<string>(StringComparer.Ordinal);
+
         // ──────────────────────────────────────────────────────────────
         //  Public init / events
         // ──────────────────────────────────────────────────────────────
@@ -45,9 +55,20 @@ namespace VerdantsAscent.Utilities
         // appearance.
         public static void ApplyAllAtInit()
         {
+            var current = new HashSet<string>(StringComparer.Ordinal);
             foreach (var kvp in VAFapPieceOverrides.GetAllWithShader())
             {
+                current.Add(kvp.Key);
+                _overridden.Add(kvp.Key);
                 ApplyToLiveInstances(kvp.Key, kvp.Value);
+            }
+            var removed = new List<string>();
+            foreach (string prefabName in _overridden)
+                if (!current.Contains(prefabName)) removed.Add(prefabName);
+            foreach (string prefabName in removed)
+            {
+                _overridden.Remove(prefabName);
+                RestoreLiveInstances(prefabName);
             }
         }
 
@@ -119,6 +140,25 @@ namespace VerdantsAscent.Utilities
             {
                 Debug.Log($"{VaPieces.PluginName}: VAFapPieceShaderOverrider — '{prefabName}': swapped {liveSwapped} material(s) across {liveCount} live instance(s) to '{shaderName}'.");
             }
+        }
+
+        // The override was removed: its live instances get their original materials back.
+        private static void RestoreLiveInstances(string prefabName)
+        {
+            var scene = ZNetScene.instance;
+            if (scene == null || scene.m_instances == null) return;
+            int prefabHash = prefabName.GetStableHashCode();
+            int restored = 0, liveCount = 0;
+            foreach (var kvp in scene.m_instances)
+            {
+                var znv = kvp.Value;
+                var zdo = znv != null ? znv.GetZDO() : null;
+                if (zdo == null || zdo.GetPrefab() != prefabHash) continue;
+                liveCount++;
+                restored += ApplyShaderToRenderers(znv.gameObject, null);
+            }
+            if (liveCount > 0)
+                Debug.Log($"{VaPieces.PluginName}: VAFapPieceShaderOverrider — '{prefabName}': override removed, {restored} original material(s) back across {liveCount} live instance(s).");
         }
 
         // ──────────────────────────────────────────────────────────────
@@ -287,13 +327,12 @@ namespace VerdantsAscent.Utilities
             return null;
         }
 
-        // Walks every Renderer on `go` and assigns `shader` onto each
-        // sharedMaterial. Skips ParticleSystemRenderer (their shaders
-        // are specific to particle rendering). Returns the count of
-        // materials touched.
+        // Points every material slot of `go`'s renderers at the override copy of its original for `shader`, or back at the
+        // original when `shader` is null. Skips ParticleSystemRenderer (their shaders are specific to particle rendering).
+        // Returns the count of slots changed.
         private static int ApplyShaderToRenderers(GameObject go, Shader shader)
         {
-            if (go == null || shader == null) return 0;
+            if (go == null) return 0;
             int swapped = 0;
             var renderers = go.GetComponentsInChildren<Renderer>(includeInactive: true);
             for (int i = 0; i < renderers.Length; i++)
@@ -307,14 +346,26 @@ namespace VerdantsAscent.Utilities
                 for (int m = 0; m < mats.Length; m++)
                 {
                     if (mats[m] == null) continue;
-                    if (mats[m].shader == shader) continue;
-                    mats[m].shader = shader;
+                    Material source = _sourceOf.TryGetValue(mats[m], out var original) && original != null ? original : mats[m];
+                    Material wanted = shader == null || source.shader == shader ? source : CopyFor(source, shader);
+                    if (mats[m] == wanted) continue;
+                    mats[m] = wanted;
                     swapped++;
                     dirty = true;
                 }
                 if (dirty) r.sharedMaterials = mats;
             }
             return swapped;
+        }
+
+        private static Material CopyFor(Material source, Shader shader)
+        {
+            if (_copies.TryGetValue((source, shader), out var copy) && copy != null) return copy;
+            copy = new Material(source) { name = $"{source.name} (FAP override {shader.name})" };
+            copy.shader = shader;
+            _copies[(source, shader)] = copy;
+            _sourceOf[copy] = source;
+            return copy;
         }
     }
 }

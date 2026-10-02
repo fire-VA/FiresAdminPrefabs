@@ -64,6 +64,7 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<string> configDediSkipRenderMeshes;
         public ConfigEntry<string> configClientLazyRenderMeshes;
         public ConfigEntry<string> configRemovedPrefabPlaceholders;
+        public ConfigEntry<string> configKeepDeadScriptSlotBundles;
 
         // ────── Hammer tabs ──────
         public ConfigEntry<string> configTabDisplayNames;
@@ -197,6 +198,11 @@ namespace VerdantsAscent.Managers
                 "Dedicated server only. Comma-separated bundle prefab names whose render meshes the server drops right after loading their bundle. A server draws nothing, but a mesh loaded from a bundle still sits in its memory: the castle tower these two names share is 12.2 million vertices, about 800 MB on the server. Collision is separate (boxes and a small mesh) and is always kept, as is any mesh a collider uses, so players, building and support work exactly as before. Clients are never affected. Empty turns it off. Takes effect at the next server start.");
 configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPlaceholders", "ConsMassiveTower,CastleTowerMassive",
                 "Comma-separated names of pieces that were REMOVED from the bundles. Worlds that already have one placed keep its save data, and without a prefab by that name the game would log 'Missing prefab hash' every frame near it. FAP registers an invisible, empty placeholder under each name that no loaded bundle provides, so those saves load quietly and the piece comes back if its bundle ever carries it again. Empty turns it off.");
+            configKeepDeadScriptSlotBundles = config.Bind("Compatibility", "KeepDeadScriptSlotBundles", "moregates",
+                "Comma-separated bundle names whose prefabs load even with a dead (missing) script slot that no manifest names. A dead slot " +
+                "normally rejects its prefab, because the behaviour the script carried is gone. List a bundle only when its slots were already " +
+                "dead when it was built (its author deleted a script a prefab still used), so the prefab works as it did in its own mod. " +
+                "moregates: its bundle carries only Valheim's own scripts and SimpleMeshCombine, all present in Valheim 1.0.");
             configClientLazyRenderMeshes = config.Bind("Performance", "ClientLazyRenderMeshes", "ConsMassiveTower,CastleTowerMassive",                "Clients only. Comma-separated bundle prefab names whose render-mesh DATA is unloaded right after their bundle loads and comes back from the bundle the first time one of them is built or loaded near you. The castle tower these two names share is 12.2 million vertices, about 1.6 GB per client, and most sessions never see one. Its look and its collision are unchanged (colliders are never touched); only the memory waits until a tower is there. Empty turns it off. Takes effect at the next game start.");
 
             configBundleNatureShaderAllOf = config.Bind("General", "BundleNatureShaderAllOf", "biomeflora",

@@ -115,6 +115,8 @@ namespace VerdantsAscent.Managers
             new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, MissingScriptTally> _missingScriptRejectsByBundle =
             new Dictionary<string, MissingScriptTally>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, List<string>> _deadSlotKeepsByBundle =
+            new Dictionary<string, List<string>>(StringComparer.Ordinal);
         private static readonly List<string> _locationPrefabsLeftOut = new List<string>();
 
         // Every clutter prefab this loader has seen in ClutterSystem.m_clutter, kept so entries that
@@ -129,6 +131,7 @@ namespace VerdantsAscent.Managers
         {
             public int Prefabs;
             public int Slots;
+            public readonly List<string> Names = new List<string>();
         }
 
         private sealed class PendingBundle
@@ -658,6 +661,7 @@ namespace VerdantsAscent.Managers
                     if (treatAllAsClutter || string.Equals(entry.category, ClutterCategory, StringComparison.OrdinalIgnoreCase))
                         clutterNames.Add(entry.name);
 
+                    AddPortedScriptAttachments(entry);
                     if (entry.scriptAttachments != null && entry.scriptAttachments.Count > 0)
                     {
                         _prefabScriptAttachments[entry.name] = entry.scriptAttachments;
@@ -677,6 +681,41 @@ namespace VerdantsAscent.Managers
             }
         }
 
+        // A manifest lists every component its prefab had when it was scanned. When one of them is a script FAP itself ships
+        // (ExternalScripts\, e.g. Missing Pieces' CustomInteract), the bundle's copy loads as a dead slot (its MonoScript
+        // names the source mod's assembly), and a scan made with that mod installed wrote no scriptAttachments for it, so
+        // the injection rejected the prefab whole (HR3: piece_chest_wooden_drawer). Naming FAP's type here re-attaches it
+        // like any manifest attachment; with the source mod installed the slot is live and the attachment is skipped.
+        private static void AddPortedScriptAttachments(PrefabEntryDto entry)
+        {
+            if (entry.components == null) return;
+            foreach (string componentName in entry.components)
+            {
+                Type ported = PortedScriptType(componentName);
+                if (ported == null) continue;
+                if (entry.scriptAttachments == null) entry.scriptAttachments = new List<ScriptAttachmentDto>();
+                bool listed = false;
+                foreach (var attachment in entry.scriptAttachments)
+                    if (attachment != null && attachment.typeFullName == ported.FullName) listed = true;
+                if (listed) continue;
+                entry.scriptAttachments.Add(new ScriptAttachmentDto
+                {
+                    typeFullName = ported.FullName,
+                    assemblyName = ported.Assembly.GetName().Name,
+                    jsonState = "{}",
+                });
+            }
+        }
+
+        // FAP's stand-ins for other mods' scripts: MonoBehaviours in FAP's assembly declared outside any namespace under the
+        // source mod's class name, which is how the bundles' manifests list them.
+        private static Type PortedScriptType(string componentName)
+        {
+            if (string.IsNullOrEmpty(componentName) || componentName.IndexOf('.') >= 0) return null;
+            Type type = typeof(VAExternalBundleLoader).Assembly.GetType(componentName, throwOnError: false);
+            return type != null && string.IsNullOrEmpty(type.Namespace) && typeof(MonoBehaviour).IsAssignableFrom(type) ? type : null;
+        }
+
         // Manifest JSON shapes, filled by Newtonsoft; only the fields FAP reads are declared.
 #pragma warning disable CS0649
         [Serializable]
@@ -692,6 +731,7 @@ namespace VerdantsAscent.Managers
         {
             public string name;
             public string category;
+            public List<string> components;
             public List<ScriptAttachmentDto> scriptAttachments;
             public List<RendererDescriptorDto> renderers;
         }
@@ -954,6 +994,7 @@ namespace VerdantsAscent.Managers
             ResetAttachmentCounters();
 
             _missingScriptRejectsByBundle.Clear();
+            _deadSlotKeepsByBundle.Clear();
             _singletonStripsByBundle.Clear();
             _singletonStripTypes.Clear();
             _effectAreaHealsByBundle.Clear();
@@ -977,7 +1018,7 @@ namespace VerdantsAscent.Managers
             // runtime and vanilla readers call GetType() on it. When the manifest
             // says which MonoBehaviours belonged on this prefab, we can put them
             // back, so the prefab is worth keeping rather than discarding whole.
-            int added = 0, skipped = 0, repipedPastDeadSlots = 0;
+            int added = 0, skipped = 0, repipedPastDeadSlots = 0, readableNames = 0;
             foreach (var prefab in ExternalPrefabs)
             {
                 if (prefab == null) continue;
@@ -992,13 +1033,17 @@ namespace VerdantsAscent.Managers
                 var hierarchy = singleWalk ? s_walkComponents : null;
                 int missingScripts = singleWalk ? WalkHierarchy(prefab) : CountMissingScripts(prefab);
                 walkTicks += Lap(ref mark);
-                if (missingScripts > 0 && !_prefabScriptAttachments.ContainsKey(prefab.name))
+                if (missingScripts > 0)
                 {
-                    RecordMissingScriptReject(prefab, missingScripts);
-                    skipped++;
-                    continue;
+                    if (_prefabScriptAttachments.ContainsKey(prefab.name)) repipedPastDeadSlots++;
+                    else if (KeepsDeadScriptSlots(SourceBundleOf(prefab))) RecordDeadSlotKeep(prefab);
+                    else
+                    {
+                        RecordMissingScriptReject(prefab, missingScripts);
+                        skipped++;
+                        continue;
+                    }
                 }
-                if (missingScripts > 0) repipedPastDeadSlots++;
 
                 StripDangerousSingletonComponents(prefab, hierarchy);
                 singletonTicks += Lap(ref mark);
@@ -1010,6 +1055,7 @@ namespace VerdantsAscent.Managers
                 routerTicks += Lap(ref mark);
                 scene.m_prefabs.Add(prefab);
                 sceneNames.Add(prefab.name);
+                readableNames += VAReadableNames.Apply(prefab);   // before the attachments: CustomInteractWiring copies the container's name
                 ApplyScriptAttachments(prefab);
                 attachmentTicks += Lap(ref mark);
                 VerdantsAscent.Api.FapExternalPrefabs.Raise(prefab);
@@ -1019,6 +1065,9 @@ namespace VerdantsAscent.Managers
             s_walkComponents.Clear();
             s_walkEffectAreas.Clear();
             s_walkPickables.Clear();
+            if (readableNames > 0)
+                Debug.Log($"{VaPieces.PluginName}: VAExternalBundleLoader gave {readableNames} untranslated bundle name(s) a readable one " +
+                          "(their mod's localization isn't loaded, so the game would show \"[key]\").");
 
             Debug.Log($"{VaPieces.PluginName}: VAExternalBundleLoader injected {added} external prefab(s) into ZNetScene.m_prefabs (skipped {skipped} name-collisions, kept {repipedPastDeadSlots} with dead script slots because their manifest names the scripts to re-attach). Vanilla will populate m_namedPrefabs. Category breakdown via VABundleAssetRouter: {VABundleAssetRouter.FormatCategorySummary()}.");
 
@@ -1110,7 +1159,42 @@ namespace VerdantsAscent.Managers
                 Debug.Log($"{VaPieces.PluginName}: VAExternalBundleLoader left {_locationPrefabsLeftOut.Count} ZoneSystem location prefab(s) out of ZNetScene [{string.Join(", ", _locationPrefabsLeftOut)}]. A location's children spawn as separate network objects; registered whole, the one-ZNetView-per-prefab normalization strips every child's ZNetView and leaves its spawners throwing.");
 
             foreach (var reject in _missingScriptRejectsByBundle)
+            {
                 VAFapLoadSummary.EmitMissingScripts(reject.Key, reject.Value.Prefabs, reject.Value.Slots);
+                // The box only counts; without the names a rejected piece had to be found by elimination (HR3).
+                Debug.Log($"{VaPieces.PluginName}: '{reject.Key}' prefab(s) rejected for a dead script slot no manifest names: " +
+                          $"{NameList(reject.Value.Names)}. Keep a bundle's anyway with [Compatibility] KeepDeadScriptSlotBundles " +
+                          "only if its slots were already dead when the bundle was built.");
+            }
+            foreach (var keep in _deadSlotKeepsByBundle)
+                Debug.Log($"{VaPieces.PluginName}: kept {keep.Value.Count} '{keep.Key}' prefab(s) with a dead script slot " +
+                          $"(KeepDeadScriptSlotBundles): {NameList(keep.Value)}.");
+        }
+
+        private static string NameList(List<string> names)
+        {
+            const int Shown = 12;
+            if (names.Count <= Shown) return string.Join(", ", names);
+            return string.Join(", ", names.GetRange(0, Shown)) + $" and {names.Count - Shown} more";
+        }
+
+        // [Compatibility] KeepDeadScriptSlotBundles: bundles whose dead script slots were dead when the bundle was built
+        // (a component whose script the author had deleted), so keeping the prefab loses nothing the source mod had.
+        private static bool KeepsDeadScriptSlots(string bundleName)
+        {
+            string list = Managers.ConfigManager.Instance?.configKeepDeadScriptSlotBundles?.Value;
+            if (string.IsNullOrWhiteSpace(list) || string.IsNullOrEmpty(bundleName)) return false;
+            foreach (string raw in list.Split(','))
+                if (string.Equals(raw.Trim(), bundleName, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static void RecordDeadSlotKeep(GameObject prefab)
+        {
+            string bundleName = SourceBundleOf(prefab);
+            if (!_deadSlotKeepsByBundle.TryGetValue(bundleName, out var names))
+                _deadSlotKeepsByBundle[bundleName] = names = new List<string>();
+            names.Add(prefab.name);
         }
 
         private static string FormatCountsByBundle(Dictionary<string, int> countsByBundle, out int total)
@@ -1144,6 +1228,7 @@ namespace VerdantsAscent.Managers
                 _missingScriptRejectsByBundle[bundleName] = tally = new MissingScriptTally();
             tally.Prefabs++;
             tally.Slots += missingScripts;
+            tally.Names.Add(prefab.name);
 
             if (VAFapLoadSummary.VerboseEnabled)
                 Debug.LogWarning($"{VaPieces.PluginName}: bundle prefab '{prefab.name}' from '{bundleName}' has {missingScripts} missing-script MonoBehaviour slot(s) — REJECTED from ZNetScene injection.");
@@ -1441,6 +1526,7 @@ namespace VerdantsAscent.Managers
                     }
                     s_attachJsonTicks += System.Diagnostics.Stopwatch.GetTimestamp() - jsonStart;
                 }
+                if (!resolved.IsStub && component is CustomInteract customInteract) CustomInteractWiring.Wire(prefab, customInteract);
                 added++;
                 s_attachAdded++;
             }

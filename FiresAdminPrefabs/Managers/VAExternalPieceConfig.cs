@@ -142,6 +142,7 @@ namespace VerdantsAscent.Managers
             var settings = entry.Config;
             if (!string.IsNullOrEmpty(settings.Name)) piece.m_name = settings.Name;
             if (!string.IsNullOrEmpty(settings.Description)) piece.m_description = settings.Description;
+            VAReadableNames.Apply(prefab);   // a config naming the source mod's key ("$piece_mpwoodendrawer") gets the readable name
             piece.m_allowedInDungeons = settings.AllowedInDungeons;
             piece.m_category = ParseCategory(settings.Category);
 

@@ -488,6 +488,38 @@ namespace VerdantsAscent.Sync
             return watch.Elapsed.TotalMilliseconds;
         }
 
+        // A client's manifest is reassembled here on the main thread, inside the join's routed RPC. HR2's dedi froze 902 ms in
+        // it at the first join, blocked with 0 ms of CPU and no GC (round_20261001-153130_dedi.log:1533), the same first use
+        // as R22b's 1,028 ms; the second join cost nothing. Run once at server start, before anyone joins, it pages this code
+        // and its first-use runtime state in (SortedDictionary<int, byte[]>, DateTimeOffset.Now's local time zone, the ZPackage
+        // reads, Concatenate) while the server is idle: two fragments and one whole payload under a sender id no peer has.
+        public static double WarmReassembly()
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            const long WarmSender = long.MinValue, WarmPackage = long.MinValue;
+            byte[] joined = null;
+            for (int index = 0; index < 2; index++)
+            {
+                var fragment = new ZPackage();
+                fragment.Write(FLAG_FRAGMENTED);
+                fragment.Write(WarmPackage);
+                fragment.Write(index);
+                fragment.Write(2);
+                fragment.Write(new byte[16]);
+                fragment.SetPos(0);
+                joined = ReceiveFragmentRaw(WarmSender, fragment, out _);
+            }
+            var whole = new ZPackage();
+            whole.Write((byte)0);
+            whole.Write(new byte[16]);
+            whole.SetPos(0);
+            byte[] single = ReceiveFragmentRaw(WarmSender, whole, out _);
+            _reassemblyCache.Remove(WarmSender.ToString() + ":" + WarmPackage.ToString());
+            if (joined == null || joined.Length != 32 || single == null || single.Length != 16)
+                throw new InvalidOperationException("the warm-up payloads did not come back whole");
+            return watch.Elapsed.TotalMilliseconds;
+        }
+
         private static void ExpireStaleReassemblies()
         {
             long now = DateTimeOffset.Now.Ticks;
