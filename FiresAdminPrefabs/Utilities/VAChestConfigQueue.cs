@@ -6,10 +6,10 @@ namespace VerdantsAscent.Utilities
 {
     // VAChestConfigQueue — pending-preset buffer between the "Configure
     // container" UI's Apply button and the next placement of that
-    // container prefab. One-shot: the queued preset applies to the next
-    // placement then clears.
+    // container prefab. 1.1.167: kept until the player changes it (was one-shot: the queued preset applied to the next
+    // placement then cleared).
     //
-    // Mirrors VAMonsterConfigQueue's one-shot semantics. Unlike the
+    // Mirrors VAMonsterConfigQueue (also kept until changed). Unlike the
     // monster queue we don't track per-creature spawn counts — chests
     // are always placed one-at-a-time via the hammer.
     public static class VAChestConfigQueue
@@ -42,9 +42,9 @@ namespace VerdantsAscent.Utilities
                 && !string.IsNullOrEmpty(presetName);
         }
 
-        // Consume the queued preset for this container prefab (one-shot).
-        // Returns the preset if one was queued; null otherwise. Removes
-        // the entry on success.
+        // The queued preset for this container prefab, for a placement. 1.1.167 (Fire 10-06: "the next chest placed was a default
+        // container"): the preset STAYS queued, so several in a row carry it, until the player picks another one or "No preset"
+        // in the hammer menu. Only a preset that no longer exists in the store drops out of the queue.
         public static VAChestPreset ConsumeQueuedPreset(string containerPrefabName)
         {
             if (!TryGetQueuedPresetName(containerPrefabName, out var presetName))
@@ -54,7 +54,6 @@ namespace VerdantsAscent.Utilities
                 _queuedPresetByContainer.Remove(containerPrefabName);
                 return null;
             }
-            _queuedPresetByContainer.Remove(containerPrefabName);
             return preset;
         }
     }

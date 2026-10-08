@@ -6,7 +6,7 @@ using VerdantsAscent.Patches;
 
 namespace VerdantsAscent.Utilities
 {
-    // One-shot pending-preset buffer between the "Configure monster" UI's
+    // Pending-preset buffer (kept until changed, 1.1.167) between the "Configure monster" UI's
     // Apply button and the next placement of that creature. Stores only
     // the preset NAME so live edits to the store affect both the next
     // placement and future respawn cycles.
@@ -60,8 +60,9 @@ namespace VerdantsAscent.Utilities
             if (!TryGetQueuedPresetName(creaturePrefabName, out var presetName)) return;
             if (!VAMonsterPresetStore.TryGet(presetName, out var preset)) return;
 
+            // 1.1.167: the preset stays queued (every creature of a group spawn, and every later placement, carries it) until
+            // the player picks another preset or "No preset" in the hammer menu.
             VAMonsterConfigApplier.StampPresetAndRefresh(preset, instance);
-            _queuedPresetByCreature.Remove(creaturePrefabName);
         }
 
         private static int ParseInt(string s, int fallback)

@@ -42,11 +42,15 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configAdminOnlyMode;
         public ConfigEntry<bool> configRegisterPiecesForNonAdmins;
         public ConfigEntry<bool> configWackyDatabaseCompat;
+        public ConfigEntry<bool> configItemStandUseEwp;   // 1.1.168
         public ConfigEntry<string> configVanillaFriendlyEffectAllowlist;
         public ConfigEntry<bool> configVanillaFriendly;
         public ConfigEntry<bool> configUseEwpForPersistence;
         public ConfigEntry<bool> configSortHammerByMod;
         public ConfigEntry<BundleNatureShaderMode> configBundleNatureShader;
+        public ConfigEntry<float> configBundleCullDistance;
+        public ConfigEntry<bool> configBundleImpostors;
+        public ConfigEntry<float> configBundleImpostorDistance, configBundleImpostorCullDistance;
         public ConfigEntry<string> configBundleNatureShaderAllOf;
         public ConfigEntry<string> configBundleClutterAllOf;
         public ConfigEntry<string> configCustomPersistentPrefabs;
@@ -138,6 +142,8 @@ namespace VerdantsAscent.Managers
 
         public void Initialize(ConfigFile config)
         {
+            configItemStandUseEwp = config.Bind("Item stands", "UseEwpForRefill", false,
+                "Item stand presets with a refill timer: on (and Expand World Prefabs installed) = EWP does the refill, even when Core is installed - FAP writes expand_prefabs_FAP_itemstands.yaml (per preset: the stand's item-taken state pokes it after the time, the poke puts the item back) and stamps each refillable stand with int fap_stand. Off (or no EWP) = Core's loot respawn, else FAP refills the stand itself; the rule file is removed.");
             configVerboseLogging = config.Bind("General", "VerboseLogging", false,
                 "Enable detailed debug logs.");
             configServerEnforced = config.Bind("General", "ServerEnforced", true,
@@ -167,6 +173,17 @@ namespace VerdantsAscent.Managers
             configBundleNatureShader = config.Bind("General", "BundleNatureShader", BundleNatureShaderMode.Vegetation,
                 "Shader installed on nature-detected bundle prefabs (trees, bushes, plants, pickables, mine-rocks) to fix the broken-alpha-cutout look bundle materials usually ship with. Vegetation (default) = Valheim's Custom/Vegetation; Standard = Unity Standard in cutout mode (revert option if Vegetation produces wrong textures on a particular bundle). Flips re-apply live, no world reload needed.");
 
+            configBundleCullDistance = config.Bind("Performance", "BundleCullDistance", 200f,
+                new ConfigDescription("Bundle prefabs that ship without an LODGroup (e.g. Balrond's Poplar, Willow, Cypress) stop rendering past this many metres; 0 = never culled (as before). Prefabs with their own LODs are untouched. Applies at load.",
+                    new AcceptableValueRange<float>(0f, 1000f)));
+            configBundleImpostors = config.Bind("Performance", "BundleImpostors", true,
+                "Those same no-LOD bundle prefabs get a baked impostor (a 16-triangle cutout billboard rendered from the prefab at load) as their far detail level, instead of only being culled. Applies at load.");
+            configBundleImpostorDistance = config.Bind("Performance", "BundleImpostorDistance", 60f,
+                new ConfigDescription("Metres up to which an impostor-carrying bundle prefab draws its full mesh; past it, the impostor. Applies at load.",
+                    new AcceptableValueRange<float>(10f, 500f)));
+            configBundleImpostorCullDistance = config.Bind("Performance", "BundleImpostorCullDistance", 800f,
+                new ConfigDescription("Metres up to which the impostor draws; past it, nothing. 0 = never culled. Applies at load.",
+                    new AcceptableValueRange<float>(0f, 3000f)));
             configEnableBlueprintBake = config.Bind("Performance", "EnableBlueprintMeshBake", false,
                 "Shows the 'Bake to prefab...' action when you right-click a blueprint in the hammer. Baking is explicit and per-blueprint — nothing is baked just by placing one, and the fap_bake_diagnose / fap_bake_all commands work whether this is on or off. Baking combines the blueprint's static pieces into roughly one mesh per material and writes a .bakebundle into config/FiresAdminPrefabs/Assets with a .bakemanifest sidecar; the result appears on the Baked Meshes tab after a RELAUNCH, because bundles are registered at world load. Interactive pieces (doors, chests, fireplaces, signs, pickables, plants, item stands, wards) are kept aside and spawned as real objects when the baked piece is placed, so they still work; the combined geometry keeps its colliders but is invulnerable — no per-piece damage or salvage, and hammering any part removes the whole placement. Multiplayer: the server and every other client need that .bakebundle too (fap_push_bundle sends it), or the placement is a missing prefab to them. Local setting, not server-synced.");
 
@@ -236,14 +253,14 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 "Scale of the right-click configure windows (monster/container/clutter). Drag any corner of a config window to resize it; the chosen scale persists here. Range 0.7-2.5.");
 
             configBuildMenuWidth = config.Bind("BuildMenu", "WindowWidth", float.NaN,
-                "Build menu window width. Set by SHIFT+dragging the bottom-right grip, which grows the grid; NaN = vanilla default.");
+                "Build menu window width. Set by dragging the bottom-right grip, which grows the grid (Shift+drag zooms instead); NaN = vanilla default.");
 
             configBuildMenuHeight = config.Bind("BuildMenu", "WindowHeight", float.NaN,
-                "Build menu window height. Set by SHIFT+dragging the bottom-right grip, which grows the grid; NaN = vanilla default.");
+                "Build menu window height. Set by dragging the bottom-right grip, which grows the grid (Shift+drag zooms instead); NaN = vanilla default.");
 
             configBuildMenuScale = config.Bind("BuildMenu", "WindowScale", 1f,
                 new ConfigDescription(
-                    "Build menu zoom. Set by dragging the bottom-right grip without Shift. Range 0.7-2.5.",
+                    "Build menu zoom. Set by Shift+dragging the bottom-right grip (a plain drag grows the grid). Range 0.7-2.5.",
                     new AcceptableValueRange<float>(0.7f, 2.5f)));
 
             // Screen position, not anchoredPosition: the window re-anchors to centre on
@@ -333,6 +350,7 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
             configUseEwpForPersistence.SettingChanged += recategorize;
             configSortHammerByMod.SettingChanged += recategorize;
             configBundleClutterAllOf.SettingChanged += recategorize;
+            configItemStandUseEwp.SettingChanged += (_, __) => VAItemStandEwp.Write();   // 1.1.181: write / remove the EWP refill script live
 
             configVanillaFriendlyEffectAllowlist.SettingChanged += (_, __) =>
             {

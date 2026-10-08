@@ -1,18 +1,21 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-using FiresCore.Net;
+using FiresCore.UI;
 
 namespace VerdantsAscent.Utilities
 {
-    // Lightweight UGUI popup for right-click context actions on hammer
-    // pieces and tabs. Lives on its own top-level ScreenSpaceOverlay canvas
-    // (DontDestroyOnLoad, sortingOrder = max int) so it never gets buried
-    // by the hammer panel and survives world reload. Long lists wrap in a
-    // ScrollRect; auto-dismisses on outside click / escape / right-click.
+    // Lightweight popup for right-click context actions on hammer pieces
+    // and tabs. Long lists scroll; auto-dismisses on outside click / escape /
+    // right-click.
+    // 1.1.180 (Fire 10-07): drawn in Core's FiresRoundedSkin (IMGUI, the FDT look)
+    // One hidden DontDestroyOnLoad host draws the menu and the prompt as IMGUI
+    // windows brought to the front every frame (GUI.depth lowest), so they sit
+    // over the hammer UI and over FAP's other IMGUI editor windows. A transparent
+    // uGUI blocker (top canvas, sortingOrder = max) under the open rect keeps a
+    // click on a row from also reaching the build menu's buttons underneath.
     public static class VARightClickMenu
     {
         public sealed class Item
@@ -28,209 +31,190 @@ namespace VerdantsAscent.Utilities
             }
         }
 
-        private const int MenuWidth = 200;
+        private const int MenuWidth = 230;
         private const int ItemHeight = 28;
-        private const int MenuPaddingY = 4;
+        private const int MenuPaddingY = 6;
+        private const int MenuPaddingX = 6;
         private const int MaxVisibleHeight = 420;
-        private const int LabelInsetPx = 10;
         private const int LabelFontSize = 14;
-        private const float ScrollSensitivityPx = 30f;
         private const int CanvasSortingOrder = 32767;
+        private const int MenuWindowId = 0x7A5C1;
+        private const int PromptWindowId = 0x7A5C2;
+        private const int HostGuiDepth = -1000;
 
-        private static GameObject _canvasRoot;
+        private static GameObject _hostGo;
+        private static Host _host;
         private static Canvas _canvas;
-        private static GameObject _activeMenu;
-        private static MenuDriver _driver;
+        private static RectTransform _blocker;
 
-        public static bool IsOpen => _activeMenu != null;
+        private static List<Item> _items;
+        private static Rect _menuRect;        // IMGUI coords (top-down)
+        private static bool _needsScroll;
+        private static Vector2 _scroll;
+        private static int _openedFrame = -1;
+
+        public static bool IsOpen => _items != null;
+
+        // 1.1.173: a caller that knows where the click was (an EventSystem click) sets this around its Show; else the cursor.
+        public static Vector2? NextPosition;
 
         public static void Show(IList<Item> items)
         {
-            Show(items, Input.mousePosition);
+            Show(items, NextPosition ?? (Vector2)Input.mousePosition);
         }
 
+        // screenPosition is a screen (bottom-up) point, as before: the menu's top-left corner sits there, clamped on screen.
         public static void Show(IList<Item> items, Vector2 screenPosition)
         {
             if (items == null || items.Count == 0) return;
-            EnsureCanvas();
+            EnsureHost();
             Close();
 
             int totalContentHeight = items.Count * ItemHeight + MenuPaddingY * 2;
-            bool needsScroll = totalContentHeight > MaxVisibleHeight;
-            int visibleHeight = needsScroll ? MaxVisibleHeight : totalContentHeight;
+            _needsScroll = totalContentHeight > MaxVisibleHeight;
+            int visibleHeight = _needsScroll ? MaxVisibleHeight : totalContentHeight;
 
-            _activeMenu = new GameObject("FAP_RightClickMenu");
-            _activeMenu.transform.SetParent(_canvas.transform, false);
-
-            var panel = _activeMenu.AddComponent<Image>();
-            panel.color = VerdantsAscent.Utilities.VAConfigTheme.PanelBg;
-            panel.raycastTarget = true;
-            VerdantsAscent.Utilities.VAConfigTheme.AddBorder(_activeMenu, VerdantsAscent.Utilities.VAConfigTheme.BorderColor, VerdantsAscent.Utilities.VAConfigTheme.BorderDist);
-
-            var rt = panel.rectTransform;
-            rt.anchorMin = new Vector2(0f, 0f);
-            rt.anchorMax = new Vector2(0f, 0f);
-            rt.pivot = new Vector2(0f, 1f);
-            rt.sizeDelta = new Vector2(MenuWidth, visibleHeight);
-
-            float x = Mathf.Clamp(screenPosition.x, 0f, Screen.width - MenuWidth);
-            float y = Mathf.Clamp(screenPosition.y, visibleHeight, Screen.height);
-            rt.anchoredPosition = new Vector2(x, y);
-
-            GameObject contentGo;
-            if (needsScroll)
-            {
-                var viewportGo = new GameObject("Viewport");
-                viewportGo.transform.SetParent(_activeMenu.transform, false);
-                var viewportImg = viewportGo.AddComponent<Image>();
-                viewportImg.color = new Color(0f, 0f, 0f, 0.001f);
-                viewportImg.raycastTarget = false;
-                viewportGo.AddComponent<RectMask2D>();
-                var viewportRt = viewportImg.rectTransform;
-                viewportRt.anchorMin = Vector2.zero;
-                viewportRt.anchorMax = Vector2.one;
-                viewportRt.offsetMin = Vector2.zero;
-                viewportRt.offsetMax = Vector2.zero;
-
-                contentGo = new GameObject("Content");
-                contentGo.transform.SetParent(viewportGo.transform, false);
-                var contentImg = contentGo.AddComponent<Image>();
-                contentImg.color = new Color(0f, 0f, 0f, 0.001f);
-                contentImg.raycastTarget = false;
-                var contentRt = contentImg.rectTransform;
-                contentRt.anchorMin = new Vector2(0f, 1f);
-                contentRt.anchorMax = new Vector2(1f, 1f);
-                contentRt.pivot = new Vector2(0.5f, 1f);
-                contentRt.anchoredPosition = Vector2.zero;
-                contentRt.sizeDelta = new Vector2(0f, totalContentHeight);
-
-                var sr = _activeMenu.AddComponent<ScrollRect>();
-                sr.viewport = viewportRt;
-                sr.content = contentRt;
-                sr.horizontal = false;
-                sr.vertical = true;
-                sr.movementType = ScrollRect.MovementType.Clamped;
-                sr.scrollSensitivity = ScrollSensitivityPx;
-                sr.inertia = false;
-            }
-            else
-            {
-                contentGo = _activeMenu;
-            }
-
-            for (int i = 0; i < items.Count; i++)
-            {
-                var item = items[i];
-                var itemGo = new GameObject($"Item_{i}_{item.Label}");
-                itemGo.transform.SetParent(contentGo.transform, false);
-
-                var bg = itemGo.AddComponent<Image>();
-                bg.color = ItemSelector.NormalColor;
-                bg.raycastTarget = !item.Disabled;
-
-                var irt = bg.rectTransform;
-                irt.anchorMin = new Vector2(0f, 1f);
-                irt.anchorMax = new Vector2(1f, 1f);
-                irt.pivot = new Vector2(0.5f, 1f);
-                irt.anchoredPosition = new Vector2(0f, -(MenuPaddingY + i * ItemHeight));
-                irt.sizeDelta = new Vector2(0f, ItemHeight);
-
-                var textGo = new GameObject("Label");
-                textGo.transform.SetParent(itemGo.transform, false);
-                var txt = textGo.AddComponent<Text>();
-                txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-                if (txt.font == null) txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-                txt.fontSize = LabelFontSize;
-                txt.alignment = TextAnchor.MiddleLeft;
-                txt.color = item.Disabled
-                    ? new Color(0.55f, 0.55f, 0.55f, 1f)
-                    : new Color(0.95f, 0.92f, 0.78f, 1f);
-                txt.text = item.Label;
-                txt.raycastTarget = false;
-                txt.supportRichText = true;
-                var trt = txt.rectTransform;
-                trt.anchorMin = Vector2.zero;
-                trt.anchorMax = Vector2.one;
-                trt.offsetMin = new Vector2(LabelInsetPx, 0f);
-                trt.offsetMax = new Vector2(-LabelInsetPx, 0f);
-
-                if (!item.Disabled)
-                {
-                    var selector = itemGo.AddComponent<ItemSelector>();
-                    selector.Background = bg;
-                    selector.Callback = item.OnSelect;
-                }
-            }
-
-            _driver = _activeMenu.AddComponent<MenuDriver>();
+            float x = Mathf.Clamp(screenPosition.x, 0f, Mathf.Max(0f, Screen.width - MenuWidth));
+            float yUp = Mathf.Clamp(screenPosition.y, visibleHeight, Screen.height);
+            _menuRect = new Rect(x, Screen.height - yUp, MenuWidth, visibleHeight);   // bottom-up -> IMGUI top-down
+            _scroll = Vector2.zero;
+            _items = new List<Item>(items);
+            _openedFrame = Time.frameCount;
+            UpdateBlocker();
         }
 
         public static void Close()
         {
-            if (_activeMenu == null) return;
-            NetworkObjectHelper.SafeDestroy(_activeMenu);
-            _activeMenu = null;
-            _driver = null;
+            if (_items == null) return;
+            // 1.1.173: who closed it (one frame up), at Debug: a menu closed the frame it opened shows its closer here.
+            try { var m = new System.Diagnostics.StackFrame(1).GetMethod(); VaPieces.Log?.LogDebug($"[VARightClickMenu] closed by {m?.DeclaringType?.Name}.{m?.Name} (frame {Time.frameCount})"); } catch { }
+            _items = null;
+            UpdateBlocker();
         }
 
-        private static void EnsureCanvas()
+        private static void EnsureHost()
         {
-            if (_canvasRoot != null) return;
-            _canvasRoot = new GameObject("FAP_RightClickMenuCanvas");
-            UnityEngine.Object.DontDestroyOnLoad(_canvasRoot);
+            if (_hostGo != null) return;
+            _hostGo = new GameObject("FAP_RightClickMenuHost");
+            UnityEngine.Object.DontDestroyOnLoad(_hostGo);
 
-            _canvas = _canvasRoot.AddComponent<Canvas>();
+            _canvas = _hostGo.AddComponent<Canvas>();
             _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             _canvas.sortingOrder = CanvasSortingOrder;
-
-            var scaler = _canvasRoot.AddComponent<CanvasScaler>();
+            var scaler = _hostGo.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
-            scaler.referencePixelsPerUnit = 100f;
+            _hostGo.AddComponent<GraphicRaycaster>();
 
-            _canvasRoot.AddComponent<GraphicRaycaster>();
+            var blockerGo = new GameObject("Blocker");
+            blockerGo.transform.SetParent(_hostGo.transform, false);
+            var img = blockerGo.AddComponent<Image>();
+            img.color = new Color(0f, 0f, 0f, 0f);
+            img.raycastTarget = true;
+            _blocker = img.rectTransform;
+            _blocker.anchorMin = Vector2.zero; _blocker.anchorMax = Vector2.zero; _blocker.pivot = Vector2.zero;
+            blockerGo.SetActive(false);
+
+            _host = _hostGo.AddComponent<Host>();
         }
 
-        private sealed class ItemSelector :
-            MonoBehaviour, IPointerEnterHandler, IPointerExitHandler, IPointerClickHandler
+        // Swallows uGUI clicks under whichever of the menu / prompt is open (the prompt wins; it closes the menu).
+        private static void UpdateBlocker()
         {
-            public static readonly Color NormalColor = new Color(0.10f, 0.10f, 0.12f, 0.0f);
-            public static readonly Color HoverColor  = new Color(0.30f, 0.30f, 0.36f, 0.95f);
+            if (_blocker == null) return;
+            Rect? r = _promptOpen ? _promptRect : (IsOpen ? _menuRect : (Rect?)null);
+            _blocker.gameObject.SetActive(r.HasValue);
+            if (!r.HasValue) return;
+            var v = r.Value;
+            _blocker.anchoredPosition = new Vector2(v.x, Screen.height - v.yMax);   // IMGUI top-down -> canvas bottom-up
+            _blocker.sizeDelta = new Vector2(v.width, v.height);
+        }
 
-            public Image Background;
-            public Action Callback;
+        private static bool MouseOver(Rect imguiRect)
+        {
+            Vector2 m = Input.mousePosition;
+            return imguiRect.Contains(new Vector2(m.x, Screen.height - m.y));
+        }
 
-            public void OnPointerEnter(PointerEventData eventData)
+        private static void Select(Item item)
+        {
+            var cb = item.OnSelect;
+            Close();
+            try { cb?.Invoke(); }
+            catch (Exception ex)
             {
-                if (Background != null) Background.color = HoverColor;
-            }
-            public void OnPointerExit(PointerEventData eventData)
-            {
-                if (Background != null) Background.color = NormalColor;
-            }
-            public void OnPointerClick(PointerEventData eventData)
-            {
-                var cb = Callback;
-                Close();
-                try { cb?.Invoke(); }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"{VaPieces.PluginName}: VARightClickMenu item callback threw: {ex.Message}");
-                }
+                Debug.LogWarning($"{VaPieces.PluginName}: VARightClickMenu item callback threw: {ex.Message}");
             }
         }
 
-        private sealed class MenuDriver : MonoBehaviour
+        private static GUIStyle _rowStyle, _rowDisabledStyle, _promptTitleStyle, _promptFieldStyle;
+
+        private static void EnsureRowStyles()
+        {
+            if (_rowStyle != null) return;
+            // NavItem gives the hover highlight; the disabled copy has no hover/active and greyed text.
+            _rowStyle = new GUIStyle(FiresRoundedSkin.NavItem) { fontSize = LabelFontSize, richText = true, alignment = TextAnchor.MiddleLeft, wordWrap = false, clipping = TextClipping.Clip };
+            _rowDisabledStyle = new GUIStyle(_rowStyle);
+            _rowDisabledStyle.normal.background = null;
+            _rowDisabledStyle.hover = _rowDisabledStyle.normal;
+            _rowDisabledStyle.active = _rowDisabledStyle.normal;
+            _rowDisabledStyle.focused = _rowDisabledStyle.normal;
+            _rowDisabledStyle.normal.textColor = new Color(0.55f, 0.55f, 0.55f, 1f);
+            _promptTitleStyle = new GUIStyle(FiresRoundedSkin.Title) { alignment = TextAnchor.MiddleCenter };
+            _promptFieldStyle = new GUIStyle(FiresRoundedSkin.TextInput) { fontSize = LabelFontSize };
+        }
+
+        private static void DrawMenu(int id)
+        {
+            var items = _items;
+            if (items == null) return;
+            float innerW = MenuWidth - MenuPaddingX * 2;
+            int contentH = items.Count * ItemHeight;
+            Rect view = new Rect(MenuPaddingX, MenuPaddingY, innerW, _menuRect.height - MenuPaddingY * 2);
+            if (_needsScroll)
+                _scroll = GUI.BeginScrollView(view, _scroll, new Rect(0f, 0f, innerW - 16f, contentH), false, true, GUIStyle.none, GUI.skin.verticalScrollbar);
+            else
+                GUI.BeginGroup(view);
+
+            float rowW = _needsScroll ? innerW - 16f : innerW;
+            for (int i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                var r = new Rect(0f, i * ItemHeight, rowW, ItemHeight);
+                if (item.Disabled) { GUI.Label(r, item.Label ?? string.Empty, _rowDisabledStyle); continue; }
+                if (GUI.Button(r, item.Label ?? string.Empty, _rowStyle)) { Select(item); break; }
+            }
+
+            if (_needsScroll) GUI.EndScrollView(); else GUI.EndGroup();
+        }
+
+        private sealed class Host : MonoBehaviour
         {
             private void Update()
             {
+                if (_promptOpen) { PromptUpdate(); return; }
+                if (!IsOpen) return;
                 if (Input.GetKeyDown(KeyCode.Escape)) { Close(); return; }
+                // The click that opened the menu (same frame) is not an outside click.
+                if (Time.frameCount != _openedFrame && (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1)) && !MouseOver(_menuRect))
+                    Close();
+            }
 
-                if (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1))
+            private void OnGUI()
+            {
+                if (!IsOpen && !_promptOpen) return;
+                GUI.depth = HostGuiDepth;
+                FiresRoundedSkin.Ensure(1f);
+                EnsureRowStyles();
+                if (IsOpen)
                 {
-                    var rt = (RectTransform)transform;
-                    Vector2 mouse = Input.mousePosition;
-                    if (!RectTransformUtility.RectangleContainsScreenPoint(rt, mouse, null))
-                        Close();
+                    GUI.Window(MenuWindowId, _menuRect, DrawMenu, "", FiresRoundedSkin.Window);
+                    GUI.BringWindowToFront(MenuWindowId);
+                }
+                if (_promptOpen)
+                {
+                    GUI.Window(PromptWindowId, _promptRect, DrawPrompt, "", FiresRoundedSkin.Window);
+                    GUI.BringWindowToFront(PromptWindowId);
+                    GUI.FocusWindow(PromptWindowId);
                 }
             }
         }
@@ -240,155 +224,89 @@ namespace VerdantsAscent.Utilities
         // line of text. Enter / OK submit, Esc / Cancel / outside-click dismiss.
         // While open it holds the shared Core text-capture gate so typing the
         // name never leaks vanilla or other-mod hotkeys.
-        private static GameObject _activePrompt;
+        private const string PromptFieldName = "FAP_TextPromptField";
         private static readonly object PromptInputToken = new object();
+        private static bool _promptOpen;
+        private static Rect _promptRect;
+        private static string _promptTitle;
+        private static string _promptText;
+        private static Action<string> _promptOnSubmit;
+        private static int _promptOpenedFrame = -1;
+        private static bool _promptFocusPending;
 
         public static void ShowTextPrompt(string title, string initial, Action<string> onSubmit)
         {
-            EnsureCanvas();
+            EnsureHost();
             Close();
             ClosePrompt();
 
             const int W = 380, H = 150;
-
-            _activePrompt = new GameObject("FAP_TextPrompt");
-            _activePrompt.transform.SetParent(_canvas.transform, false);
-            var panel = _activePrompt.AddComponent<Image>();
-            panel.color = VAConfigTheme.PanelBg;
-            panel.raycastTarget = true;
-            VAConfigTheme.AddBorder(_activePrompt, VAConfigTheme.BorderColor, VAConfigTheme.BorderDist);
-            var prt = panel.rectTransform;
-            prt.anchorMin = new Vector2(0.5f, 0.5f);
-            prt.anchorMax = new Vector2(0.5f, 0.5f);
-            prt.pivot = new Vector2(0.5f, 0.5f);
-            prt.sizeDelta = new Vector2(W, H);
-            prt.anchoredPosition = Vector2.zero;
-
-            var titleTxt = MakeLabel(_activePrompt.transform, title ?? string.Empty, VAConfigTheme.SectionLabel, FontStyle.Bold);
-            titleTxt.alignment = TextAnchor.MiddleCenter;
-            var ttrt = titleTxt.rectTransform;
-            ttrt.anchorMin = new Vector2(0f, 1f); ttrt.anchorMax = new Vector2(1f, 1f); ttrt.pivot = new Vector2(0.5f, 1f);
-            ttrt.sizeDelta = new Vector2(-24f, 28f); ttrt.anchoredPosition = new Vector2(0f, -12f);
-
-            var inputGo = new GameObject("Input");
-            inputGo.transform.SetParent(_activePrompt.transform, false);
-            var inputImg = inputGo.AddComponent<Image>();
-            inputImg.color = VAConfigTheme.FieldBg;
-            VAConfigTheme.AddBorder(inputGo, VAConfigTheme.EdgeColor, VAConfigTheme.EdgeDist);
-            var inputRt = inputImg.rectTransform;
-            inputRt.anchorMin = new Vector2(0f, 1f); inputRt.anchorMax = new Vector2(1f, 1f); inputRt.pivot = new Vector2(0.5f, 1f);
-            inputRt.sizeDelta = new Vector2(-24f, 30f); inputRt.anchoredPosition = new Vector2(0f, -52f);
-
-            var textGo = new GameObject("Text");
-            textGo.transform.SetParent(inputGo.transform, false);
-            var fieldText = textGo.AddComponent<Text>();
-            fieldText.font = GetFont();
-            fieldText.fontSize = LabelFontSize;
-            fieldText.color = VAConfigTheme.FieldInk;
-            fieldText.alignment = TextAnchor.MiddleLeft;
-            fieldText.supportRichText = false;
-            var ftrt = fieldText.rectTransform;
-            ftrt.anchorMin = Vector2.zero; ftrt.anchorMax = Vector2.one;
-            ftrt.offsetMin = new Vector2(8f, 0f); ftrt.offsetMax = new Vector2(-8f, 0f);
-
-            var field = inputGo.AddComponent<InputField>();
-            field.textComponent = fieldText;
-            field.targetGraphic = inputImg;
-            field.lineType = InputField.LineType.SingleLine;
-            field.caretColor = Color.white;
-            field.selectionColor = new Color(0.50f, 0.40f, 0.25f, 0.5f);
-            field.text = initial ?? string.Empty;
-
-            Action submit = () =>
-            {
-                string val = (field.text ?? string.Empty).Trim();
-                ClosePrompt();
-                try { onSubmit?.Invoke(val); }
-                catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: VARightClickMenu text-prompt submit threw: {ex.Message}"); }
-            };
-
-            MakePromptButton(_activePrompt.transform, "OK", VAConfigTheme.ButtonPrimary, new Vector2(-62f, 14f), submit);
-            MakePromptButton(_activePrompt.transform, "Cancel", VAConfigTheme.ButtonNeutral, new Vector2(62f, 14f), ClosePrompt);
+            _promptRect = new Rect((Screen.width - W) * 0.5f, (Screen.height - H) * 0.5f, W, H);
+            _promptTitle = title ?? string.Empty;
+            _promptText = initial ?? string.Empty;
+            _promptOnSubmit = onSubmit;
+            _promptOpenedFrame = Time.frameCount;
+            _promptFocusPending = true;
+            _promptOpen = true;
 
             FiresCore.Input.FiresInputBlock.Acquire(PromptInputToken);
-
-            var driver = _activePrompt.AddComponent<PromptDriver>();
-            driver.OnSubmit = submit;
-            driver.OnCancel = ClosePrompt;
-
-            field.Select();
-            field.ActivateInputField();
+            UpdateBlocker();
         }
 
         public static void ClosePrompt()
         {
-            if (_activePrompt == null) return;
+            if (!_promptOpen) return;
             FiresCore.Input.FiresInputBlock.Release(PromptInputToken);
-            NetworkObjectHelper.SafeDestroy(_activePrompt);
-            _activePrompt = null;
+            _promptOpen = false;
+            _promptOnSubmit = null;
+            if (GUIUtility.keyboardControl != 0) GUIUtility.keyboardControl = 0;
+            UpdateBlocker();
         }
 
-        private static Font GetFont()
+        private static void SubmitPrompt()
         {
-            var f = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            if (f == null) f = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            return f;
+            if (!_promptOpen) return;
+            string val = (_promptText ?? string.Empty).Trim();
+            var cb = _promptOnSubmit;
+            ClosePrompt();
+            try { cb?.Invoke(val); }
+            catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: VARightClickMenu text-prompt submit threw: {ex.Message}"); }
         }
 
-        private static Text MakeLabel(Transform parent, string text, Color color, FontStyle style)
+        private static void PromptUpdate()
         {
-            var go = new GameObject("Label");
-            go.transform.SetParent(parent, false);
-            var t = go.AddComponent<Text>();
-            t.font = GetFont();
-            t.fontSize = LabelFontSize;
-            t.fontStyle = style;
-            t.alignment = TextAnchor.MiddleLeft;
-            t.color = color;
-            t.text = text;
-            t.raycastTarget = false;
-            return t;
+            if (Cursor.lockState != CursorLockMode.None) Cursor.lockState = CursorLockMode.None;
+            if (!Cursor.visible) Cursor.visible = true;
+            if (Input.GetKeyDown(KeyCode.Escape)) { ClosePrompt(); return; }
+            if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter)) { SubmitPrompt(); return; }
+            if (Time.frameCount != _promptOpenedFrame && (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1)) && !MouseOver(_promptRect))
+                ClosePrompt();
         }
 
-        private static void MakePromptButton(Transform parent, string label, Color color, Vector2 anchoredPos, Action onClick)
+        private static void DrawPrompt(int id)
         {
-            var go = new GameObject($"Btn_{label}");
-            go.transform.SetParent(parent, false);
-            var img = go.AddComponent<Image>();
-            img.color = color;
-            VAConfigTheme.AddBorder(go, VAConfigTheme.EdgeColor, VAConfigTheme.EdgeDist);
-            var rt = img.rectTransform;
-            rt.anchorMin = new Vector2(0.5f, 0f); rt.anchorMax = new Vector2(0.5f, 0f); rt.pivot = new Vector2(0.5f, 0f);
-            rt.sizeDelta = new Vector2(108f, 28f); rt.anchoredPosition = anchoredPos;
-
-            var btn = go.AddComponent<Button>();
-            btn.targetGraphic = img;
-            btn.onClick.AddListener(() => onClick?.Invoke());
-
-            var txt = MakeLabel(go.transform, label, VAConfigTheme.ButtonInk, FontStyle.Normal);
-            txt.alignment = TextAnchor.MiddleCenter;
-            var trt = txt.rectTransform;
-            trt.anchorMin = Vector2.zero; trt.anchorMax = Vector2.one;
-            trt.offsetMin = Vector2.zero; trt.offsetMax = Vector2.zero;
-        }
-
-        private sealed class PromptDriver : MonoBehaviour
-        {
-            public Action OnSubmit;
-            public Action OnCancel;
-
-            private void Update()
+            // Enter / Escape as IMGUI key events too (the focused TextField would otherwise eat them before Update sees a frame).
+            var e = Event.current;
+            if (e.type == EventType.KeyDown)
             {
-                if (Input.GetKeyDown(KeyCode.Escape)) { OnCancel?.Invoke(); return; }
-                if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter)) { OnSubmit?.Invoke(); return; }
-
-                if (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1))
-                {
-                    var rt = (RectTransform)transform;
-                    if (!RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null))
-                        OnCancel?.Invoke();
-                }
+                if (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.KeypadEnter) { e.Use(); SubmitPrompt(); return; }
+                if (e.keyCode == KeyCode.Escape) { e.Use(); ClosePrompt(); return; }
             }
+
+            float w = _promptRect.width;
+            GUI.Label(new Rect(12f, 12f, w - 24f, 28f), _promptTitle, _promptTitleStyle);
+
+            GUI.SetNextControlName(PromptFieldName);
+            _promptText = GUI.TextField(new Rect(12f, 52f, w - 24f, 30f), _promptText ?? string.Empty, _promptFieldStyle);
+            if (_promptFocusPending && e.type == EventType.Repaint)
+            {
+                _promptFocusPending = false;
+                GUI.FocusControl(PromptFieldName);
+            }
+
+            float by = _promptRect.height - 14f - 28f;
+            if (GUI.Button(new Rect(w * 0.5f - 62f - 54f, by, 108f, 28f), "OK", FiresRoundedSkin.Button)) { SubmitPrompt(); return; }
+            if (GUI.Button(new Rect(w * 0.5f + 62f - 54f, by, 108f, 28f), "Cancel", FiresRoundedSkin.Button)) { ClosePrompt(); return; }
         }
     }
 }

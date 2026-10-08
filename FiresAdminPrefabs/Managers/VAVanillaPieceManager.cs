@@ -1700,7 +1700,7 @@ namespace VerdantsAscent.Managers
         // Heuristic for "this is a nature prefab" â€” structural signals
         // (Pickable/MineRock/Plant/Tree components) first because they're more
         // reliable than the name-keyword fallback, then name keywords.
-        private static bool IsNaturePrefab(GameObject prefab)
+        internal static bool IsNaturePrefab(GameObject prefab)
         {
             if (prefab.GetComponent<Pickable>() != null) return true;
             if (prefab.GetComponent<MineRock>() != null) return true;

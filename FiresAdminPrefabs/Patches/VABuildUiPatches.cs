@@ -177,7 +177,7 @@ namespace VerdantsAscent.Patches
         // Vanilla laid this window out at exactly ONE size, so only the nodes it happened to anchor as
         // stretch follow a resize. The tag list down the left side is not one of them: it keeps its
         // design-time rect while the piece grid grows past it, and the grid slides out underneath - which
-        // is the overlap you get after a Shift+drag.
+        // is the overlap you get after a grid drag (a plain drag since 1.1.189).
         //
         // Nudging each node per drag would mean re-deriving the same offsets every frame. Normalising does
         // it once instead: read each node's CURRENT visual insets, re-express them as stretch anchors, and
@@ -342,7 +342,7 @@ namespace VerdantsAscent.Patches
             rt.anchoredPosition = new Vector2(inset.x, -topInset);
             rt.sizeDelta = new Vector2(w, h);
         }
-        // Shift-drag never discards the other one.
+        // Zoom and grid size are kept separately: a drag or a Shift+drag never discards the other one.
         private static void RestoreGeometry(RectTransform panel)
         {
             panel.localScale = Vector3.one * LoadScale();
@@ -434,9 +434,10 @@ namespace VerdantsAscent.Patches
 
     // Bottom-right resize handle. Which of the two resizes you get is decided per GESTURE, at
     // OnBeginDrag, so it can't change mid-drag:
-    //   drag       -> ZOOM. Scales the window; same icons, bigger. (What it did before.)
-    //   Shift+drag -> GRID. Grows the window's RECT, so vanilla's layout flows MORE icons across and
+    //   drag       -> GRID. Grows the window's RECT, so vanilla's layout flows MORE icons across and
     //                 down - the pre-1.0 behaviour, and the reason a resize existed in the first place.
+    //   Shift+drag -> ZOOM. Scales the window; same icons, bigger.
+    // 1.1.189 (Fire 10-07, asked for by a player): swapped; until 1.1.188 a plain drag zoomed and Shift+drag grew the grid.
     internal sealed class VABuildUiResizeGrip : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
     {
         public RectTransform Target;
@@ -466,7 +467,7 @@ namespace VerdantsAscent.Patches
         public void OnBeginDrag(PointerEventData eventData)
         {
             if (Target == null) return;
-            _gridMode = ShiftHeld;
+            _gridMode = !ShiftHeld;   // 1.1.189 (Fire 10-07): swapped - plain drag = GRID, Shift+drag = ZOOM
             _startPointer = eventData.position;
             _startSize = Target.rect.size;
             _startScale = Target.localScale.x;
@@ -535,7 +536,20 @@ namespace VerdantsAscent.Patches
     public static class BuildUi_OpenBuildMenu_VAWindowControls_Patch
     {
         [HarmonyPostfix]
-        public static void Postfix(BuildUi __instance) => VABuildUiWindow.Ensure(__instance);
+        public static void Postfix(BuildUi __instance)
+        {
+            VABuildUiWindow.Ensure(__instance);
+            VABuildUiContextMenu.AttachEventClicks(__instance);   // 1.1.170
+        }
+    }
+
+    // 1.1.172 (the lead 15:3x: an EventSystem right click on a piece button opened no menu): vanilla makes piece buttons in
+    // UpdatePieceButtons (the list changes, a search is typed), AFTER OpenBuildMenu; those never got the opener. Attached here too.
+    [HarmonyPatch(typeof(BuildUi), "UpdatePieceButtons")]
+    public static class BuildUi_UpdatePieceButtons_VAEventClicks_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(BuildUi __instance) => VABuildUiContextMenu.AttachEventClicks(__instance);
     }
 
     // FAP's context menu for the build menu button under the cursor: the piece menu on a piece button, the
@@ -549,7 +563,7 @@ namespace VerdantsAscent.Patches
         internal static bool TryOpenForButtonUnderPointer()
         {
             var key = ConfigManager.Instance?.configBuildMenuContextMenuKey;
-            if (key == null || !key.IsPressed()) return false;
+            if (key == null || !key.IsPressed() || s_openedFrame == Time.frameCount) return false;
 
             var target = TopmostUiUnderPointer();
             if (target == null) return false;
@@ -566,7 +580,56 @@ namespace VerdantsAscent.Patches
                 if (tagButton == null) return false;
                 VAHammerRightClickPatches.ShowTagMenu(tagButton.m_tagId);
             }
+            s_openedFrame = Time.frameCount;
             return Utilities.VARightClickMenu.IsOpen;
+        }
+
+        // 1.1.170 (Fire 10-02/10-06: tests use the player's input path): the same menu also opens from an EventSystem right
+        // click on a piece / tab button (the binding's key must be the right mouse button, its Ctrl/Shift/Alt held, read through
+        // FiresKeys like the binding itself). A real right click may reach both this and the key path; whichever runs first
+        // this frame opens it.
+        private static int s_openedFrame = -1;
+
+        internal static void AttachEventClicks(BuildUi buildUi)
+        {
+            if (buildUi == null) return;
+            foreach (var b in buildUi.GetComponentsInChildren<BuildUiPieceButton>(true))
+                if (b.GetComponent<RightClickOpener>() == null) b.gameObject.AddComponent<RightClickOpener>();
+            foreach (var b in buildUi.GetComponentsInChildren<BuildUiTagButton>(true))
+                if (b.GetComponent<RightClickOpener>() == null) b.gameObject.AddComponent<RightClickOpener>();
+        }
+
+        private static bool ModifiersHeld(FiresCore.Input.KeyBinding key)
+        {
+            bool ctrl = FiresCore.Input.FiresKeys.GetKey(KeyCode.LeftControl) || FiresCore.Input.FiresKeys.GetKey(KeyCode.RightControl);
+            bool shift = FiresCore.Input.FiresKeys.GetKey(KeyCode.LeftShift) || FiresCore.Input.FiresKeys.GetKey(KeyCode.RightShift);
+            bool alt = FiresCore.Input.FiresKeys.GetKey(KeyCode.LeftAlt) || FiresCore.Input.FiresKeys.GetKey(KeyCode.RightAlt);
+            return ctrl == key.Ctrl.Value && shift == key.Shift.Value && alt == key.Alt.Value;
+        }
+
+        private sealed class RightClickOpener : MonoBehaviour, IPointerClickHandler
+        {
+            public void OnPointerClick(PointerEventData eventData)
+            {
+                var key = ConfigManager.Instance?.configBuildMenuContextMenuKey;
+                // 1.1.172: one Debug line per click on a piece / tab button: the event's button, the modifiers as FiresKeys reads them, the target.
+                VaPieces.Log?.LogDebug($"[VABuildUi] event click {eventData.button} on {name}: ctrl {FiresCore.Input.FiresKeys.GetKey(KeyCode.LeftControl) || FiresCore.Input.FiresKeys.GetKey(KeyCode.RightControl)}, "
+                    + $"shift {FiresCore.Input.FiresKeys.GetKey(KeyCode.LeftShift) || FiresCore.Input.FiresKeys.GetKey(KeyCode.RightShift)}, alt {FiresCore.Input.FiresKeys.GetKey(KeyCode.LeftAlt) || FiresCore.Input.FiresKeys.GetKey(KeyCode.RightAlt)}; "
+                    + $"binding {(key != null ? $"{key.Key.Value} ctrl {key.Ctrl.Value} shift {key.Shift.Value} alt {key.Alt.Value}" : "none")}, already opened this frame {s_openedFrame == Time.frameCount}");
+                if (eventData.button != PointerEventData.InputButton.Right || s_openedFrame == Time.frameCount) return;
+                // 1.1.173 (the lead 15:5x: the click line fired, still no menu): every way out is logged, and the outcome.
+                string skip = key == null ? "no binding" : key.Key.Value != KeyCode.Mouse1 ? $"binding key {key.Key.Value} is not Mouse1"
+                    : !ModifiersHeld(key) ? "modifiers don't match the binding" : FiresCore.Input.FiresInputBlock.IsCapturing ? "Core's text-capture gate is on (a Fires text field or modal holds input)" : null;
+                if (skip != null) { VaPieces.Log?.LogDebug($"[VABuildUi] event click on {name}: no menu, {skip}"); return; }
+                Utilities.VARightClickMenu.NextPosition = eventData.position;   // at the click, not wherever the real cursor is
+                var piece = GetComponent<BuildUiPieceButton>();
+                string what;
+                if (piece != null) { what = piece.Piece != null ? piece.Piece.name : "a piece button with no piece"; if (piece.Piece != null) VAHammerRightClickPatches.ShowPieceMenu(piece.Piece); }
+                else { var tag = GetComponent<BuildUiTagButton>(); what = tag != null ? "tag " + tag.m_tagId : "neither a piece nor a tag button"; if (tag != null) VAHammerRightClickPatches.ShowTagMenu(tag.m_tagId); }
+                Utilities.VARightClickMenu.NextPosition = null;
+                s_openedFrame = Time.frameCount;
+                VaPieces.Log?.LogDebug($"[VABuildUi] opening menu for {what}: {(Utilities.VARightClickMenu.IsOpen ? "ok" : "NOT open after the call")}");
+            }
         }
 
         private static GameObject TopmostUiUnderPointer()
@@ -585,6 +648,31 @@ namespace VerdantsAscent.Patches
     {
         [HarmonyPrefix]
         public static bool Prefix() => !Utilities.VARightClickMenu.IsOpen;
+    }
+
+    // 1.1.174 (the lead 16:2x: Core's text-capture gate stayed ON for a whole round after the build menu's search was typed in):
+    // Core's driver holds the gate while the EventSystem's selection is a focused text field. When the build menu closes or a
+    // piece is picked, a text field of the build menu that is still selected is let go (selection cleared), so the gate drops.
+    // Typing in the search field itself is untouched: nothing happens while the menu stays open.
+    [HarmonyPatch]
+    public static class BuildUi_ReleaseTextCapture_Patch
+    {
+        [HarmonyPatch(typeof(BuildUi), nameof(BuildUi.Close)), HarmonyPostfix]
+        public static void AfterClose(BuildUi __instance) { if (!Utilities.VARightClickMenu.IsOpen) Release(__instance, "build menu close"); }
+
+        [HarmonyPatch(typeof(BuildUi), nameof(BuildUi.OnSelectPiece)), HarmonyPostfix]
+        public static void AfterSelectPiece(BuildUi __instance) => Release(__instance, "piece picked");
+
+        private static void Release(BuildUi ui, string reason)
+        {
+            var events = EventSystem.current;
+            var selected = events != null ? events.currentSelectedGameObject : null;
+            if (selected == null || ui == null || !selected.transform.IsChildOf(ui.transform)) return;
+            if (selected.GetComponent<TMPro.TMP_InputField>() == null && selected.GetComponent<UnityEngine.UI.InputField>() == null) return;
+            selected.GetComponent<TMPro.TMP_InputField>()?.DeactivateInputField();
+            events.SetSelectedGameObject(null);
+            VaPieces.Log?.LogDebug($"[VABuildUi] text capture released by {reason} ({selected.name} deselected)");
+        }
     }
 
     // NavigationUpdate is vanilla's build menu input: it closes the menu on a right click or Escape and

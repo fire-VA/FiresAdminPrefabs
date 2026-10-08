@@ -1050,6 +1050,7 @@ namespace VerdantsAscent.Managers
                 HealColliderlessEffectAreas(prefab, hierarchy);
                 HealPickablesWithMissingItem(prefab, hierarchy);
                 HealPiecesWithMissingRequirementItem(prefab);
+                HealArmorMaterialWithoutBodyTextures(prefab);
                 healTicks += Lap(ref mark);
                 VABundleAssetRouter.Apply(prefab, hierarchy);
                 routerTicks += Lap(ref mark);
@@ -1140,19 +1141,17 @@ namespace VerdantsAscent.Managers
             if (_pickableHealsByBundle.Count > 0)
             {
                 string pickablesByBundle = FormatCountsByBundle(_pickableHealsByBundle, out int totalPickables);
-                Debug.LogWarning($"{VaPieces.PluginName}: VAExternalBundleLoader gave {totalPickables} Pickable(s) an m_overrideName because " +
-                                 $"their m_itemPrefab does not resolve ({pickablesByBundle}). Vanilla Pickable.GetHoverName dereferences that " +
-                                 "field with no null check, so hovering one threw once per frame from Hud.UpdateCrosshair. They are safe to " +
-                                 "look at now but still yield nothing when picked — the bundle's item reference is what needs repairing.");
+                // 1.1.165: a one-time load repair, so Debug; VABundleItemRefRepair gives them their items back and warns only for leftovers.
+                VaPieces.Log?.LogDebug($"VAExternalBundleLoader: {totalPickables} Pickable(s) had no resolvable m_itemPrefab ({pickablesByBundle}): " +
+                                 "hover-guarded now (vanilla GetHoverName has no null check), items restored by name at ZNetScene.Awake.");
             }
 
             if (_requirementHealsByBundle.Count > 0)
             {
                 string piecesByBundle = FormatCountsByBundle(_requirementHealsByBundle, out int totalPieces);
-                Debug.LogWarning($"{VaPieces.PluginName}: VAExternalBundleLoader dropped requirement entries with no item from {totalPieces} piece(s) " +
-                                 $"({piecesByBundle}). Valheim 1.0's build menu and placement read every requirement's item with no null " +
-                                 "check, so one such piece stopped the hammer menu from opening and threw when placed. Every vanilla cost " +
-                                 "check already skipped those entries, so no piece's cost changed — the bundle's item references are what need repairing.");
+                // 1.1.165: a one-time load repair, so Debug; a piece left with no cost gets one by material (VABundleItemRefRepair).
+                VaPieces.Log?.LogDebug($"VAExternalBundleLoader: dropped requirement entries with no item from {totalPieces} piece(s) ({piecesByBundle}); " +
+                                 "Valheim 1.0's build menu reads every requirement's item with no null check. Pieces left with no cost get one by material at ZNetScene.Awake.");
             }
 
             if (_locationPrefabsLeftOut.Count > 0)
@@ -1383,6 +1382,7 @@ namespace VerdantsAscent.Managers
 
                 pickable.m_overrideName = pickable.gameObject.name;
                 healedNames.Add(pickable.gameObject.name);
+                VABundleItemRefRepair.NotePickable(pickable, prefab.name);   // 1.1.165: its item comes back by name once every item is registered
             }
             if (healedNames.Count == 0) return;
 
@@ -1405,6 +1405,26 @@ namespace VerdantsAscent.Managers
         // placing such a piece throws too. HaveRequirements, ConsumeResources, Piece.DropResources and
         // the requirement panel all skip a null item already, so removing the entry changes no cost.
         // The item is gone from the bundle, so there is nothing to resolve it back to.
+        // 1.1.186 ([generator] 10-07, overnight 7: "Material 'LoxChest' with Shader 'Custom/Creature' doesn't have a texture property
+        // '_ChestTex'" x3): vanilla VisEquipment copies the chest's (or legs') body-underlay textures from the item's m_armorMaterial
+        // whenever it is set (VisEquipment.cs:785-789, 850-854), and GetTexture on a property the shader lacks logs an error for every
+        // wearer. Some external armour carries a creature's material there (arsenalreborn's ArmorLoxChest). Such a material is
+        // cleared: vanilla's own null check then skips the underlay, and the armour mesh still renders.
+        private static readonly HashSet<string> _armorMaterialHealed = new HashSet<string>(StringComparer.Ordinal);
+
+        internal static void HealArmorMaterialWithoutBodyTextures(GameObject prefab)
+        {
+            var shared = prefab.GetComponent<ItemDrop>()?.m_itemData?.m_shared;
+            var mat = shared?.m_armorMaterial;
+            if (mat == null) return;
+            string needs = shared.m_itemType == ItemDrop.ItemData.ItemType.Chest ? "_ChestTex"
+                         : shared.m_itemType == ItemDrop.ItemData.ItemType.Legs ? "_LegsTex" : null;
+            if (needs == null || mat.HasProperty(needs)) return;
+            shared.m_armorMaterial = null;
+            if (_armorMaterialHealed.Add(prefab.name))
+                VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: {prefab.name}: its armour material '{mat.name}' (shader '{(mat.shader != null ? mat.shader.name : "none")}') has no {needs}; cleared, so the body underlay is skipped instead of logging errors (the armour mesh still renders)");
+        }
+
         private static void HealPiecesWithMissingRequirementItem(GameObject prefab)
         {
             var piece = prefab.GetComponent<Piece>();
@@ -1418,6 +1438,7 @@ namespace VerdantsAscent.Managers
 
             piece.m_resources = kept.ToArray();
             string bundleName = SourceBundleOf(prefab);
+            if (kept.Count == 0) VABundleItemRefRepair.NoteEmptyPiece(piece, prefab.name, bundleName);   // 1.1.165: a cost by material, later
             AddToBundleCount(_requirementHealsByBundle, bundleName, 1);
             if (VAFapLoadSummary.VerboseEnabled)
                 Debug.LogWarning($"{VaPieces.PluginName}: HealPiecesWithMissingRequirementItem — '{prefab.name}' ({bundleName}) had {dropped} " +
@@ -1460,7 +1481,8 @@ namespace VerdantsAscent.Managers
 
             string bundleName = SourceBundleOf(prefab);
             AddToBundleCount(_effectAreaHealsByBundle, bundleName, healedDescriptions.Count);
-            Debug.LogWarning($"{VaPieces.PluginName}: HealColliderlessEffectAreas — added trigger SphereCollider to {healedDescriptions.Count} EffectArea marker(s) [{string.Join("; ", healedDescriptions)}] on bundle prefab '{prefab.name}' (source bundle: {bundleName}). Vanilla EffectArea.Awake NREs without a collider; the marker now behaves like a vanilla PlayerBase child.");
+            // 1.1.165: the collider IS the fix (the bundle is third-party and not rebuilt), a one-time load repair: Debug.
+            VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: HealColliderlessEffectAreas — added trigger SphereCollider to {healedDescriptions.Count} EffectArea marker(s) [{string.Join("; ", healedDescriptions)}] on bundle prefab '{prefab.name}' (source bundle: {bundleName}). Vanilla EffectArea.Awake NREs without a collider; the marker now behaves like a vanilla PlayerBase child.");
         }
 
         // Re-attaches the MonoBehaviours the source mod added at runtime, as recorded in the

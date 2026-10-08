@@ -179,6 +179,8 @@
     <Compile Include="Managers\VAPieceManager.cs" />
     <Compile Include="Managers\VAVanillaPieceManager.cs" />
     <Compile Include="Managers\VAExternalBundleLoader.cs" />
+    <Compile Include="Managers\VAArmorMaterialGuard.cs" />
+    <Compile Include="Managers\VABundleItemRefRepair.cs" />
     <Compile Include="Managers\CustomInteractWiring.cs" />
     <Compile Include="Managers\VAFapServerPresence.cs" />
     <Compile Include="Managers\VABundleAssetRouter.cs" />
@@ -215,6 +217,7 @@
     <Compile Include="Utilities\DistantPieceRenderer.cs" />
     <Compile Include="Utilities\VAFapHelpContent.cs" />
     <Compile Include="Utilities\ShaderReplacement.cs" />
+    <Compile Include="Utilities\VABundleImpostors.cs" />
     <!-- PlayerSpawnGate now lives in FiresUnifiedCore.dll
          (FiresCore.Lifecycle.PlayerSpawnGate) and is consumed via the
          BepInDependency wired up in Ascend.cs. -->
@@ -317,6 +320,12 @@
     <Compile Include="Utilities\VAChestSlotPlan.cs" />
     <Compile Include="Utilities\VAChestPresetStore.cs" />
     <Compile Include="Utilities\VAChestConfigQueue.cs" />
+    <Compile Include="Utilities\VAItemStandPresets.cs" />
+    <Compile Include="Utilities\VAItemStandConfigUI.cs" />
+    <Compile Include="Utilities\VAImguiGuard.cs" />
+    <Compile Include="Utilities\VAItemStandFallbackModel.cs" />
+    <Compile Include="Utilities\VADataPresets.cs" />
+    <Compile Include="Utilities\VACoreLoot.cs" />
     <Compile Include="Utilities\VAChestEwpRuleWriter.cs" />
     <Compile Include="Utilities\VAChestConfigUI.cs" />
     <Compile Include="Utilities\VAConfigTheme.cs" />

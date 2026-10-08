@@ -16,13 +16,13 @@ namespace VerdantsAscent.Patches
         // Infinity Hammer runs its own undo sub-action; a second outer scope would fight it.
         [HarmonyPriority(HarmonyLib.Priority.First)]
         [HarmonyPrefix]
-        public static void Prefix(out IDisposable __state)
+        public static void Prefix(Piece piece, out IDisposable __state)
         {
             // The placer already has its copy before the ZDO is written, so queued values go onto the PREFAB for
             // the length of this call and are restored by the finalizer below.
             __state = VAPlacementScope.Combine(
                 VAInfinityHammerCompat.IsInfinityHammerActive() ? null : VAUndoBridge.Scope(),
-                VAExtraDataStamp.BeginPrefabSwap());
+                VAExtraDataStamp.BeginPrefabSwap(piece != null ? piece.gameObject.name : null));   // 1.1.169: per prefab
         }
 
         [HarmonyPriority(HarmonyLib.Priority.Last)]

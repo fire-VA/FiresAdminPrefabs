@@ -33,6 +33,8 @@ namespace VerdantsAscent.Utilities
 
         private const int ManifestVersion = 1;
         private const int ManifestBakeFormatVersion = 3;
+        // 1.1.165: blueprint cache keys whose bake on disk is an older format; re-baked automatically (VAHammerRightClickPatches.RebakeStaleCoroutine).
+        internal static readonly HashSet<string> StaleBakes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private const string PrefabNamePrefix = "piece_";
         private const string BlueprintExt = ".blueprint";
         private const string TempFileExt = ".tmp";
@@ -529,7 +531,9 @@ namespace VerdantsAscent.Utilities
 
                 if (manifest.bakeFormatVersion != ManifestBakeFormatVersion)
                 {
-                    Debug.LogWarning($"{VaPieces.PluginName}: VABakeBundle — '{Path.GetFileName(bundlePath)}' is bake format v{manifest.bakeFormatVersion}, this build reads v{ManifestBakeFormatVersion}. Re-bake it (fap_rebake_all) — it is not registered.");
+                    // 1.1.165: queued for an automatic re-bake (a client does it once the world is up), so no manual fap_rebake_all.
+                    if (!string.IsNullOrEmpty(manifest.sourceBlueprintFile)) StaleBakes.Add(manifest.sourceBlueprintFile);
+                    VaPieces.Log?.LogDebug($"VABakeBundle: '{Path.GetFileName(bundlePath)}' is bake format v{manifest.bakeFormatVersion}, this build reads v{ManifestBakeFormatVersion}: not registered, queued for an automatic re-bake.");
                     return false;
                 }
 

@@ -226,7 +226,11 @@ namespace VerdantsAscent.Patches
 
         private static bool _hasLoggedFirstGrow;
 
-        public static void EnsureGrown(PieceTable table)
+        // scanPieces: also size for every piece's own category even when m_categories is already covered. Only the
+        // UpdateAvailable prefix asks for it (the per-frame GetPiece prefixes would rescan the 5k-piece hammer table): FAT's
+        // Chaos Hammer carries FAP's lent clutter pieces, whose Clutter TAB category its m_categories never lists, and vanilla
+        // then indexed past the lists on every menu refresh (Fire 10-03: "the chaos hammer menu seems completely broken").
+        public static void EnsureGrown(PieceTable table, bool scanPieces = false)
         {
             if (table == null || PieceTableAccess.ByCategory(table) == null) return;
 
@@ -242,7 +246,7 @@ namespace VerdantsAscent.Patches
                 }
             }
 
-            if (PieceTableAccess.ByCategory(table).Count >= needed
+            if (!scanPieces && PieceTableAccess.ByCategory(table).Count >= needed
                 && table.m_selectedPiece != null && table.m_selectedPiece.Length >= needed
                 && table.m_lastSelectedPiece != null && table.m_lastSelectedPiece.Length >= needed)
                 return;
@@ -309,7 +313,7 @@ namespace VerdantsAscent.Patches
     public static class PieceTable_UpdateAvailable_VAGrow_Patch
     {
         [HarmonyPrefix]
-        public static void Prefix(PieceTable __instance) => VAPieceTableGuard.EnsureGrown(__instance);
+        public static void Prefix(PieceTable __instance) => VAPieceTableGuard.EnsureGrown(__instance, scanPieces: true);
 
         // Last of FAP's UpdateAvailable postfixes, so it also prunes what the ordering and
         // favorites pass added, and still ahead of Infinity Hammer's (priority 200) so its menu

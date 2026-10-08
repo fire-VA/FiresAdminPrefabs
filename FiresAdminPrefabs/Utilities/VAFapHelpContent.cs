@@ -81,9 +81,9 @@ namespace VerdantsAscent.Utilities
         private static void BuildMenuOverview(HelpContentWriter w)
         {
             w.Header("Build Menu Overview");
-            w.Paragraph("FAP replaces the hammer's fixed 15x6 icon grid with a scrolling, resizable grid that can " +
-                "show far more than vanilla's 90 icons. The grid, its scrolling, and its click/arrow navigation " +
-                "apply to EVERY build tool — the hammer, the hoe/cultivator, and Infinity Hammer's own menus.");
+            w.Paragraph("FAP makes the build menu movable and resizable, so the grid can show far more icons, and adds " +
+                "right-click menus on pieces and tabs. Scrolling, search and keyboard/gamepad navigation are vanilla's. " +
+                "This applies to EVERY build tool — the hammer, the hoe/cultivator, and Infinity Hammer's own menus.");
             w.Divider();
 
             w.SubHeader("What You Get");
@@ -146,12 +146,8 @@ namespace VerdantsAscent.Utilities
             w.Divider();
 
             w.SubHeader("Navigation");
-            w.Bullet("Mouse wheel scrolls the piece grid — it never flips tabs.");
-            w.Bullet("Q / E (or clicking a tab) switches tabs, exactly like vanilla.");
-            w.Bullet("Arrow keys / gamepad navigate the grid using your ACTUAL column count, not vanilla's 15 — " +
-                "and the grid auto-scrolls to keep the selection visible.");
-            w.Bullet("Opening the menu scrolls to your currently-selected piece rather than dumping you at the top.");
-            w.Bullet("Switching tabs resets the scroll to the top of the new tab.");
+            w.Bullet("Scrolling, search, tab switching (Q / E or clicking a tab) and arrow-key / gamepad movement " +
+                "through the grid are Valheim's own build menu: FAP leaves them as vanilla made them.");
         }
 
         private static void BuildMenuTabs(HelpContentWriter w)
@@ -335,7 +331,7 @@ namespace VerdantsAscent.Utilities
 
             w.SubHeader("Presets");
             w.Bullet("Right-click → 'Presets for <creature>...' lists every preset saved for that creature.");
-            w.Bullet("Picking one QUEUES it for your next placement of that creature — place the stand-in and the " +
+            w.Bullet("Picking one QUEUES it for every placement of that creature until you pick another or 'No preset' — place the stand-in and the " +
                 "spawned creature uses those settings.");
             w.Bullet("Presets are stored in config/data/data_FAP_presets.yaml.");
             w.Divider();
@@ -354,7 +350,7 @@ namespace VerdantsAscent.Utilities
             w.Divider();
 
             w.Bullet("'Configure container (<prefab>)...' opens the loot/content editor.");
-            w.Bullet("'Presets for <prefab>...' lists saved presets; picking one queues it for your next placement.");
+            w.Bullet("'Presets for <prefab>...' lists saved presets; picking one queues it for every placement until you pick another or 'No preset' (the queued one shows a check).");
             w.Bullet("Presets are stored in config/data/data_FAP_chests.yaml.");
             w.Divider();
 

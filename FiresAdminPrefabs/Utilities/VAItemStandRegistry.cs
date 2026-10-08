@@ -90,7 +90,10 @@ namespace VerdantsAscent.Utilities
                     continue;
                 }
 
-                if (itemPrefab.transform.Find("attach") == null) continue;
+                // 1.1.183 (Fire 10-07): any item that can be drawn - its own stand model, or its world model (FAP draws that,
+                // VAItemStandFallbackModel). VanillaFriendly only offers what a vanilla client can draw (VanillaAccepts* below).
+                bool standModel = HasStandModel(itemPrefab);
+                if (!standModel && !VAItemStandFallbackModel.HasWorldModel(itemPrefab)) continue;
 
                 // An inventory icon is what separates a real item from the internal ones that
                 // only exist on a creature's hand — monster weapons, dummy drops. Those have no
@@ -104,8 +107,8 @@ namespace VerdantsAscent.Utilities
                     Prefab = itemPrefab,
                     ItemDrop = drop,
                     Icon = icon,
-                    VanillaAcceptsVertical = StandAccepts(verticalStand, drop.m_itemData),
-                    VanillaAcceptsHorizontal = StandAccepts(horizontalStand, drop.m_itemData),
+                    VanillaAcceptsVertical = standModel && StandAccepts(verticalStand, drop.m_itemData),
+                    VanillaAcceptsHorizontal = standModel && StandAccepts(horizontalStand, drop.m_itemData),
                 });
             }
         }
@@ -133,6 +136,15 @@ namespace VerdantsAscent.Utilities
 
         // Vanilla ItemStand.CanAttach, minus its drop-prefab lookup: that resolves the "attach"
         // child this registry already requires. IsSupported and IsUnsupported are vanilla's own.
+        // 1.1.182 (Fire 10-07: "the corked vial still doesn't show on the stand"): vanilla draws an item on a stand by instantiating
+        // its "attach" child (or that child's "attachobj"). Some items carry an EMPTY attach - BlobVial's is a bare Transform, no
+        // mesh, no children - so the item hangs but nothing is drawn. A stand model = an attach with at least one renderer.
+        public static bool HasStandModel(GameObject itemPrefab)
+        {
+            var attach = itemPrefab != null ? ItemStand.GetAttachPrefab(itemPrefab) : null;
+            return attach != null && ItemStand.GetAttachGameObject(attach).GetComponentsInChildren<Renderer>(true).Length > 0;
+        }
+
         private static bool StandAccepts(ItemStand stand, ItemDrop.ItemData item)
         {
             if (stand == null || item?.m_shared == null) return false;
