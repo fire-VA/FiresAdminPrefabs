@@ -748,7 +748,7 @@ namespace VerdantsAscent.Managers
                 }
 
                 if (Player.m_localPlayer != null)
-                    Player.m_localPlayer.UpdateAvailablePiecesList();
+                    VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAHammerTabOrganizer");
                 VABuildUiCategoryTags.RequestBuildMenuRefresh();
                 return true;
             }

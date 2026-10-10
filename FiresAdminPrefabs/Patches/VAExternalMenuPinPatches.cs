@@ -20,10 +20,15 @@ namespace VerdantsAscent.Patches
     public static class VAExternalMenuPinPatches
     {
         internal static void Pin(PieceTable pieceTable, IList<Piece> resultOut)
-            => VerdantsAscent.Utilities.VAExternalMenuPieces.PinToFront(pieceTable, resultOut);
+        {
+            // 1.1.203: only the Hammer's lists; another tool's (Infinity Hammer's blueprint pages) are left exactly as it built them.
+            if (!HammerCategoryUI.IsOrganizable(pieceTable)) return;
+            VerdantsAscent.Utilities.VAExternalMenuPieces.PinToFront(pieceTable, resultOut);
+        }
 
         internal static void PinWithBrushes(PieceTable pieceTable, IList<Piece> resultOut)
         {
+            if (!HammerCategoryUI.IsOrganizable(pieceTable)) return;   // 1.1.203: not the Hammer: hands off
             Pin(pieceTable, resultOut);
             VerdantsAscent.Utilities.VAAreaClearBrush.PlaceBrushesAfterMenuIcons(resultOut);
         }

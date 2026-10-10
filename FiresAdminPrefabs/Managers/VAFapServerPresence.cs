@@ -86,7 +86,7 @@ namespace VerdantsAscent.Managers
                 Debug.Log($"{VaPieces.PluginName}: client-only - running the deferred InitializeOnce.");
                 VAVanillaPieceManager.InitializeOnce();
             }
-            if (Player.m_localPlayer != null) Player.m_localPlayer.UpdateAvailablePiecesList();
+            if (Player.m_localPlayer != null) VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAFapServerPresence");
             Patches.VABuildUiCategoryTags.RequestBuildMenuRefresh();
         }
 

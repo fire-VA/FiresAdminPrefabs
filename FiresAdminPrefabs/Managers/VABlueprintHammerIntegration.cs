@@ -335,7 +335,7 @@ namespace VerdantsAscent.Managers
             // The scan is frame-budgeted, so with a large Blueprints folder it finishes long after the build
             // menu last rebuilt its available pieces; rebuild once so the new stubs show in the tab.
             if (Player.m_localPlayer != null)
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VABlueprintHammerIntegration");
 
             if ((UnityEngine.Object)VaPieces.Instance != (UnityEngine.Object)null)
             {

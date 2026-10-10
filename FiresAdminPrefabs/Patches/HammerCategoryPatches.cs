@@ -226,7 +226,11 @@ namespace VerdantsAscent.Patches
 
         private static bool _hasLoggedFirstGrow;
 
-        public static void EnsureGrown(PieceTable table)
+        // scanPieces: also size for every piece's own category even when m_categories is already covered. Only the
+        // UpdateAvailable prefix asks for it (the per-frame GetPiece prefixes would rescan the 5k-piece hammer table): FAT's
+        // Chaos Hammer carries FAP's lent clutter pieces, whose Clutter TAB category its m_categories never lists, and vanilla
+        // then indexed past the lists on every menu refresh (Fire 10-03: "the chaos hammer menu seems completely broken").
+        public static void EnsureGrown(PieceTable table, bool scanPieces = false)
         {
             if (table == null || PieceTableAccess.ByCategory(table) == null) return;
 
@@ -242,7 +246,7 @@ namespace VerdantsAscent.Patches
                 }
             }
 
-            if (PieceTableAccess.ByCategory(table).Count >= needed
+            if (!scanPieces && PieceTableAccess.ByCategory(table).Count >= needed
                 && table.m_selectedPiece != null && table.m_selectedPiece.Length >= needed
                 && table.m_lastSelectedPiece != null && table.m_lastSelectedPiece.Length >= needed)
                 return;
@@ -309,7 +313,7 @@ namespace VerdantsAscent.Patches
     public static class PieceTable_UpdateAvailable_VAGrow_Patch
     {
         [HarmonyPrefix]
-        public static void Prefix(PieceTable __instance) => VAPieceTableGuard.EnsureGrown(__instance);
+        public static void Prefix(PieceTable __instance) => VAPieceTableGuard.EnsureGrown(__instance, scanPieces: true);
 
         // Last of FAP's UpdateAvailable postfixes, so it also prunes what the ordering and
         // favorites pass added, and still ahead of Infinity Hammer's (priority 200) so its menu
@@ -322,6 +326,64 @@ namespace VerdantsAscent.Patches
 
     internal static class HammerCategoryUI
     {
+        // 1.1.203 (Fire 10-09, Arbby: Infinity Hammer's blueprint menu froze 5 s / 2 s on open with FAP): FAP asked the player
+        // to rebuild its piece list from many places (config change, tab edits, the menu-open view refresh...). With Infinity
+        // Hammer's own table equipped, every rebuild makes IH re-read EVERY PlanBuild blueprint from disk (Fire's: 218 files,
+        // 76 MB). FAP's rules are for the vanilla Hammer only, so FAP never triggers a rebuild of anyone else's table.
+        // 1.1.205 (Fire 10-09: "the same FAP menu under both hammers"): Infinity Hammer swaps in its own table. On its Builds page
+        // with a tool picked (CurrentMode Builds, a filter set) IH lets vanilla fill that table with the tool's pieces - FAP's
+        // pieces in FAP's categories - so FAP organizes it exactly as on the Hammer (the item-stand merge, hidden empty tabs, the
+        // order). Every other IH page (its blueprint list, binds, objects, its own menu) is IH's: FAP stays out, and never triggers
+        // a rebuild there (the blueprint page re-reads every PlanBuild file per rebuild).
+        private const string IhTableName = "_InfinityHammerPieceTable";
+        private static System.Reflection.PropertyInfo s_ihMode, s_ihFilter;
+        private static bool s_ihLooked;
+        internal static bool IsOrganizable(PieceTable table)
+        {
+            if (table == null) return false;
+            if (IsHammerTable(table)) return true;
+            if (table.name != IhTableName) return false;
+            if (!s_ihLooked)
+            {
+                s_ihLooked = true;
+                var t = AccessTools.TypeByName("InfinityHammer.HammerMenuCommand");
+                s_ihMode = t?.GetProperty("CurrentMode", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                s_ihFilter = t?.GetProperty("CurrentFilter", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                VaPieces.Log?.LogDebug($"[FAP] Infinity Hammer menu state: {(s_ihMode != null && s_ihFilter != null ? "found (HammerMenuCommand.CurrentMode / CurrentFilter)" : "NOT found - FAP leaves IH's table alone")}");
+            }
+            if (s_ihMode == null || s_ihFilter == null) return false;
+            try
+            {
+                return s_ihMode.GetValue(null)?.ToString() == "Builds" && !string.IsNullOrEmpty(s_ihFilter.GetValue(null) as string);
+            }
+            catch { return false; }
+        }
+
+        // 1.1.207: IH's menu state as text, for the build-menu evidence line.
+        internal static string IhStateText()
+        {
+            IsOrganizable(null);
+            if (!s_ihLooked) { var t = AccessTools.TypeByName("InfinityHammer.HammerMenuCommand"); s_ihLooked = true;
+                s_ihMode = t?.GetProperty("CurrentMode", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                s_ihFilter = t?.GetProperty("CurrentFilter", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static); }
+            if (s_ihMode == null) return "ih=(not loaded)";
+            try { return $"ih.mode={s_ihMode.GetValue(null)} ih.filter='{s_ihFilter?.GetValue(null)}'"; }
+            catch (System.Exception ex) { return $"ih=(unreadable: {ex.Message})"; }
+        }
+
+        private static int _skippedRebuilds;
+        internal static void RebuildPieceListIfHammer(Player player, string why)
+        {
+            if (player == null) return;
+            if (!IsOrganizable(player.m_buildPieces))
+            {
+                if (_skippedRebuilds++ == 0)
+                    VaPieces.Log?.LogDebug($"[FAP] piece-list rebuild skipped ({why}): the equipped table '{player.m_buildPieces?.name}' is not the Hammer (FAP leaves other tools' menus alone)");
+                return;
+            }
+            player.UpdateAvailablePiecesList();
+        }
+
         internal static bool IsHammerTable(PieceTable table)
         {
             if (table == null) return false;

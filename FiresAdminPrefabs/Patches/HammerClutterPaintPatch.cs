@@ -74,11 +74,17 @@ namespace VerdantsAscent.Patches
             // its real placement work INSIDE vanilla PlacePiece (via transpiler),
             // so returning false here swallows the whole op and the frozen
             // selection vanishes. Defer to vanilla/IH whenever IH owns placement.
-            if (VAInfinityHammerCompat.IsInfinityHammerActive())
-                return Trace("infinity-hammer-active", piece.gameObject, false);
-
             var ghostGo = piece.gameObject;
             var branch = Classify(ghostGo, out string detail);
+            // 1.1.203 (Arbby: item stands never place with Infinity Hammer): an item-stand stand-in is FAP's own inactive piece,
+            // never an IH selection; deferring it to vanilla instantiated it INACTIVE (invisible). FAP still places that one; every
+            // other placement is IH's.
+            // 1.1.206 (Fire 10-09: FAP monsters didn't place with IH's hammer; "make the mods work together properly"): every FAP
+            // STAND-IN (the clear tools, item stands, monsters / spawners, clutter stand-ins) is FAP's own inactive, non-networked
+            // piece - IH can't copy or place one, deferring it only spawned an invisible inactive clone. FAP places all of them
+            // under either hammer. Real objects (a real clutter prefab, any normal piece, every IH copy / selection) stay IH's.
+            if (VAInfinityHammerCompat.IsInfinityHammerActive() && (branch == PlaceBranch.None || branch == PlaceBranch.ClutterPrefab))
+                return Trace("infinity-hammer-active", ghostGo, false);
 
             switch (branch)
             {
@@ -212,7 +218,10 @@ namespace VerdantsAscent.Patches
                         ? "FELL THROUGH TO VANILLA <-- BUG: a FAP stand-in reached vanilla, which Instantiates it INACTIVE (invisible) and still swings"
                         : "fell through to vanilla (normal for a real build piece)");
 
-                Debug.Log($"{VaPieces.PluginName}: PlacePiece '{name}' -> branch={branch}; {verdict}");
+                // 1.1.203 (Arbby: "3 log lines per placed piece"): a per-placement trace is Debug (Fire's rule: Message-level
+                // defaults); only the real fault - a stand-in reaching vanilla - stays a Warning.
+                if (isFapStandin && !skipVanilla) VaPieces.Log?.LogWarning($"PlacePiece '{name}' -> branch={branch}; {verdict}");
+                else VaPieces.Log?.LogDebug($"PlacePiece '{name}' -> branch={branch}; {verdict}");
             }
             catch { }
             return runVanilla;

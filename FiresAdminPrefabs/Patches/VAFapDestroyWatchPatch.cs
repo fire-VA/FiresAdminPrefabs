@@ -53,7 +53,7 @@ namespace VerdantsAscent.Patches
                 if (__instance == null) return;
                 if (!IsWatched(__instance.gameObject)) return;
                 Vector3 pos = __instance.transform != null ? __instance.transform.position : Vector3.zero;
-                Debug.LogWarning($"{VaPieces.PluginName}: [DestroyWatch] ZNetView.OnDestroy on '{__instance.gameObject.name}' at {pos}\n{Environment.StackTrace}");
+                VaPieces.Log?.LogDebug($"[DestroyWatch] ZNetView.OnDestroy on '{__instance.gameObject.name}' at {pos}");
             }
         }
 
@@ -66,7 +66,7 @@ namespace VerdantsAscent.Patches
                 if (go == null) return;
                 if (!IsWatched(go)) return;
                 Vector3 pos = go.transform != null ? go.transform.position : Vector3.zero;
-                Debug.LogWarning($"{VaPieces.PluginName}: [DestroyWatch] ZNetScene.Destroy('{go.name}') at {pos}\n{Environment.StackTrace}");
+                VaPieces.Log?.LogDebug($"[DestroyWatch] ZNetScene.Destroy('{go.name}') at {pos}");
             }
         }
 
@@ -79,7 +79,7 @@ namespace VerdantsAscent.Patches
                 if (__instance == null) return;
                 if (!IsWatched(__instance.gameObject)) return;
                 Vector3 pos = __instance.transform != null ? __instance.transform.position : Vector3.zero;
-                Debug.LogWarning($"{VaPieces.PluginName}: [DestroyWatch] WearNTear.Destroy on '{__instance.gameObject.name}' at {pos} (health field={__instance.m_health})\n{Environment.StackTrace}");
+                VaPieces.Log?.LogDebug($"[DestroyWatch] WearNTear.Destroy on '{__instance.gameObject.name}' at {pos} (health field={__instance.m_health})");
             }
         }
 
@@ -93,7 +93,7 @@ namespace VerdantsAscent.Patches
                 if (!IsWatched(__instance.gameObject)) return;
                 Vector3 pos = __instance.transform != null ? __instance.transform.position : Vector3.zero;
                 float dmg = hit != null ? hit.GetTotalDamage() : 0f;
-                Debug.LogWarning($"{VaPieces.PluginName}: [DestroyWatch] TreeBase.RPC_Damage on '{__instance.gameObject.name}' at {pos} (total dmg={dmg})\n{Environment.StackTrace}");
+                VaPieces.Log?.LogDebug($"[DestroyWatch] TreeBase.RPC_Damage on '{__instance.gameObject.name}' at {pos} (total dmg={dmg})");
             }
         }
 
@@ -106,7 +106,7 @@ namespace VerdantsAscent.Patches
                 if (__instance == null) return;
                 if (!IsWatched(__instance.gameObject)) return;
                 Vector3 pos = __instance.transform != null ? __instance.transform.position : Vector3.zero;
-                Debug.LogWarning($"{VaPieces.PluginName}: [DestroyWatch] ZNetView.Destroy(self) on '{__instance.gameObject.name}' at {pos}\n{Environment.StackTrace}");
+                VaPieces.Log?.LogDebug($"[DestroyWatch] ZNetView.Destroy(self) on '{__instance.gameObject.name}' at {pos}");
             }
         }
     }

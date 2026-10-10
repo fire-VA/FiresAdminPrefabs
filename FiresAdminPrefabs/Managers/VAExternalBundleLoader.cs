@@ -115,6 +115,8 @@ namespace VerdantsAscent.Managers
             new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, MissingScriptTally> _missingScriptRejectsByBundle =
             new Dictionary<string, MissingScriptTally>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, List<string>> _deadSlotKeepsByBundle =
+            new Dictionary<string, List<string>>(StringComparer.Ordinal);
         private static readonly List<string> _locationPrefabsLeftOut = new List<string>();
 
         // Every clutter prefab this loader has seen in ClutterSystem.m_clutter, kept so entries that
@@ -129,6 +131,7 @@ namespace VerdantsAscent.Managers
         {
             public int Prefabs;
             public int Slots;
+            public readonly List<string> Names = new List<string>();
         }
 
         private sealed class PendingBundle
@@ -644,9 +647,9 @@ namespace VerdantsAscent.Managers
                 if (manifest.version > SupportedManifestSchemaVersion)
                     Debug.LogWarning($"{VaPieces.PluginName}: Manifest '{bundleName}{ManifestFileSuffix}' schema version {manifest.version} is newer than supported ({SupportedManifestSchemaVersion}) — reading best-effort.");
 
-                bool treatAllAsClutter =
-                    bundleName.IndexOf(ClutterCategory, StringComparison.OrdinalIgnoreCase) >= 0
-                    || (ConfigManager.Instance?.IsBundleInClutterAllOf(bundleName) ?? false);
+                // 1.1.199 (Fire 10-09): no whole-bundle clutter any more (bundle name / BundleClutterAllOf); only entries the
+                // manifest marks "clutter", and TryRegisterClutter still requires an InstanceRenderer.
+                bool treatAllAsClutter = false;
 
                 var clutterNames = new List<string>();
                 int prefabsWithAttachments = 0, totalAttachments = 0;
@@ -658,6 +661,7 @@ namespace VerdantsAscent.Managers
                     if (treatAllAsClutter || string.Equals(entry.category, ClutterCategory, StringComparison.OrdinalIgnoreCase))
                         clutterNames.Add(entry.name);
 
+                    AddPortedScriptAttachments(entry);
                     if (entry.scriptAttachments != null && entry.scriptAttachments.Count > 0)
                     {
                         _prefabScriptAttachments[entry.name] = entry.scriptAttachments;
@@ -677,6 +681,41 @@ namespace VerdantsAscent.Managers
             }
         }
 
+        // A manifest lists every component its prefab had when it was scanned. When one of them is a script FAP itself ships
+        // (ExternalScripts\, e.g. Missing Pieces' CustomInteract), the bundle's copy loads as a dead slot (its MonoScript
+        // names the source mod's assembly), and a scan made with that mod installed wrote no scriptAttachments for it, so
+        // the injection rejected the prefab whole (HR3: piece_chest_wooden_drawer). Naming FAP's type here re-attaches it
+        // like any manifest attachment; with the source mod installed the slot is live and the attachment is skipped.
+        private static void AddPortedScriptAttachments(PrefabEntryDto entry)
+        {
+            if (entry.components == null) return;
+            foreach (string componentName in entry.components)
+            {
+                Type ported = PortedScriptType(componentName);
+                if (ported == null) continue;
+                if (entry.scriptAttachments == null) entry.scriptAttachments = new List<ScriptAttachmentDto>();
+                bool listed = false;
+                foreach (var attachment in entry.scriptAttachments)
+                    if (attachment != null && attachment.typeFullName == ported.FullName) listed = true;
+                if (listed) continue;
+                entry.scriptAttachments.Add(new ScriptAttachmentDto
+                {
+                    typeFullName = ported.FullName,
+                    assemblyName = ported.Assembly.GetName().Name,
+                    jsonState = "{}",
+                });
+            }
+        }
+
+        // FAP's stand-ins for other mods' scripts: MonoBehaviours in FAP's assembly declared outside any namespace under the
+        // source mod's class name, which is how the bundles' manifests list them.
+        private static Type PortedScriptType(string componentName)
+        {
+            if (string.IsNullOrEmpty(componentName) || componentName.IndexOf('.') >= 0) return null;
+            Type type = typeof(VAExternalBundleLoader).Assembly.GetType(componentName, throwOnError: false);
+            return type != null && string.IsNullOrEmpty(type.Namespace) && typeof(MonoBehaviour).IsAssignableFrom(type) ? type : null;
+        }
+
         // Manifest JSON shapes, filled by Newtonsoft; only the fields FAP reads are declared.
 #pragma warning disable CS0649
         [Serializable]
@@ -692,6 +731,7 @@ namespace VerdantsAscent.Managers
         {
             public string name;
             public string category;
+            public List<string> components;
             public List<ScriptAttachmentDto> scriptAttachments;
             public List<RendererDescriptorDto> renderers;
         }
@@ -813,6 +853,9 @@ namespace VerdantsAscent.Managers
 
         private static bool TryRegisterClutter(ClutterSystem clutterSystem, string prefabName, GameObject prefab)
         {
+            // 1.1.199: only instanced vegetation goes into ClutterSystem; benches, rugs and paintings from a "clutter" bundle
+            // stay ordinary objects (CreatorShop) instead of being scattered over the world as grass.
+            if (prefab == null || prefab.GetComponentInChildren<InstanceRenderer>(true) == null) return false;
             if (!TryAddClutterEntry(clutterSystem, prefab)) return false;
             _registeredClutterPrefabs[prefabName] = prefab;
             return true;
@@ -916,6 +959,11 @@ namespace VerdantsAscent.Managers
         private static readonly Dictionary<string, GameObject> _placeholders = new Dictionary<string, GameObject>(StringComparer.Ordinal);
         private static readonly Vector3 PlaceholderPark = new Vector3(100000f, 100000f, 100000f);
 
+        // 1.1.194 (Fire 10-08, "a couple of extra buttons in the creator shop"): the stubs are save-data keepers, never
+        // hammer pieces; without this the hammer scan made each one an invisible CreatorShop button.
+        internal static bool IsRemovedPrefabPlaceholder(GameObject prefab)
+            => prefab != null && _placeholders.TryGetValue(prefab.name, out var stub) && stub == prefab;
+
         private static void AddRemovedPrefabPlaceholders(ZNetScene scene)
         {
             string list = Managers.ConfigManager.Instance?.configRemovedPrefabPlaceholders?.Value;
@@ -954,6 +1002,7 @@ namespace VerdantsAscent.Managers
             ResetAttachmentCounters();
 
             _missingScriptRejectsByBundle.Clear();
+            _deadSlotKeepsByBundle.Clear();
             _singletonStripsByBundle.Clear();
             _singletonStripTypes.Clear();
             _effectAreaHealsByBundle.Clear();
@@ -977,7 +1026,7 @@ namespace VerdantsAscent.Managers
             // runtime and vanilla readers call GetType() on it. When the manifest
             // says which MonoBehaviours belonged on this prefab, we can put them
             // back, so the prefab is worth keeping rather than discarding whole.
-            int added = 0, skipped = 0, repipedPastDeadSlots = 0;
+            int added = 0, skipped = 0, repipedPastDeadSlots = 0, readableNames = 0;
             foreach (var prefab in ExternalPrefabs)
             {
                 if (prefab == null) continue;
@@ -992,24 +1041,30 @@ namespace VerdantsAscent.Managers
                 var hierarchy = singleWalk ? s_walkComponents : null;
                 int missingScripts = singleWalk ? WalkHierarchy(prefab) : CountMissingScripts(prefab);
                 walkTicks += Lap(ref mark);
-                if (missingScripts > 0 && !_prefabScriptAttachments.ContainsKey(prefab.name))
+                if (missingScripts > 0)
                 {
-                    RecordMissingScriptReject(prefab, missingScripts);
-                    skipped++;
-                    continue;
+                    if (_prefabScriptAttachments.ContainsKey(prefab.name)) repipedPastDeadSlots++;
+                    else if (KeepsDeadScriptSlots(SourceBundleOf(prefab))) RecordDeadSlotKeep(prefab);
+                    else
+                    {
+                        RecordMissingScriptReject(prefab, missingScripts);
+                        skipped++;
+                        continue;
+                    }
                 }
-                if (missingScripts > 0) repipedPastDeadSlots++;
 
                 StripDangerousSingletonComponents(prefab, hierarchy);
                 singletonTicks += Lap(ref mark);
                 HealColliderlessEffectAreas(prefab, hierarchy);
                 HealPickablesWithMissingItem(prefab, hierarchy);
                 HealPiecesWithMissingRequirementItem(prefab);
+                HealArmorMaterialWithoutBodyTextures(prefab);
                 healTicks += Lap(ref mark);
                 VABundleAssetRouter.Apply(prefab, hierarchy);
                 routerTicks += Lap(ref mark);
                 scene.m_prefabs.Add(prefab);
                 sceneNames.Add(prefab.name);
+                readableNames += VAReadableNames.Apply(prefab);   // before the attachments: CustomInteractWiring copies the container's name
                 ApplyScriptAttachments(prefab);
                 attachmentTicks += Lap(ref mark);
                 VerdantsAscent.Api.FapExternalPrefabs.Raise(prefab);
@@ -1019,6 +1074,9 @@ namespace VerdantsAscent.Managers
             s_walkComponents.Clear();
             s_walkEffectAreas.Clear();
             s_walkPickables.Clear();
+            if (readableNames > 0)
+                Debug.Log($"{VaPieces.PluginName}: VAExternalBundleLoader gave {readableNames} untranslated bundle name(s) a readable one " +
+                          "(their mod's localization isn't loaded, so the game would show \"[key]\").");
 
             Debug.Log($"{VaPieces.PluginName}: VAExternalBundleLoader injected {added} external prefab(s) into ZNetScene.m_prefabs (skipped {skipped} name-collisions, kept {repipedPastDeadSlots} with dead script slots because their manifest names the scripts to re-attach). Vanilla will populate m_namedPrefabs. Category breakdown via VABundleAssetRouter: {VABundleAssetRouter.FormatCategorySummary()}.");
 
@@ -1091,26 +1149,59 @@ namespace VerdantsAscent.Managers
             if (_pickableHealsByBundle.Count > 0)
             {
                 string pickablesByBundle = FormatCountsByBundle(_pickableHealsByBundle, out int totalPickables);
-                Debug.LogWarning($"{VaPieces.PluginName}: VAExternalBundleLoader gave {totalPickables} Pickable(s) an m_overrideName because " +
-                                 $"their m_itemPrefab does not resolve ({pickablesByBundle}). Vanilla Pickable.GetHoverName dereferences that " +
-                                 "field with no null check, so hovering one threw once per frame from Hud.UpdateCrosshair. They are safe to " +
-                                 "look at now but still yield nothing when picked — the bundle's item reference is what needs repairing.");
+                // 1.1.165: a one-time load repair, so Debug; VABundleItemRefRepair gives them their items back and warns only for leftovers.
+                VaPieces.Log?.LogDebug($"VAExternalBundleLoader: {totalPickables} Pickable(s) had no resolvable m_itemPrefab ({pickablesByBundle}): " +
+                                 "hover-guarded now (vanilla GetHoverName has no null check), items restored by name at ZNetScene.Awake.");
             }
 
             if (_requirementHealsByBundle.Count > 0)
             {
                 string piecesByBundle = FormatCountsByBundle(_requirementHealsByBundle, out int totalPieces);
-                Debug.LogWarning($"{VaPieces.PluginName}: VAExternalBundleLoader dropped requirement entries with no item from {totalPieces} piece(s) " +
-                                 $"({piecesByBundle}). Valheim 1.0's build menu and placement read every requirement's item with no null " +
-                                 "check, so one such piece stopped the hammer menu from opening and threw when placed. Every vanilla cost " +
-                                 "check already skipped those entries, so no piece's cost changed — the bundle's item references are what need repairing.");
+                // 1.1.165: a one-time load repair, so Debug; a piece left with no cost gets one by material (VABundleItemRefRepair).
+                VaPieces.Log?.LogDebug($"VAExternalBundleLoader: dropped requirement entries with no item from {totalPieces} piece(s) ({piecesByBundle}); " +
+                                 "Valheim 1.0's build menu reads every requirement's item with no null check. Pieces left with no cost get one by material at ZNetScene.Awake.");
             }
 
             if (_locationPrefabsLeftOut.Count > 0)
                 Debug.Log($"{VaPieces.PluginName}: VAExternalBundleLoader left {_locationPrefabsLeftOut.Count} ZoneSystem location prefab(s) out of ZNetScene [{string.Join(", ", _locationPrefabsLeftOut)}]. A location's children spawn as separate network objects; registered whole, the one-ZNetView-per-prefab normalization strips every child's ZNetView and leaves its spawners throwing.");
 
             foreach (var reject in _missingScriptRejectsByBundle)
+            {
                 VAFapLoadSummary.EmitMissingScripts(reject.Key, reject.Value.Prefabs, reject.Value.Slots);
+                // The box only counts; without the names a rejected piece had to be found by elimination (HR3).
+                Debug.Log($"{VaPieces.PluginName}: '{reject.Key}' prefab(s) rejected for a dead script slot no manifest names: " +
+                          $"{NameList(reject.Value.Names)}. Keep a bundle's anyway with [Compatibility] KeepDeadScriptSlotBundles " +
+                          "only if its slots were already dead when the bundle was built.");
+            }
+            foreach (var keep in _deadSlotKeepsByBundle)
+                Debug.Log($"{VaPieces.PluginName}: kept {keep.Value.Count} '{keep.Key}' prefab(s) with a dead script slot " +
+                          $"(KeepDeadScriptSlotBundles): {NameList(keep.Value)}.");
+        }
+
+        private static string NameList(List<string> names)
+        {
+            const int Shown = 12;
+            if (names.Count <= Shown) return string.Join(", ", names);
+            return string.Join(", ", names.GetRange(0, Shown)) + $" and {names.Count - Shown} more";
+        }
+
+        // [Compatibility] KeepDeadScriptSlotBundles: bundles whose dead script slots were dead when the bundle was built
+        // (a component whose script the author had deleted), so keeping the prefab loses nothing the source mod had.
+        private static bool KeepsDeadScriptSlots(string bundleName)
+        {
+            string list = Managers.ConfigManager.Instance?.configKeepDeadScriptSlotBundles?.Value;
+            if (string.IsNullOrWhiteSpace(list) || string.IsNullOrEmpty(bundleName)) return false;
+            foreach (string raw in list.Split(','))
+                if (string.Equals(raw.Trim(), bundleName, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static void RecordDeadSlotKeep(GameObject prefab)
+        {
+            string bundleName = SourceBundleOf(prefab);
+            if (!_deadSlotKeepsByBundle.TryGetValue(bundleName, out var names))
+                _deadSlotKeepsByBundle[bundleName] = names = new List<string>();
+            names.Add(prefab.name);
         }
 
         private static string FormatCountsByBundle(Dictionary<string, int> countsByBundle, out int total)
@@ -1144,6 +1235,7 @@ namespace VerdantsAscent.Managers
                 _missingScriptRejectsByBundle[bundleName] = tally = new MissingScriptTally();
             tally.Prefabs++;
             tally.Slots += missingScripts;
+            tally.Names.Add(prefab.name);
 
             if (VAFapLoadSummary.VerboseEnabled)
                 Debug.LogWarning($"{VaPieces.PluginName}: bundle prefab '{prefab.name}' from '{bundleName}' has {missingScripts} missing-script MonoBehaviour slot(s) — REJECTED from ZNetScene injection.");
@@ -1298,6 +1390,7 @@ namespace VerdantsAscent.Managers
 
                 pickable.m_overrideName = pickable.gameObject.name;
                 healedNames.Add(pickable.gameObject.name);
+                VABundleItemRefRepair.NotePickable(pickable, prefab.name);   // 1.1.165: its item comes back by name once every item is registered
             }
             if (healedNames.Count == 0) return;
 
@@ -1320,6 +1413,26 @@ namespace VerdantsAscent.Managers
         // placing such a piece throws too. HaveRequirements, ConsumeResources, Piece.DropResources and
         // the requirement panel all skip a null item already, so removing the entry changes no cost.
         // The item is gone from the bundle, so there is nothing to resolve it back to.
+        // 1.1.186 ([generator] 10-07, overnight 7: "Material 'LoxChest' with Shader 'Custom/Creature' doesn't have a texture property
+        // '_ChestTex'" x3): vanilla VisEquipment copies the chest's (or legs') body-underlay textures from the item's m_armorMaterial
+        // whenever it is set (VisEquipment.cs:785-789, 850-854), and GetTexture on a property the shader lacks logs an error for every
+        // wearer. Some external armour carries a creature's material there (arsenalreborn's ArmorLoxChest). Such a material is
+        // cleared: vanilla's own null check then skips the underlay, and the armour mesh still renders.
+        private static readonly HashSet<string> _armorMaterialHealed = new HashSet<string>(StringComparer.Ordinal);
+
+        internal static void HealArmorMaterialWithoutBodyTextures(GameObject prefab)
+        {
+            var shared = prefab.GetComponent<ItemDrop>()?.m_itemData?.m_shared;
+            var mat = shared?.m_armorMaterial;
+            if (mat == null) return;
+            string needs = shared.m_itemType == ItemDrop.ItemData.ItemType.Chest ? "_ChestTex"
+                         : shared.m_itemType == ItemDrop.ItemData.ItemType.Legs ? "_LegsTex" : null;
+            if (needs == null || mat.HasProperty(needs)) return;
+            shared.m_armorMaterial = null;
+            if (_armorMaterialHealed.Add(prefab.name))
+                VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: {prefab.name}: its armour material '{mat.name}' (shader '{(mat.shader != null ? mat.shader.name : "none")}') has no {needs}; cleared, so the body underlay is skipped instead of logging errors (the armour mesh still renders)");
+        }
+
         private static void HealPiecesWithMissingRequirementItem(GameObject prefab)
         {
             var piece = prefab.GetComponent<Piece>();
@@ -1333,6 +1446,7 @@ namespace VerdantsAscent.Managers
 
             piece.m_resources = kept.ToArray();
             string bundleName = SourceBundleOf(prefab);
+            if (kept.Count == 0) VABundleItemRefRepair.NoteEmptyPiece(piece, prefab.name, bundleName);   // 1.1.165: a cost by material, later
             AddToBundleCount(_requirementHealsByBundle, bundleName, 1);
             if (VAFapLoadSummary.VerboseEnabled)
                 Debug.LogWarning($"{VaPieces.PluginName}: HealPiecesWithMissingRequirementItem — '{prefab.name}' ({bundleName}) had {dropped} " +
@@ -1375,7 +1489,8 @@ namespace VerdantsAscent.Managers
 
             string bundleName = SourceBundleOf(prefab);
             AddToBundleCount(_effectAreaHealsByBundle, bundleName, healedDescriptions.Count);
-            Debug.LogWarning($"{VaPieces.PluginName}: HealColliderlessEffectAreas — added trigger SphereCollider to {healedDescriptions.Count} EffectArea marker(s) [{string.Join("; ", healedDescriptions)}] on bundle prefab '{prefab.name}' (source bundle: {bundleName}). Vanilla EffectArea.Awake NREs without a collider; the marker now behaves like a vanilla PlayerBase child.");
+            // 1.1.165: the collider IS the fix (the bundle is third-party and not rebuilt), a one-time load repair: Debug.
+            VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: HealColliderlessEffectAreas — added trigger SphereCollider to {healedDescriptions.Count} EffectArea marker(s) [{string.Join("; ", healedDescriptions)}] on bundle prefab '{prefab.name}' (source bundle: {bundleName}). Vanilla EffectArea.Awake NREs without a collider; the marker now behaves like a vanilla PlayerBase child.");
         }
 
         // Re-attaches the MonoBehaviours the source mod added at runtime, as recorded in the
@@ -1441,6 +1556,7 @@ namespace VerdantsAscent.Managers
                     }
                     s_attachJsonTicks += System.Diagnostics.Stopwatch.GetTimestamp() - jsonStart;
                 }
+                if (!resolved.IsStub && component is CustomInteract customInteract) CustomInteractWiring.Wire(prefab, customInteract);
                 added++;
                 s_attachAdded++;
             }

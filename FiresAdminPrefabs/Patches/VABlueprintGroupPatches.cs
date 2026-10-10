@@ -31,7 +31,7 @@ namespace VerdantsAscent.Patches
                     // Infinity Hammer's ZDO snapshot copies the group id verbatim when
                     // area-selecting over FAP pieces, so an IH copy would self-register
                     // and later be swept by the cascade.
-                    if (VAInfinityHammerCompat.IsInfinityHammerActive()) return;
+                    if (VAInfinityHammerCompat.IsIhCopyPlacing) return;   // 1.1.206: only an IH copy, not an IH-held hammer
 
                     VABlueprintGroupRegistry.Register(groupId, __instance);
                 }

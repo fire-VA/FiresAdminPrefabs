@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using VerdantsAscent.Managers;
@@ -19,6 +20,8 @@ namespace VerdantsAscent.Patches
         {
             var prefabName = piece.gameObject != null ? piece.gameObject.name : null;
             if (string.IsNullOrEmpty(prefabName)) return;
+            // 1.1.203: never on another tool's menu entries (Infinity Hammer's "_IH_Menu_*" blueprint / command pieces).
+            if (prefabName.StartsWith("_IH_Menu_") || !HammerCategoryUI.IsOrganizable(Player.m_localPlayer?.m_buildPieces)) return;
 
             bool isFavorite = VAHammerTabOrganizer.IsFavorite(prefabName);
             var items = new List<VARightClickMenu.Item>
@@ -81,18 +84,17 @@ namespace VerdantsAscent.Patches
             string distLabel = VAFapPieceOverrides.TryGetDistance(prefabName, out currentDistance)
                 ? $"Distance render override... <color=#888>({(int)currentDistance}m)</color>"
                 : "Distance render override...";
-            bool extraArmed = VAExtraDataQueue.ArmedPrefab == prefabName && VAExtraDataQueue.IsArmed;
+            // 1.1.169 (Fire 10-06): "Create data preset" on any prefab, saved presets queued until changed.
+            bool extraArmed = VAExtraDataQueue.IsArmedFor(prefabName);
             items.Add(new VARightClickMenu.Item(
                 extraArmed
-                    ? $"Spawn with extra data... <color=#8f8>({VAExtraDataQueue.Count} field(s) armed)</color>"
-                    : "Spawn with extra data...",
-                () => VAExtraDataUI.Open(prefabName)));
-            if (extraArmed)
-            {
+                    ? $"Create data preset... <color=#8f8>({VAExtraDataQueue.Describe(prefabName)})</color>"
+                    : "Create data preset...",
+                () => VAExtraDataUI.Open(prefabName, null)));
+            if (extraArmed || VADataPresetStore.For(prefabName).Any())
                 items.Add(new VARightClickMenu.Item(
-                    "Clear extra data",
-                    () => VAExtraDataQueue.Clear()));
-            }
+                    $"Data presets for {prefabName}...",
+                    () => OpenDataPresetSubmenu(prefabName)));
 
             items.Add(new VARightClickMenu.Item(
                 distLabel,
@@ -135,6 +137,32 @@ namespace VerdantsAscent.Patches
                 items.Add(new VARightClickMenu.Item(
                     $"Presets for {prefabName}...",
                     () => OpenChestPresetSubmenu(prefabName)));
+            }
+
+            // 1.1.168: item stands get the same affordances (an item hung at placement, optionally decorative).
+            if (piece.GetComponent<ItemStand>() != null)
+            {
+                items.Add(new VARightClickMenu.Item(
+                    $"Configure item stand ({prefabName})...",
+                    () => VAItemStandConfigUI.Open(prefabName, null)));
+                items.Add(new VARightClickMenu.Item(
+                    $"Item stand presets for {prefabName}...",
+                    () => OpenStandPresetSubmenu(prefabName)));
+            }
+            // 1.1.176 (Fire 10-06): the Item Stands (H)/(V) tab entries are standins (a Piece and copied meshes, no ItemStand),
+            // so the check above never matched them. They resolve to their item and the real stand; a preset made here is for
+            // that stand (it applies to standin placements too: they place the real stand through SetCreator).
+            else if (VAItemStandStandinFactory.TryResolve(piece.gameObject, out string standItem, out var standOrientation))
+            {
+                string standPrefab = standOrientation == VAItemStandStandinFactory.Orientation.Horizontal
+                    ? VAItemStandStandinFactory.VanillaHorizontalPrefabName : VAItemStandStandinFactory.VanillaVerticalPrefabName;
+                string armPiece = prefabName;
+                items.Add(new VARightClickMenu.Item(
+                    $"Create item stand preset ({standItem})...",
+                    () => VAItemStandConfigUI.Open(standPrefab, null, standItem, armPiece)));
+                items.Add(new VARightClickMenu.Item(
+                    $"Item stand presets for {standPrefab}...",
+                    () => OpenStandPresetSubmenu(standPrefab, standItem, armPiece)));
             }
 
             // Clutter affordances when the piece is a clutter standin or a raw
@@ -208,6 +236,22 @@ namespace VerdantsAscent.Patches
                 hiddenLabel,
                 () => OpenRestoreHiddenSubmenu(),
                 disabled: hiddenCount == 0));
+
+            // 1.1.200: other mods' entries (VerdantsAscent.Api.FapPieceMenu), e.g. FDM's presets.
+            var external = VerdantsAscent.Api.FapPieceMenu.Collect(piece);
+            if (external.Count > 0)
+            {
+                items.Add(new VARightClickMenu.Item("──────────", null, disabled: true));
+                foreach (var e in external)
+                {
+                    var click = e.Value;
+                    items.Add(new VARightClickMenu.Item(e.Key, click == null ? (Action)null : () =>
+                    {
+                        try { click(); }
+                        catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: right-click entry '{e.Key}' threw: {ex.Message}"); }
+                    }, disabled: click == null));
+                }
+            }
 
             VARightClickMenu.Show(items);
         }
@@ -341,6 +385,66 @@ namespace VerdantsAscent.Patches
             VARightClickMenu.Show(items);
         }
 
+        private static void OpenDataPresetSubmenu(string prefabName)
+        {
+            var items = new List<VARightClickMenu.Item>();
+            string queued = VAExtraDataQueue.PresetFor(prefabName);
+            if (VAExtraDataQueue.IsArmedFor(prefabName))
+                items.Add(new VARightClickMenu.Item("✕ No data preset (plain placements)", () =>
+                {
+                    VAExtraDataQueue.Clear(prefabName);
+                    ShowToast($"No data preset: the next {prefabName} placements are plain");
+                }));
+            foreach (var p in VADataPresetStore.For(prefabName))
+            {
+                string captured = p.name;
+                string label = (p.name == queued ? "✔ " : "→ ") + p.name + $"   <color=#999>({p.Values.Count} field(s))</color>"
+                               + (p.name == queued ? "   <color=#8f8>(queued)</color>" : "");
+                items.Add(new VARightClickMenu.Item(label, () =>
+                {
+                    VADataPresetStore.TryGet(captured, out var preset);
+                    string problem = preset != null ? VADataPresetStore.Arm(preset) : "the preset is gone";
+                    if (problem != null) { ShowToast($"Data preset '{captured}' not queued: {problem}"); return; }
+                    ShowToast($"Queued data preset '{captured}' for every {prefabName} placement (until changed)");
+                    VAHammerArmHelper.ArmAndClose(prefabName);
+                }));
+            }
+            items.Add(new VARightClickMenu.Item("──────────", null, disabled: true));
+            items.Add(new VARightClickMenu.Item("Edit / Create new...", () => VAExtraDataUI.Open(prefabName, queued)));
+            VARightClickMenu.Show(items);
+        }
+
+        private static void OpenStandPresetSubmenu(string standPrefabName, string prefillItem = null, string armPiece = null)
+        {
+            var matching = VAItemStandPresetStore.All.Values.Where(p => p != null && p.StandPrefab == standPrefabName).OrderBy(p => p.name, StringComparer.Ordinal).ToList();
+            var items = new List<VARightClickMenu.Item>();
+            VAItemStandQueue.TryGetQueuedPresetName(standPrefabName, out string queued);
+            if (!string.IsNullOrEmpty(queued))
+                items.Add(new VARightClickMenu.Item("✕ No preset (plain item stand)", () =>
+                {
+                    VAItemStandQueue.Clear(standPrefabName);
+                    ShowToast($"No preset: the next {standPrefabName} placements are plain");
+                }));
+            foreach (var p in matching)
+            {
+                string captured = p.name;
+                string label = (p.name == queued ? "✔ " : "→ ") + p.name + $"   <color=#999>({p.Item}{(p.NoInteract ? ", decorative" : "")})</color>"
+                               + (p.name == queued ? "   <color=#8f8>(queued)</color>" : "");
+                items.Add(new VARightClickMenu.Item(label, () =>
+                {
+                    VAItemStandQueue.Enqueue(standPrefabName, captured);
+                    ShowToast($"Queued item stand preset '{captured}' for every {standPrefabName} placement (until changed)");
+                    VAHammerArmHelper.ArmAndClose(standPrefabName);
+                }));
+            }
+            if (matching.Count > 0) items.Add(new VARightClickMenu.Item("──────────", null, disabled: true));
+            // 1.1.177 (Fire 10-07): from an Item Stands tab entry, "Create new" starts with that entry's item (a blank form, not the queued preset).
+            if (!string.IsNullOrEmpty(prefillItem))
+                items.Add(new VARightClickMenu.Item($"Create new ({prefillItem})...", () => VAItemStandConfigUI.Open(standPrefabName, null, prefillItem, armPiece)));
+            items.Add(new VARightClickMenu.Item(matching.Count == 0 && string.IsNullOrEmpty(prefillItem) ? "Create new..." : "Edit / Create new...", () => VAItemStandConfigUI.Open(standPrefabName, queued, prefillItem, armPiece)));
+            VARightClickMenu.Show(items);
+        }
+
         private static void OpenChestPresetSubmenu(string containerPrefabName)
         {
             var matching = new List<VAChestPreset>();
@@ -362,10 +466,18 @@ namespace VerdantsAscent.Patches
             else
             {
                 matching.Sort((a, b) => string.Compare(a.name, b.name, StringComparison.Ordinal));
+                // 1.1.167: the queued preset stays on the hammer for every placement until changed here.
+                VAChestConfigQueue.TryGetQueuedPresetName(containerPrefabName, out string queuedChest);
+                if (!string.IsNullOrEmpty(queuedChest))
+                    items.Add(new VARightClickMenu.Item("✕ No preset (plain container)", () =>
+                    {
+                        VAChestConfigQueue.Clear(containerPrefabName);
+                        ShowToast($"No preset: the next {containerPrefabName} placements are plain");
+                    }));
                 foreach (var chestPreset in matching)
                 {
                     string captured = chestPreset.name;
-                    string display = "→ " + chestPreset.name;
+                    string display = (chestPreset.name == queuedChest ? "✔ " : "→ ") + chestPreset.name + (chestPreset.name == queuedChest ? "   <color=#8f8>(queued)</color>" : "");
                     items.Add(new VARightClickMenu.Item(display, () =>
                     {
                         VAChestConfigQueue.EnqueueForNextPlacement(containerPrefabName, captured);
@@ -408,11 +520,21 @@ namespace VerdantsAscent.Patches
                 return;
             }
 
+            // 1.1.167: the queued preset stays on the hammer for every placement until changed here.
+            VAMonsterConfigQueue.TryGetQueuedPresetName(creatureName, out string queuedMonster);
+            if (!string.IsNullOrEmpty(queuedMonster))
+                items.Add(new VARightClickMenu.Item("✕ No preset (plain creature)", () =>
+                {
+                    VAMonsterConfigQueue.Clear(creatureName);
+                    ShowToast($"No preset: the next {creatureName} placements are plain");
+                }));
             foreach (var preset in matching)
             {
                 string capturedName = preset.name;
+                string label = BuildPresetMenuLabel(preset);
+                if (preset.name == queuedMonster) label = "✔" + label.Substring(1) + "   <color=#8f8>(queued)</color>";
                 items.Add(new VARightClickMenu.Item(
-                    BuildPresetMenuLabel(preset),
+                    label,
                     () => QueuePresetForPlacement(creatureName, capturedName)));
             }
 
@@ -444,7 +566,7 @@ namespace VerdantsAscent.Patches
         private static void QueuePresetForPlacement(string creatureName, string presetName)
         {
             VAMonsterConfigQueue.EnqueueForNextPlacement(creatureName, presetName);
-            ShowToast($"Queued preset '{presetName}' for next {creatureName} placement");
+            ShowToast($"Queued preset '{presetName}' for every {creatureName} placement (until changed)");
         }
 
         // Distance presets the user picks from; the 0m entry clears the override
@@ -534,7 +656,7 @@ namespace VerdantsAscent.Patches
             ShowToast(nowFavorite
                 ? $"★ Added '{prefabName}' to Favorites"
                 : $"Removed '{prefabName}' from Favorites");
-            try { Player.m_localPlayer?.UpdateAvailablePiecesList(); } catch { }
+            try { VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAHammerRightClickPatches"); } catch { }
         }
 
         private static void OpenMoveSubmenu(string prefabName)
@@ -651,7 +773,7 @@ namespace VerdantsAscent.Patches
         internal static void ShowTagMenu(int tagId)
         {
             var player = Player.m_localPlayer;
-            if (player == null || !HammerCategoryUI.IsHammerTable(player.GetBuildTool())) return;
+            if (player == null || !HammerCategoryUI.IsOrganizable(player.GetBuildTool())) return;
 
             if (VABuildUiCategoryTags.TryGetTabName(tagId, out var tabName))
                 ShowUserTabMenu(tabName);
@@ -686,7 +808,28 @@ namespace VerdantsAscent.Patches
             };
             AddVanillaOnlyToggle(items);
             AddEwpPersistenceToggle(items, tabName);
+            AddStandOrientationChoice(items, tabName);
             VARightClickMenu.Show(items);
+        }
+
+        // 1.1.197 (Arbby via Fire): pick the item-stand orientation from the Item Stands tab, live.
+        private static void AddStandOrientationChoice(List<VARightClickMenu.Item> items, string tabName)
+        {
+            if (!string.Equals(tabName, VACategoryRegistry.CatItemStandsV, StringComparison.Ordinal)
+                && !string.Equals(tabName, VACategoryRegistry.CatItemStandsH, StringComparison.Ordinal)) return;
+            var entry = ConfigManager.Instance?.configItemStandOrientation;
+            if (entry == null) return;
+            items.Add(new VARightClickMenu.Item("──────────", null, disabled: true));
+            foreach (var mode in new[] { "Horizontal", "Vertical", "Both" })
+            {
+                string capture = mode;
+                bool on = string.Equals(entry.Value, mode, StringComparison.OrdinalIgnoreCase);
+                items.Add(new VARightClickMenu.Item((on ? "✓ " : "    ") + "Item stands: " + mode, () =>
+                {
+                    entry.Value = capture;   // SettingChanged swaps the stand-ins live
+                    ShowToast("Item stands: " + capture);
+                }));
+            }
         }
 
         // Vanilla-only is a server-synced setting, so it is offered to admins only — a player
@@ -1082,6 +1225,51 @@ namespace VerdantsAscent.Patches
                 bakeable.Add((cacheKey, blueprint));
             }
             return bakeable;
+        }
+
+        // 1.1.165: bakes on disk in an older format are re-baked once, automatically, the first time a client spawns (the
+        // same per-blueprint path as fap_rebake_all; the new bundle is used from the next launch, as with fap_rebake_all).
+        // A dedicated server has no graphics device, so it only keeps them queued.
+        private static bool s_staleRebakeStarted;
+
+        [HarmonyLib.HarmonyPatch(typeof(Player), nameof(Player.OnSpawned))]
+        public static class Player_OnSpawned_RebakeStale_Patch
+        {
+            [HarmonyLib.HarmonyPostfix]
+            public static void Postfix(Player __instance)
+            {
+                if (s_staleRebakeStarted || __instance != Player.m_localPlayer || Utilities.VABakeBundle.StaleBakes.Count == 0) return;
+                if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null || VaPieces.Instance == null) return;
+                s_staleRebakeStarted = true;
+                VaPieces.Instance.StartCoroutine(RebakeStaleCoroutine());
+            }
+        }
+
+        private static System.Collections.IEnumerator RebakeStaleCoroutine()
+        {
+            yield return new WaitForSeconds(10f);   // let the world settle first
+            var stale = CollectBakeableBlueprints(out _).Where(b => Utilities.VABakeBundle.StaleBakes.Contains(b.CacheKey)).ToList();
+            if (stale.Count == 0)
+            {
+                VaPieces.Log?.LogDebug($"[Rebake] {Utilities.VABakeBundle.StaleBakes.Count} old-format bake(s) have no registered blueprint to re-bake from: {string.Join(", ", Utilities.VABakeBundle.StaleBakes)}");
+                yield break;
+            }
+            if (IsBelowDiskFloor(Utilities.VABakeBundle.FreeBytesForBundles()))
+            {
+                EmitRebakeNote($"{stale.Count} old-format bake(s) not re-baked: too little free disk space.", isWarning: true);
+                yield break;
+            }
+            int ok = 0;
+            foreach (var (cacheKey, blueprint) in stale)
+            {
+                VAFapBlueprintBakeCache.Remove(cacheKey);
+                Utilities.VABakeBundle.Unpublish(cacheKey);
+                yield return VaPieces.Instance.StartCoroutine(PreBakeCoroutine(cacheKey, blueprint));
+                if (VAFapBlueprintBakeCache.Has(cacheKey)) { ok++; Utilities.VABakeBundle.StaleBakes.Remove(cacheKey); }
+            }
+            yield return VaPieces.Instance.StartCoroutine(WaitForPendingBundleWrites("Re-bake of old bakes"));
+            VaPieces.Log?.LogDebug($"[Rebake] re-baked {ok} of {stale.Count} old-format bake(s) automatically ({string.Join(", ", stale.Select(s => s.CacheKey))}); they load from the next launch");
+            if (ok < stale.Count) EmitRebakeNote($"{stale.Count - ok} old-format bake(s) failed to re-bake: {string.Join(", ", Utilities.VABakeBundle.StaleBakes)}", isWarning: true);
         }
 
         // Publish writes bundles on worker threads, and a restart mid-write leaves a .tmp that

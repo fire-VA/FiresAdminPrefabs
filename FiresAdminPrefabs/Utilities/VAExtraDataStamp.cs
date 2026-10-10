@@ -64,14 +64,13 @@ namespace VerdantsAscent.Utilities
         /// <summary>The placer's own copy already exists by the time the ZDO is written, so the loader has missed
         /// it. Setting the values on the PREFAB for the duration of one PlacePiece makes the placed copy start
         /// life with them; the returned scope puts the prefab back.</summary>
-        public static IDisposable BeginPrefabSwap()
+        public static IDisposable BeginPrefabSwap(string prefabName)
         {
-            if (!VAExtraDataQueue.IsArmed) return null;
+            if (!VAExtraDataQueue.TryGetFor(prefabName, out List<VAExtraValue> values)) return null;
             GameObject prefab = ZNetScene.instance != null
-                ? ZNetScene.instance.GetPrefab(VAExtraDataQueue.ArmedPrefab)
+                ? ZNetScene.instance.GetPrefab(prefabName)
                 : null;
             if (prefab == null) return null;
-            if (!VAExtraDataQueue.TryGetFor(VAExtraDataQueue.ArmedPrefab, out List<VAExtraValue> values)) return null;
 
             return new PrefabFieldSwap(prefab, values);
         }

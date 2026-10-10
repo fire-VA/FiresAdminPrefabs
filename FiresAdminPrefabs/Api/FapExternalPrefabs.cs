@@ -14,6 +14,12 @@ namespace VerdantsAscent.Api
     {
         public static event Action<GameObject> Registered;
 
+        // The bundle a prefab came from (its file name in config\FiresAdminPrefabs\Assets), or null when FAP did not load
+        // it from a bundle. For other mods' own lines (EBM names the bundle when it leaves a prefab unbatched); FAP is
+        // optional to them, so they read this by reflection.
+        public static string SourceBundleOf(string prefabName) =>
+            Managers.VAExternalBundleLoader.TryGetSourceBundle(prefabName, out string bundle) && !string.IsNullOrEmpty(bundle) ? bundle : null;
+
         internal static void Raise(GameObject prefab)
         {
             var handlers = Registered;

@@ -275,7 +275,62 @@ namespace VerdantsAscent.Sync
             {
                 try { VAFapThreadLog.Info($"[FAP Sync] Compression warmed off the main thread in {VAFapSyncChunker.WarmCompression():F0} ms."); }
                 catch (Exception ex) { VAFapThreadLog.Warning($"[FAP Sync] Compression warm-up failed: {ex.Message}"); }
+                try { VAFapThreadLog.Info($"[FAP Sync] Join path compiled ahead off the main thread: {PrepareJoinPath()} method(s)."); }
+                catch (Exception ex) { VAFapThreadLog.Warning($"[FAP Sync] Join path compile-ahead failed: {ex.Message}"); }
             });
+
+            // The first join's manifest is reassembled on the main thread, so that part is warmed here, on it, while nobody
+            // has joined yet (HR2: 866 ms blocked in OnClientManifest at the first join; see WarmReassembly).
+            try { Debug.Log($"[FAP Sync] Join path warmed on the main thread: reassembly {VAFapSyncChunker.WarmReassembly():F0} ms."); }
+            catch (Exception ex) { Debug.LogWarning($"[FAP Sync] Join path warm-up failed: {ex.Message}"); }
+        }
+
+        // A rebuild after an admin push, off the main thread like the startup build. A client that joins meanwhile is
+        // still answered from the previous manifest; the swap is one assignment under the lock.
+        private static IEnumerator Server_RebuildManifestCoroutine(string why)
+        {
+            float startTime = Time.realtimeSinceStartup;
+            VAFapSyncManifest.Manifest manifest = null;
+            Exception buildError = null;
+            yield return VAFapSyncManifest.BuildLocalManifestAsync((built, error) =>
+            {
+                manifest = built;
+                buildError = error;
+            });
+            if (buildError != null || manifest == null)
+            {
+                Debug.LogWarning($"[FAP Sync] Server manifest rebuild after {why} failed: {buildError?.Message ?? "no manifest produced"}; "
+                    + "joining clients keep getting the previous one until a restart.");
+                yield break;
+            }
+            lock (_serverManifestLock) _serverManifest = manifest;
+            VaPieces.Log?.LogDebug($"[FAP Sync] Server manifest rebuilt after {why}: {manifest.Entries.Count} file(s) in "
+                + $"{(Time.realtimeSinceStartup - startTime):F1}s.");
+        }
+
+        // Mono compiles a method on its first call. These run on the main thread at a join (the RPC handlers' lambdas, this
+        // class's manifest coroutine and its state machine, the chunker), so compile them ahead on a worker; the code is
+        // process-wide, so the main thread then finds it ready.
+        private static int PrepareJoinPath()
+        {
+            const BindingFlags All = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            int prepared = 0;
+            foreach (var owner in new[] { typeof(VAFapAssetSync), typeof(VAFapSyncRpcs), typeof(VAFapSyncChunker) })
+            {
+                var types = new List<Type> { owner };
+                types.AddRange(owner.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic));
+                foreach (var type in types)
+                {
+                    if (type.ContainsGenericParameters) continue;
+                    foreach (var method in type.GetMethods(All))
+                    {
+                        if (method.IsAbstract || method.ContainsGenericParameters) continue;
+                        try { System.Runtime.CompilerServices.RuntimeHelpers.PrepareMethod(method.MethodHandle); prepared++; }
+                        catch { }
+                    }
+                }
+            }
+            return prepared;
         }
 
         // A client that connects inside ZoneSystem.Start can beat the deferred
@@ -1630,12 +1685,15 @@ namespace VerdantsAscent.Sync
             _pendingBakedWrites = 0;
             if (bakedWrites > 0)
             {
-                // Without this the next client would diff against the pre-push hash
-                // snapshot and never download the new bundle.
-                VAFapSyncManifest.InvalidateCache();
+                // The join manifest built at startup still describes the old files, so joining clients were offered a
+                // re-pushed bundle under its OLD hash and threw the download away as a mismatch until a server restart
+                // (1.1.191). Rebuild it. Deleting the hash cache here did not help (the manifest object was never
+                // rebuilt) and only forced a full re-hash later; the cache already re-hashes any file whose size or
+                // modification time changed, which every pushed file has.
+                _host.StartCoroutine(Server_RebuildManifestCoroutine($"admin {sender}'s push of {bakedWrites} baked file(s)"));
                 string bakedNote = $"{bakedWrites} baked file(s) stored — clients pull them on connect, "
                     + "the server registers the piece on its next world load";
-                Debug.Log($"[FAP Push] {bakedNote}. Sync manifest cache invalidated.");
+                Debug.Log($"[FAP Push] {bakedNote}. Sync manifest rebuilding.");
                 if (bakedWrites == count)
                 {
                     _host.StartCoroutine(Server_AckCoroutine(sender, true, bakedNote));

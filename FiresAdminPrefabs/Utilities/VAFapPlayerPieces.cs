@@ -208,6 +208,32 @@ namespace VerdantsAscent.Utilities
             _warnedThisSession.Clear();
         }
 
+        // Core's ConfigSync builds every sync's join package in its own ZNet.Awake postfix, and this list was only read at
+        // world load, after the bakes register, so the first join rebuilt FAP's package in its frame ("[ConfigSync] first
+        // join after world load: ... rebuilt (a value changed after load): com.Fire.adminprefabs", [generator] R26). The
+        // server now publishes the file's text here, ahead of Core's postfix. ReloadFromDisk sets the same text at world load,
+        // which the synced value ignores as unchanged, and still applies it to the templates; clients apply only after bake.
+        [HarmonyPatch(typeof(ZNet), "Awake")]
+        private static class ZNet_Awake_PublishPlayerPiecesEarly_Patch
+        {
+            [HarmonyPriority(Priority.High)]
+            [HarmonyPostfix]
+            public static void Postfix(ZNet __instance)
+            {
+                if (__instance == null || !__instance.IsServer() || _syncedYaml == null) return;
+                try
+                {
+                    EnsureTemplateFile();
+                    string yaml = File.Exists(FilePath) ? File.ReadAllText(FilePath) : string.Empty;
+                    if (TryParse(yaml, out _, out _)) _syncedYaml.Value = yaml;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"{VaPieces.PluginName}: {FileName} could not be published at server start: {ex.Message}");
+                }
+            }
+        }
+
         [HarmonyPatch(typeof(ZNet), "OnDestroy")]
         private static class ZNet_OnDestroy_EndPlayerPiecesSession_Patch
         {
@@ -477,7 +503,7 @@ namespace VerdantsAscent.Utilities
         {
             if (VaPieces.IsDedicatedServer) return;
             var player = Player.m_localPlayer;
-            if (player != null) player.UpdateAvailablePiecesList();
+            if (player != null) VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(player, "VAFapPlayerPieces");
             Patches.VABuildUiCategoryTags.RequestBuildMenuRefresh();
         }
 

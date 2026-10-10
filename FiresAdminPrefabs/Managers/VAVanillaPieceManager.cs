@@ -273,6 +273,8 @@ namespace VerdantsAscent.Managers
         // Returns true when the prefab was newly added to the PieceTable.
         private static bool ProcessEligibleForHammer(GameObject prefab, PieceTable pieceTable, out bool injectedFreshPiece)
         {
+            injectedFreshPiece = false;
+            if (VAExternalBundleLoader.IsRemovedPrefabPlaceholder(prefab)) return false;
             _eligibleByName[prefab.name] = prefab;
             injectedFreshPiece = EnsurePieceComponent(prefab);
             EnsurePersistentZNetView(prefab);
@@ -446,7 +448,7 @@ namespace VerdantsAscent.Managers
                     + "(RegisterPiecesForNonAdmins). They stay out of the build menu; other mods can still treat them as build pieces.");
                 try
                 {
-                    if (Player.m_localPlayer != null) Player.m_localPlayer.UpdateAvailablePiecesList();
+                    if (Player.m_localPlayer != null) VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
                 }
                 catch (Exception ex)
                 {
@@ -549,7 +551,7 @@ namespace VerdantsAscent.Managers
             try
             {
                 if (Player.m_localPlayer != null)
-                    Player.m_localPlayer.UpdateAvailablePiecesList();
+                    VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
             }
             catch (Exception ex)
             {
@@ -583,9 +585,11 @@ namespace VerdantsAscent.Managers
             // the enumerator across our yield windows.
             var entries = VAItemStandRegistry.All.ToList();
 
+            bool showV = ShowStandOrientation(VAItemStandStandinFactory.Orientation.Vertical);
+            bool showH = ShowStandOrientation(VAItemStandStandinFactory.Orientation.Horizontal);
             foreach (var entry in entries)
             {
-                if (!vanillaOnly || entry.VanillaAcceptsVertical)
+                if (showV && (!vanillaOnly || entry.VanillaAcceptsVertical))
                 {
                     var verticalStandin = VAItemStandStandinFactory.GetOrCreate(
                         entry, VAItemStandStandinFactory.Orientation.Vertical, verticalCat);
@@ -595,7 +599,7 @@ namespace VerdantsAscent.Managers
                         verticalAdded++;
                     }
                 }
-                if (horizontalRegistered && (!vanillaOnly || entry.VanillaAcceptsHorizontal))
+                if (showH && horizontalRegistered && (!vanillaOnly || entry.VanillaAcceptsHorizontal))
                 {
                     var horizontalStandin = VAItemStandStandinFactory.GetOrCreate(
                         entry, VAItemStandStandinFactory.Orientation.Horizontal, horizontalCat);
@@ -729,6 +733,42 @@ namespace VerdantsAscent.Managers
         // two per item (vertical + horizontal). Separate cache resolves per
         // orientation so a missing vanilla horizontal prefab on an old install
         // doesn't block the vertical tab.
+        // 1.1.197 (Arbby via Fire): [ItemStands] StandOrientation = Horizontal | Vertical | Both.
+        internal static bool ShowStandOrientation(VAItemStandStandinFactory.Orientation orientation)
+        {
+            string mode = ConfigManager.Instance?.configItemStandOrientation?.Value ?? "Horizontal";
+            if (string.Equals(mode, "Both", StringComparison.OrdinalIgnoreCase)) return true;
+            return orientation == VAItemStandStandinFactory.Orientation.Vertical
+                ? string.Equals(mode, "Vertical", StringComparison.OrdinalIgnoreCase)
+                : !string.Equals(mode, "Vertical", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Live swap (config change or the Item Stands tab's right-click menu): drop the hidden orientation's stand-ins from
+        // the hammer, add the shown one's, re-sync the tabs and repaint the menu, without closing the hammer.
+        public static void ApplyItemStandOrientation()
+        {
+            try
+            {
+                var table = GetHammerPieceTable();
+                if (table == null) return;
+                int removed = 0;
+                foreach (var kv in VAItemStandStandinFactory.AllStandins)
+                {
+                    if (kv.Value == null || !VAItemStandStandinFactory.TryResolve(kv.Value, out _, out var o)) continue;
+                    if (!ShowStandOrientation(o) && table.m_pieces.Remove(kv.Value)) removed++;
+                }
+                int before = table.m_pieces.Count;
+                RegisterItemStandsAsStandins(table);
+                VACategoryRegistry.SyncCategories(table);
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
+                VaPieces.Log?.LogDebug($"[FAP] item stand orientation = {ConfigManager.Instance.configItemStandOrientation.Value}: {removed} stand-in(s) removed, {table.m_pieces.Count - before} added");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"{VaPieces.PluginName}: item stand orientation swap failed: {ex.Message}");
+            }
+        }
+
         private static void RegisterItemStandsAsStandins(PieceTable pieceTable)
         {
             if (pieceTable == null) return;
@@ -738,17 +778,20 @@ namespace VerdantsAscent.Managers
 
             int verticalAdded = 0;
             int horizontalAdded = 0;
+            bool showV = ShowStandOrientation(VAItemStandStandinFactory.Orientation.Vertical);
+            bool showH = ShowStandOrientation(VAItemStandStandinFactory.Orientation.Horizontal);
+            bool vanillaOnly = ConfigManager.Instance.configVanillaFriendly.Value;
             foreach (var entry in VAItemStandRegistry.All)
             {
-                var verticalStandin = VAItemStandStandinFactory.GetOrCreate(
-                    entry, VAItemStandStandinFactory.Orientation.Vertical, verticalCat);
+                var verticalStandin = showV && (!vanillaOnly || entry.VanillaAcceptsVertical) ? VAItemStandStandinFactory.GetOrCreate(
+                    entry, VAItemStandStandinFactory.Orientation.Vertical, verticalCat) : null;
                 if (verticalStandin != null && !pieceTable.m_pieces.Contains(verticalStandin))
                 {
                     pieceTable.m_pieces.Add(verticalStandin);
                     verticalAdded++;
                 }
-                var horizontalStandin = VAItemStandStandinFactory.GetOrCreate(
-                    entry, VAItemStandStandinFactory.Orientation.Horizontal, horizontalCat);
+                var horizontalStandin = showH && (!vanillaOnly || entry.VanillaAcceptsHorizontal) ? VAItemStandStandinFactory.GetOrCreate(
+                    entry, VAItemStandStandinFactory.Orientation.Horizontal, horizontalCat) : null;
                 if (horizontalStandin != null && !pieceTable.m_pieces.Contains(horizontalStandin))
                 {
                     pieceTable.m_pieces.Add(horizontalStandin);
@@ -777,7 +820,7 @@ namespace VerdantsAscent.Managers
                 (UnityEngine.Object)go != (UnityEngine.Object)null
                 && string.Equals(go.name, prefabName, StringComparison.Ordinal));
             if (removed > 0 && Player.m_localPlayer != null)
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
             return removed;
         }
 
@@ -812,7 +855,7 @@ namespace VerdantsAscent.Managers
             }
             if (matched > 0 && Player.m_localPlayer != null)
             {
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
                 VABuildUiCategoryTags.RequestBuildMenuRefresh();
             }
             return matched;
@@ -833,7 +876,7 @@ namespace VerdantsAscent.Managers
             if (added > 0)
             {
                 if (Player.m_localPlayer != null)
-                    Player.m_localPlayer.UpdateAvailablePiecesList();
+                    VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
                 if (ConfigManager.Instance.configVerboseLogging.Value)
                     Debug.Log($"{VaPieces.PluginName}: RefreshClutterStandins added {added} late-arriving clutter stand-in(s).");
             }
@@ -949,7 +992,7 @@ namespace VerdantsAscent.Managers
             // last saw changed, and a setting that only re-buckets or hides pieces can leave that
             // count identical â€” so the recorded count is cleared as well.
             if (Player.m_localPlayer != null)
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
             Patches.VABuildUiCategoryTags.RequestBuildMenuRefresh();
             if (moved > 0 && ConfigManager.Instance.configVerboseLogging.Value)
                 Debug.Log($"{VaPieces.PluginName}: RecategorizeEligiblePieces moved {moved} pieces between tabs after config toggle.");
@@ -1076,6 +1119,9 @@ namespace VerdantsAscent.Managers
             // Ignore gate â€” checked early so we don't waste the rest
             // of the filter on a prefab the user has explicitly hidden.
             if (VAHammerTabOrganizer.IsIgnored(prefab.name)) return false;
+
+            // RemovedPrefabPlaceholders stubs (the removed castle tower) keep old saves loading; they are not pieces.
+            if (VAExternalBundleLoader.IsRemovedPrefabPlaceholder(prefab)) return false;
 
             // Skip-bundle gate â€” bundles whose tab folder was renamed to "Skip"
             // have all their prefabs filtered out, including future ones.
@@ -1659,10 +1705,9 @@ namespace VerdantsAscent.Managers
         {
             if (prefab == null) return false;
 
-            // 0. Fast-path: the bundle router's resolved-category cache (O(1)
-            //    name lookup). If it says Clutter, skip the deep walk below.
-            var routerCat = VABundleAssetRouter.GetCategory(prefab.name);
-            if (routerCat == VABundleAssetRouter.BundleCategory.Clutter) return true;
+            // 1.1.199 (Fire 10-09: benches, paintings, rugs, tables in the Clutter tab): Clutter is ONLY instanced
+            // vegetation, i.e. an InstanceRenderer or a ClutterSystem entry. A bundle's "clutter" manifest category or the
+            // BundleClutterAllOf list no longer pulls ordinary objects in; those go to CreatorShop like any other prefab.
 
             // 1. InstanceRenderer anywhere in the hierarchy (GetComponentInChildren
             //    so nested bundle renderers count, matching the router's own
@@ -1687,20 +1732,13 @@ namespace VerdantsAscent.Managers
                 if (_clutterSystemNames.Contains(prefab.name)) return true;
             }
 
-            // 3. Bundle on user-managed clutter AllOf list
-            if (VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out var srcBundle)
-                && ConfigManager.Instance.IsBundleInClutterAllOf(srcBundle))
-            {
-                return true;
-            }
-
             return false;
         }
 
         // Heuristic for "this is a nature prefab" â€” structural signals
         // (Pickable/MineRock/Plant/Tree components) first because they're more
         // reliable than the name-keyword fallback, then name keywords.
-        private static bool IsNaturePrefab(GameObject prefab)
+        internal static bool IsNaturePrefab(GameObject prefab)
         {
             if (prefab.GetComponent<Pickable>() != null) return true;
             if (prefab.GetComponent<MineRock>() != null) return true;

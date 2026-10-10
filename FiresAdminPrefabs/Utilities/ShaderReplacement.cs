@@ -165,6 +165,14 @@ namespace VerdantsAscent.Utilities
                     Color color = material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white;
                     Texture normalMap = material.HasProperty("_BumpMap") ? material.GetTexture("_BumpMap") : null;
                     bool emissionHidden = HidesEmission(material);
+                    // 1.1.162 (Fire 10-05: Balrond's ElderMushroom_bal / Pickable_Mushroom_blueNew_bal still white): what the
+                    // source material's emission really was, before the swap. Standard masks _EmissionColor by _EmissionMap;
+                    // Custom/Vegetation has no map and adds the colour over the whole surface.
+                    string fromShader = material.shader != null ? material.shader.name : "null";
+                    bool keywordKnown = material.shader != null && material.shader.keywordSpace.FindKeyword(EmissionKeyword).isValid;
+                    bool emissionOn = material.IsKeywordEnabled(EmissionKeyword);
+                    Texture emissionMap = material.HasProperty("_EmissionMap") ? material.GetTexture("_EmissionMap") : null;
+                    Color emissionColor = material.HasProperty(EmissionColorProperty) ? material.GetColor(EmissionColorProperty) : Color.black;
 
                     if (material.shader != targetShader)
                     {
@@ -175,8 +183,24 @@ namespace VerdantsAscent.Utilities
                     if (mainTexture != null && material.HasProperty("_MainTex")) material.SetTexture("_MainTex", mainTexture);
                     if (material.HasProperty("_Color")) material.SetColor("_Color", color);
                     if (normalMap != null && material.HasProperty("_BumpMap")) material.SetTexture("_BumpMap", normalMap);
-                    if (!isStandardShader && emissionHidden && material.HasProperty(EmissionColorProperty))
-                        material.SetColor(EmissionColorProperty, Color.black);
+                    string emissionVerdict = "kept";
+                    if (!isStandardShader && material.HasProperty(EmissionColorProperty))
+                    {
+                        bool targetMasks = material.HasProperty("_EmissionMap");
+                        if (emissionHidden) { material.SetColor(EmissionColorProperty, Color.black); emissionVerdict = "off (was hidden)"; }
+                        // A masked glow can't be drawn without its mask: a solid _EmissionColor would paint the whole mesh. The
+                        // prefab's own lights still glow; the surface shows its albedo again.
+                        else if (emissionMap != null && !targetMasks) { material.SetColor(EmissionColorProperty, Color.black); emissionVerdict = "off (masked by _EmissionMap, the target has no mask)"; }
+                        else if (emissionMap != null) material.SetTexture("_EmissionMap", emissionMap);
+                        // The source shader is a stand-in whose keywords can't be read: a full-white colour means "unset".
+                        else if (!keywordKnown && emissionColor.maxColorComponent >= 0.99f) { material.SetColor(EmissionColorProperty, Color.black); emissionVerdict = "off (white, keyword unreadable)"; }
+                    }
+                    // 1.1.188 ([worldgen] 10-07: 4,746 of these during load, 4,605 "kept"): only the materials whose emission was
+                    // changed get a line; a kept one tells nothing and cost main-thread time before the player spawned.
+                    if (emissionVerdict != "kept")
+                    VaPieces.Log?.LogDebug($"[VAMaterialRepair] {prefab.name}/{renderer.name} material {material.name}: shader {fromShader} -> {targetShader.name}, "
+                        + $"_MainTex {(mainTexture != null ? mainTexture.name : "null")}, emission {(keywordKnown ? (emissionOn ? "on" : "off") : "?")} "
+                        + $"colour {emissionColor} map {(emissionMap != null ? emissionMap.name : "null")} -> {emissionVerdict}");
 
                     ApplyAlphaCutoutSettings(material, isStandardShader);
                 }
@@ -193,6 +217,9 @@ namespace VerdantsAscent.Utilities
             else if (mode == BundleNatureShaderMode.Vegetation) customShader = ResolveShaderByName(VegetationShaderName);
             return customShader != null ? customShader : Shader.Find(StandardShaderName);
         }
+
+        // Valheim's Custom/Vegetation, for the baked impostors (VABundleImpostors); null when it can't be resolved.
+        internal static Shader VegetationShader => ResolveShaderByName(VegetationShaderName);
 
         private static Shader ResolveShaderByName(string shaderName)
         {

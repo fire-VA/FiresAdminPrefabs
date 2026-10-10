@@ -42,13 +42,17 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configAdminOnlyMode;
         public ConfigEntry<bool> configRegisterPiecesForNonAdmins;
         public ConfigEntry<bool> configWackyDatabaseCompat;
+        public ConfigEntry<bool> configItemStandUseEwp;   // 1.1.168
         public ConfigEntry<string> configVanillaFriendlyEffectAllowlist;
         public ConfigEntry<bool> configVanillaFriendly;
         public ConfigEntry<bool> configUseEwpForPersistence;
         public ConfigEntry<bool> configSortHammerByMod;
         public ConfigEntry<BundleNatureShaderMode> configBundleNatureShader;
+        public ConfigEntry<float> configBundleCullDistance;
+        public ConfigEntry<bool> configBundleImpostors;
+        public ConfigEntry<float> configBundleImpostorDistance, configBundleImpostorCullDistance;
         public ConfigEntry<string> configBundleNatureShaderAllOf;
-        public ConfigEntry<string> configBundleClutterAllOf;
+
         public ConfigEntry<string> configCustomPersistentPrefabs;
 
         // ────── Performance ──────
@@ -64,6 +68,7 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<string> configDediSkipRenderMeshes;
         public ConfigEntry<string> configClientLazyRenderMeshes;
         public ConfigEntry<string> configRemovedPrefabPlaceholders;
+        public ConfigEntry<string> configKeepDeadScriptSlotBundles;
 
         // ────── Hammer tabs ──────
         public ConfigEntry<string> configTabDisplayNames;
@@ -100,19 +105,19 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configHammerSwapFracOnPlace;
         public ConfigEntry<bool> configHammerEffectsOverrideTTL;
         public ConfigEntry<bool> configItemStandHideStandVisual;
+        public ConfigEntry<string> configItemStandOrientation;   // 1.1.197: Horizontal | Vertical | Both
+
+        // ────── Infinity Hammer ──────
+        public ConfigEntry<bool> configIHKeepAreaGrabScale;
 
         private HashSet<string> _bundleNatureShaderAllOfSet;
         private string _bundleNatureShaderAllOfRaw;
-        private HashSet<string> _bundleClutterAllOfSet;
-        private string _bundleClutterAllOfRaw;
 
         public bool IsBundleInNatureShaderAllOf(string bundleName) =>
             IsBundleListed(bundleName, configBundleNatureShaderAllOf,
                 ref _bundleNatureShaderAllOfSet, ref _bundleNatureShaderAllOfRaw);
 
-        public bool IsBundleInClutterAllOf(string bundleName) =>
-            IsBundleListed(bundleName, configBundleClutterAllOf,
-                ref _bundleClutterAllOfSet, ref _bundleClutterAllOfRaw);
+
 
         // Re-parsed only when the raw string changes, so the init scan doesn't split
         // and lowercase the list once per prefab.
@@ -137,6 +142,8 @@ namespace VerdantsAscent.Managers
 
         public void Initialize(ConfigFile config)
         {
+            configItemStandUseEwp = config.Bind("Item stands", "UseEwpForRefill", false,
+                "Item stand presets with a refill timer: on (and Expand World Prefabs installed) = EWP does the refill, even when Core is installed - FAP writes expand_prefabs_FAP_itemstands.yaml (per preset: the stand's item-taken state pokes it after the time, the poke puts the item back) and stamps each refillable stand with int fap_stand. Off (or no EWP) = Core's loot respawn, else FAP refills the stand itself; the rule file is removed.");
             configVerboseLogging = config.Bind("General", "VerboseLogging", false,
                 "Enable detailed debug logs.");
             configServerEnforced = config.Bind("General", "ServerEnforced", true,
@@ -166,6 +173,17 @@ namespace VerdantsAscent.Managers
             configBundleNatureShader = config.Bind("General", "BundleNatureShader", BundleNatureShaderMode.Vegetation,
                 "Shader installed on nature-detected bundle prefabs (trees, bushes, plants, pickables, mine-rocks) to fix the broken-alpha-cutout look bundle materials usually ship with. Vegetation (default) = Valheim's Custom/Vegetation; Standard = Unity Standard in cutout mode (revert option if Vegetation produces wrong textures on a particular bundle). Flips re-apply live, no world reload needed.");
 
+            configBundleCullDistance = config.Bind("Performance", "BundleCullDistance", 200f,
+                new ConfigDescription("Bundle prefabs that ship without an LODGroup (e.g. Balrond's Poplar, Willow, Cypress) stop rendering past this many metres; 0 = never culled (as before). Prefabs with their own LODs are untouched. Applies at load.",
+                    new AcceptableValueRange<float>(0f, 1000f)));
+            configBundleImpostors = config.Bind("Performance", "BundleImpostors", true,
+                "Those same no-LOD bundle prefabs get a baked impostor (a 16-triangle cutout billboard rendered from the prefab at load) as their far detail level, instead of only being culled. Applies at load.");
+            configBundleImpostorDistance = config.Bind("Performance", "BundleImpostorDistance", 60f,
+                new ConfigDescription("Metres up to which an impostor-carrying bundle prefab draws its full mesh; past it, the impostor. Applies at load.",
+                    new AcceptableValueRange<float>(10f, 500f)));
+            configBundleImpostorCullDistance = config.Bind("Performance", "BundleImpostorCullDistance", 800f,
+                new ConfigDescription("Metres up to which the impostor draws; past it, nothing. 0 = never culled. Applies at load.",
+                    new AcceptableValueRange<float>(0f, 3000f)));
             configEnableBlueprintBake = config.Bind("Performance", "EnableBlueprintMeshBake", false,
                 "Shows the 'Bake to prefab...' action when you right-click a blueprint in the hammer. Baking is explicit and per-blueprint — nothing is baked just by placing one, and the fap_bake_diagnose / fap_bake_all commands work whether this is on or off. Baking combines the blueprint's static pieces into roughly one mesh per material and writes a .bakebundle into config/FiresAdminPrefabs/Assets with a .bakemanifest sidecar; the result appears on the Baked Meshes tab after a RELAUNCH, because bundles are registered at world load. Interactive pieces (doors, chests, fireplaces, signs, pickables, plants, item stands, wards) are kept aside and spawned as real objects when the baked piece is placed, so they still work; the combined geometry keeps its colliders but is invulnerable — no per-piece damage or salvage, and hammering any part removes the whole placement. Multiplayer: the server and every other client need that .bakebundle too (fap_push_bundle sends it), or the placement is a missing prefab to them. Local setting, not server-synced.");
 
@@ -197,13 +215,15 @@ namespace VerdantsAscent.Managers
                 "Dedicated server only. Comma-separated bundle prefab names whose render meshes the server drops right after loading their bundle. A server draws nothing, but a mesh loaded from a bundle still sits in its memory: the castle tower these two names share is 12.2 million vertices, about 800 MB on the server. Collision is separate (boxes and a small mesh) and is always kept, as is any mesh a collider uses, so players, building and support work exactly as before. Clients are never affected. Empty turns it off. Takes effect at the next server start.");
 configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPlaceholders", "ConsMassiveTower,CastleTowerMassive",
                 "Comma-separated names of pieces that were REMOVED from the bundles. Worlds that already have one placed keep its save data, and without a prefab by that name the game would log 'Missing prefab hash' every frame near it. FAP registers an invisible, empty placeholder under each name that no loaded bundle provides, so those saves load quietly and the piece comes back if its bundle ever carries it again. Empty turns it off.");
+            configKeepDeadScriptSlotBundles = config.Bind("Compatibility", "KeepDeadScriptSlotBundles", "moregates",
+                "Comma-separated bundle names whose prefabs load even with a dead (missing) script slot that no manifest names. A dead slot " +
+                "normally rejects its prefab, because the behaviour the script carried is gone. List a bundle only when its slots were already " +
+                "dead when it was built (its author deleted a script a prefab still used), so the prefab works as it did in its own mod. " +
+                "moregates: its bundle carries only Valheim's own scripts and SimpleMeshCombine, all present in Valheim 1.0.");
             configClientLazyRenderMeshes = config.Bind("Performance", "ClientLazyRenderMeshes", "ConsMassiveTower,CastleTowerMassive",                "Clients only. Comma-separated bundle prefab names whose render-mesh DATA is unloaded right after their bundle loads and comes back from the bundle the first time one of them is built or loaded near you. The castle tower these two names share is 12.2 million vertices, about 1.6 GB per client, and most sessions never see one. Its look and its collision are unchanged (colliders are never touched); only the memory waits until a tower is there. Empty turns it off. Takes effect at the next game start.");
 
             configBundleNatureShaderAllOf = config.Bind("General", "BundleNatureShaderAllOf", "biomeflora",
                 "Comma-separated bundle filenames whose prefabs should ALL get the BundleNatureShader treatment, bypassing the per-prefab nature heuristic. Use for entirely-foliage bundles whose prefab names don't contain tree/bush/flower keywords (cacti, succulents, ferns named 'XYZ_BF'). Case-insensitive. Adding entries requires a world reload — flips of the BundleNatureShader mode itself are live, but this list controls which prefabs are eligible.");
-
-            configBundleClutterAllOf = config.Bind("General", "BundleClutterAllOf", "newcluttermarch2022",
-                "Comma-separated bundle filenames whose prefabs should ALL be routed to the dedicated 'Clutter' hammer tab — regardless of whether the prefab has an InstanceRenderer or appears in ClutterSystem.m_clutter. Use for entirely-clutter bundles (grass tufts, small decorations). Vanilla clutter and prefabs with InstanceRenderer are auto-detected and routed even when not on this list. Case-insensitive. Live toggle: flips re-categorize without a world reload.");
 
             configCustomPersistentPrefabs = config.Bind("General", "CustomPersistentPrefabs", "",
                 "Comma-separated prefab names that should receive EWP-persistence treatment in addition to the auto-detected effect prefabs (vfx_/fx_/sfx_ + TimedDestruction). Use for vanilla prefabs that auto-destroy themselves but you want to come back via EWP respawn — e.g. 'lavabomb_rock1'. Names are exact (no wildcards). The mod also maintains a hidden curated list of these built-in; this config adds yours on top.");
@@ -230,14 +250,14 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 "Scale of the right-click configure windows (monster/container/clutter). Drag any corner of a config window to resize it; the chosen scale persists here. Range 0.7-2.5.");
 
             configBuildMenuWidth = config.Bind("BuildMenu", "WindowWidth", float.NaN,
-                "Build menu window width. Set by SHIFT+dragging the bottom-right grip, which grows the grid; NaN = vanilla default.");
+                "Build menu window width. Set by dragging the bottom-right grip, which grows the grid (Shift+drag zooms instead); NaN = vanilla default.");
 
             configBuildMenuHeight = config.Bind("BuildMenu", "WindowHeight", float.NaN,
-                "Build menu window height. Set by SHIFT+dragging the bottom-right grip, which grows the grid; NaN = vanilla default.");
+                "Build menu window height. Set by dragging the bottom-right grip, which grows the grid (Shift+drag zooms instead); NaN = vanilla default.");
 
             configBuildMenuScale = config.Bind("BuildMenu", "WindowScale", 1f,
                 new ConfigDescription(
-                    "Build menu zoom. Set by dragging the bottom-right grip without Shift. Range 0.7-2.5.",
+                    "Build menu zoom. Set by Shift+dragging the bottom-right grip (a plain drag grows the grid). Range 0.7-2.5.",
                     new AcceptableValueRange<float>(0.7f, 2.5f)));
 
             // Screen position, not anchoredPosition: the window re-anchors to centre on
@@ -298,6 +318,13 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 "this toggle preserves that variety in zone generators but bypasses it when YOU\n" +
                 "place the piece via hammer. Disable to let vanilla random-rotation run for hammer\n" +
                 "placements too.");
+            // 1.1.197 (Arbby via Fire: "one item stand tab, not two; the menu is huge"): which stand tabs the hammer gets.
+            configItemStandOrientation = config.Bind("ItemStands", "StandOrientation", "Horizontal",
+                new ConfigDescription("Which item-stand tab the hammer shows: Horizontal (shelf), Vertical (wall) or Both. Only the chosen\n" +
+                    "orientation's stands are built, so the menu is smaller and opens faster. Also swappable live from\n" +
+                    "Shift+Right-click on the Item Stands tab. Live.",
+                    new AcceptableValueList<string>("Horizontal", "Vertical", "Both")));
+            configItemStandOrientation.SettingChanged += (_, __) => VAVanillaPieceManager.ApplyItemStandOrientation();
             configItemStandHideStandVisual = config.Bind("HammerToggles", "ItemStandHideStandVisual", false,
                 "When true, every ItemStand in the world with an item attached hides its own mesh\n" +
                 "visual (wall plate / shelf base) so only the attached item shows — clean floating-\n" +
@@ -313,6 +340,38 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 "component disabled; every ParticleSystem.main.loop set true; every AudioSource.loop\n" +
                 "set true. A ZDO flag is written so the override survives zone reload (re-applied on\n" +
                 "each Piece.Awake). Disable to let vanilla TTL/non-loop behavior run.");
+            configIHKeepAreaGrabScale = config.Bind("InfinityHammer", "KeepAreaGrabScale", true,
+                "When true, objects placed from an Infinity Hammer multi-object selection (area grab,\n" +
+                "zoop, a blueprint) keep the size the ghost showed. With World Edit Commands 1.78 and\n" +
+                "newer, a selection scaled with the hammer places each object back at the size it was\n" +
+                "grabbed at. Only vanilla-scalable objects (trees, rocks, bushes) are touched, and the\n" +
+                "size goes into vanilla's own scale field, so it survives a relog, shows the same in a\n" +
+                "vanilla client and saves into blueprints. Single-object placement is unchanged. Live.");
+
+            // 1.1.196 (Fire's hand test 10-09: area-grab scale still not applied): 1.1.192 flipped the default to true, but every
+            // existing cfg kept its saved false. One-time migration: turn it on once; a later false by hand is kept.
+            var migrations = config.Bind("Internal", "AppliedMigrations", "",
+                "Bookkeeping for one-time settings migrations. Leave as is.");
+            // 1.1.199 (Fire: no dead keys): [General] BundleClutterAllOf is gone; drop it from existing cfg files once.
+            try
+            {
+                var orphansProp = typeof(ConfigFile).GetProperty("OrphanedEntries",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                if (orphansProp?.GetValue(config) is System.Collections.Generic.Dictionary<ConfigDefinition, string> orphans
+                    && orphans.Remove(new ConfigDefinition("General", "BundleClutterAllOf")))
+                {
+                    config.Save();
+                    UnityEngine.Debug.Log("FiresAdminPrefabs: removed the retired [General] BundleClutterAllOf from the cfg.");
+                }
+            }
+            catch { }
+
+            if (!(migrations.Value ?? "").Contains("keepareagrabscale-on"))
+            {
+                configIHKeepAreaGrabScale.Value = true;
+                migrations.Value = string.IsNullOrEmpty(migrations.Value) ? "keepareagrabscale-on" : migrations.Value + ",keepareagrabscale-on";
+                UnityEngine.Debug.Log("FiresAdminPrefabs: migrated [InfinityHammer] KeepAreaGrabScale to true (new default since 1.1.192; set it false again to opt out).");
+            }
 
             RegisterLiveReapplyHandlers();
             SetupConfigWatcher(config);
@@ -326,7 +385,8 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
             configVanillaFriendly.SettingChanged += recategorize;
             configUseEwpForPersistence.SettingChanged += recategorize;
             configSortHammerByMod.SettingChanged += recategorize;
-            configBundleClutterAllOf.SettingChanged += recategorize;
+
+            configItemStandUseEwp.SettingChanged += (_, __) => VAItemStandEwp.Write();   // 1.1.181: write / remove the EWP refill script live
 
             configVanillaFriendlyEffectAllowlist.SettingChanged += (_, __) =>
             {
@@ -435,7 +495,7 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 VAVanillaPieceManager.InitializeOnce();
 
                 if (Player.m_localPlayer != null)
-                    Player.m_localPlayer.UpdateAvailablePiecesList();
+                    VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "ConfigManager");
             }
             catch (Exception ex)
             {

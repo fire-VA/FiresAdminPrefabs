@@ -40,7 +40,10 @@ namespace VerdantsAscent.Patches
         {
             if (_viewAppliedToLists == ViewingAsPlayer()) return;
             var player = Player.m_localPlayer;
-            if (player != null) player.UpdateAvailablePiecesList();
+            // 1.1.203: _viewAppliedToLists is only set by Apply on the Hammer's table, so with another tool's table (Infinity
+            // Hammer's) it never matched and EVERY menu open forced a full rebuild + repaint. Not the Hammer: nothing to refresh.
+            if (player == null || !HammerCategoryUI.IsOrganizable(player.m_buildPieces)) return;
+            if (player != null) VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(player, "VABuildMenuVisibility");
             VABuildUiCategoryTags.RequestBuildMenuRefresh();
         }
 
@@ -53,7 +56,7 @@ namespace VerdantsAscent.Patches
             // on EVERY PieceTable: it pruned another tool's lists, added and removed FAP tabs in its m_categories and re-seeded
             // its selected category, so the swatch's grid index was read from another category. FAP's menu rules are for the
             // vanilla Hammer only, like the scroll patch.
-            if (!HammerCategoryUI.IsHammerTable(table))
+            if (!HammerCategoryUI.IsOrganizable(table))
             {
                 if (_skippedTables.Add(table.GetInstanceID()))
                     UnityEngine.Debug.Log($"[FAP] build-menu visibility: {table.name} skipped (not the Hammer)");
@@ -62,28 +65,7 @@ namespace VerdantsAscent.Patches
             var byCategory = PieceTableAccess.ByCategory(table);
             if (byCategory == null) return;
 
-            _hiddenTabCategories.Clear();
-            VACategoryRegistry.CollectHiddenCategories(_hiddenTabCategories);
-
-            bool viewingAsPlayer = ViewingAsPlayer();
-            _hideInjectedPieces = HideInjectedPiecesFromMenu || viewingAsPlayer;
-            _hideAdminGatedPieces = viewingAsPlayer && AdminGatedHidingEnabled();
-            _viewAppliedToLists = viewingAsPlayer;
-
-            // Client-only, every other player is a client without FAP, which is exactly who vanilla-friendly builds
-            // for: a bundle prefab, stand-in or bake placed here would be invisible to them.
-            _vanillaFriendly = (ConfigManager.Instance?.configVanillaFriendly?.Value ?? false)
-                || VAFapServerPresence.IsClientOnly;
-
-            // Baked meshes are a combined mesh only FAP can build, and a blueprint stub is a
-            // menu placeholder no vanilla client has. Neither belongs in a build a vanilla
-            // client has to render. Hidden rather than unregistered, so turning the setting
-            // back off brings them straight back.
-            if (_vanillaFriendly)
-            {
-                HideCategory(VACategoryRegistry.CatBakedMeshes);
-                HideCategory(VACategoryRegistry.CatBlueprints);
-            }
+            RefreshViewRules();
 
             table.m_availablePieces.RemoveWhere(IsHiddenFromMenu);
             table.m_enabledPieces.RemoveWhere(IsHiddenFromMenu);
@@ -154,6 +136,49 @@ namespace VerdantsAscent.Patches
                 _prunedEmptyTabs.Add(category);
             }
         }
+
+        // The menu rules for the current view: which tabs are hidden (config, dev-only outside debug mode, VanillaFriendly's) and
+        // which pieces. Apply prunes the piece lists with them; 1.1.208: the tab ROWS check them too (RowVisible), so a tab
+        // Fire hid never shows as a row whatever state the lists are in - under Infinity Hammer's tool (which hands over the
+        // Hammer's table after IH's own list handling) the rows were built from lists this pass had not pruned yet.
+        private static void RefreshViewRules()
+        {
+            _hiddenTabCategories.Clear();
+            VACategoryRegistry.CollectHiddenCategories(_hiddenTabCategories);
+
+            bool viewingAsPlayer = ViewingAsPlayer();
+            _hideInjectedPieces = HideInjectedPiecesFromMenu || viewingAsPlayer;
+            _hideAdminGatedPieces = viewingAsPlayer && AdminGatedHidingEnabled();
+            _viewAppliedToLists = viewingAsPlayer;
+
+            // Client-only, every other player is a client without FAP, which is exactly who vanilla-friendly builds
+            // for: a bundle prefab, stand-in or bake placed here would be invisible to them.
+            _vanillaFriendly = (ConfigManager.Instance?.configVanillaFriendly?.Value ?? false)
+                || VAFapServerPresence.IsClientOnly;
+
+            // Baked meshes are a combined mesh only FAP can build, and a blueprint stub is a
+            // menu placeholder no vanilla client has. Neither belongs in a build a vanilla
+            // client has to render. Hidden rather than unregistered, so turning the setting
+            // back off brings them straight back.
+            if (_vanillaFriendly)
+            {
+                HideCategory(VACategoryRegistry.CatBakedMeshes);
+                HideCategory(VACategoryRegistry.CatBlueprints);
+            }
+        }
+
+        // 1.1.208: is this FAP tab a row at all - not a hidden tab, and holding at least one piece the current view shows.
+        internal static bool RowVisible(Piece.PieceCategory category, List<Piece> pieces)
+        {
+            RefreshViewRules();
+            if (_hiddenTabCategories.Contains(category)) return false;
+            if (pieces == null) return false;
+            foreach (var p in pieces) if (p != null && !IsHiddenFromMenu(p)) return true;
+            return false;
+        }
+
+        // 1.1.208: one piece against the current view's rules (the rules are refreshed by RowVisible, called per row first).
+        internal static bool PieceVisible(Piece piece) => piece != null && !IsHiddenFromMenu(piece);
 
         private static void HideCategory(string categoryName)
         {

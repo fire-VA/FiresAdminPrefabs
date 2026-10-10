@@ -225,6 +225,9 @@ namespace VerdantsAscent.Managers
                 }
             }
 
+            // 1.1.164: the no-LOD bundle prefabs' impostors, baked after every prefab is repaired (a couple a frame).
+            yield return VerdantsAscent.Utilities.VABundleImpostors.BakeAll();
+
             if (emitSummary && TotalPrefabsScanned > 0)
             {
                 Debug.Log($"{VaPieces.PluginName}: VAMaterialRepair (deferred) — {FormatSummary()}.");
@@ -547,6 +550,56 @@ namespace VerdantsAscent.Managers
                     }
                 }
             }
+
+            // Worldgen-only bundle nature props (trees, mushrooms, pickables, rocks) never pass through the hammer
+            // registration that swaps an un-Valheim shader to Custom/Vegetation (or Custom/Piece for rocks). On Unity's
+            // Standard shader they render pure white (e.g. ElderMushroom_bal, authored on Standard). RepairPrefab runs for
+            // EVERY injected bundle prefab, so apply the same nature swap here. It is guarded to the same prefabs the hammer
+            // path treats as nature, and ApplyBundleNatureShader skips any material VAInjectedShaders already adopted
+            // (Balrond/Jotunn/Custom), so authored materials are untouched and vanilla prefabs are never in this list.
+            if (VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out var natureBundle)
+                && (ConfigManager.Instance.IsBundleInNatureShaderAllOf(natureBundle) || VAVanillaPieceManager.IsNaturePrefab(prefab)))
+            {
+                try { VerdantsAscent.Utilities.ShaderReplacement.ApplyBundleNatureShader(prefab); }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"{VaPieces.PluginName}: nature-shader swap threw on '{prefab.name}': {ex.Message}");
+                }
+            }
+
+            try { EnsureCullLodGroup(prefab); }
+            catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: cull LODGroup threw on '{prefab.name}': {ex.Message}"); }
+        }
+
+        // 1.1.163 (Fire's 5 fps log, 10-05: Poplar_bal 70.0M tris on 321 renderers, Willow_bal 2.9M, Cypress_bal 2.2M ...):
+        // those Balrond prefabs SHIP WITHOUT an LODGroup (the bundle dump: 537 of 867 balrondnature prefabs have one; the heavy
+        // trees don't, only a LodFadeInOut that has nothing to drive), so every copy drew full detail to the far clip. A bundle
+        // prefab with no LODGroup of its own now gets one level holding all its mesh renderers, culled past
+        // BundleCullDistance m (sized from its own bounds). Prefabs with their own LODGroup, items and characters are left alone.
+        // There are no lower-detail meshes to switch to: this removes the distant copies, not the cost of a near one.
+        internal static int LodGroupsAuthored, LodGroupsAdded, LodGroupsSkipped;
+
+        private static void EnsureCullLodGroup(GameObject prefab)
+        {
+            if (!VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out _)) return;
+            float distance = ConfigManager.Instance?.configBundleCullDistance?.Value ?? 0f;
+            if (prefab.GetComponentInChildren<LODGroup>(true) != null) { LodGroupsAuthored++; return; }
+            if (distance <= 0f || prefab.GetComponent<Character>() != null || prefab.GetComponent<ItemDrop>() != null) { LodGroupsSkipped++; return; }
+            var renderers = new List<Renderer>();
+            foreach (var r in prefab.GetComponentsInChildren<Renderer>(true))
+                if (r is MeshRenderer || r is SkinnedMeshRenderer) renderers.Add(r);
+            if (renderers.Count == 0) { LodGroupsSkipped++; return; }
+            var bounds = renderers[0].bounds;
+            foreach (var r in renderers) bounds.Encapsulate(r.bounds);
+            float size = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
+            if (size <= 0.01f) size = 1f;
+            var group = prefab.AddComponent<LODGroup>();
+            group.SetLODs(new[] { new LOD(VerdantsAscent.Utilities.VABakeLodPolicy.ScreenRelativeHeightAt(distance, size), renderers.ToArray()) });
+            group.RecalculateBounds();
+            LodGroupsAdded++;
+            VerdantsAscent.Utilities.VABundleImpostors.Queue(prefab);   // 1.1.164: its far level becomes a baked impostor
+            if (LodGroupsAdded <= 12 || prefab.name.StartsWith("Poplar", StringComparison.Ordinal))
+                VaPieces.Log?.LogDebug($"[VAMaterialRepair] {prefab.name}: no LODGroup in its bundle; added a cull LODGroup ({renderers.Count} renderer(s), size {size:0.0} m, culled past {distance:0} m)");
         }
 
         // InstanceRenderer draws through Graphics.DrawMeshInstanced, so its material is not in any Renderer's slots
@@ -1164,6 +1217,7 @@ namespace VerdantsAscent.Managers
         public static string FormatSummary()
         {
             string baseLine = $"prefabs={TotalPrefabsScanned}, materials={TotalMaterialsScanned}, repaired={TotalMaterialsRepaired} (null-slot={TotalMaterialsNullSlot}, null-shader={TotalMaterialsNullShader}, error-shader={TotalMaterialsErrorShader}), unrepairable={TotalMaterialsUnrepairable}";
+            baseLine += $", LODGroups: {LodGroupsAuthored} bundle prefab(s) with their own, {LodGroupsAdded} given a cull LODGroup, {LodGroupsSkipped} skipped";
             if (TotalMaterialsTextureByName > 0)
                 baseLine += $", texture recovered by material name={TotalMaterialsTextureByName}";
             if (TotalMaterialsEmptyArray > 0)

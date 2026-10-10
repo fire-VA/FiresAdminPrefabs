@@ -46,7 +46,7 @@ namespace VerdantsAscent.Patches
 
             // WasInjectedByUs is name-based and also matches an Infinity Hammer placement
             // of a FAP-injected prefab; IH owns those.
-            if (VAInfinityHammerCompat.IsInfinityHammerActive()) return;
+            if (VAInfinityHammerCompat.IsIhCopyPlacing) return;   // 1.1.206: only an IH copy, not an IH-held hammer
             if (!VAVanillaPieceManager.WasInjectedByUs(__instance.gameObject)) return;
 
             var config = ConfigManager.Instance;

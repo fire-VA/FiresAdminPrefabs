@@ -34,7 +34,7 @@ namespace VerdantsAscent
         public static VaPieces Instance;
         public const string PluginGUID = "com.Fire.adminprefabs";
         public const string PluginName = "FiresAdminPrefabs";
-        public const string PluginVersion = "1.1.154";
+        public const string PluginVersion = "1.1.208";
         private const string YamlDotNetDetectorGUID = "com.ValheimModding.YamlDotNetDetector";
         private const string MinimumCoreVersion = "0.2.126";
 
@@ -141,10 +141,10 @@ namespace VerdantsAscent
 
         private void FinishInit()
         {
-            if (IsDedicatedServer)
-                PatchAllExceptClientOnlyTypes();
-            else
-                harmony.PatchAll();
+            // 1.1.185 (FAP 1.1.184 didn't load: one patch class aimed at a method vanilla doesn't have, and the client's single
+            // PatchAll threw on it, so nothing after it initialised): every client and server patches type by type, a failing
+            // class logged and skipped, the rest applied.
+            PatchAllExceptClientOnlyTypes(skipClientOnly: IsDedicatedServer);
 
             if (!IsDedicatedServer)
             {
@@ -156,12 +156,12 @@ namespace VerdantsAscent
             StartCoroutine(WaitForZNetReady());
         }
 
-        private static void PatchAllExceptClientOnlyTypes()
+        private static void PatchAllExceptClientOnlyTypes(bool skipClientOnly)
         {
-            int patched = 0, skipped = 0;
-            foreach (var type in Assembly.GetExecutingAssembly().GetTypes())
+            int patched = 0, skipped = 0, failed = 0;
+            foreach (var type in AccessTools.GetTypesFromAssembly(Assembly.GetExecutingAssembly()))
             {
-                if (IsClientOnlyPatch(type)) { skipped++; continue; }
+                if (skipClientOnly && IsClientOnlyPatch(type)) { skipped++; continue; }
                 try
                 {
                     harmony.CreateClassProcessor(type).Patch();
@@ -173,10 +173,13 @@ namespace VerdantsAscent
                     // type that actually carries the attribute failed for real.
                     var attributes = type.GetCustomAttributes(typeof(HarmonyPatch), inherit: true);
                     if (attributes != null && attributes.Length > 0)
-                        Debug.LogWarning($"[{PluginName}] Failed to apply Harmony patch {type.FullName}: {ex.Message}");
+                    {
+                        failed++;
+                        Debug.LogError($"[{PluginName}] Failed to apply Harmony patch {type.FullName} (skipped; the rest of FAP still loads): {ex.Message}");
+                    }
                 }
             }
-            Debug.Log($"[{PluginName}] Dedicated server: patched {patched} types, skipped {skipped} client-only types.");
+            Debug.Log($"[{PluginName}] {(skipClientOnly ? "Dedicated server" : "Client")}: patched {patched} types, skipped {skipped} client-only types, {failed} failed.");
         }
 
         // Nested Harmony patch classes inherit their outer class's gating.
@@ -206,6 +209,7 @@ namespace VerdantsAscent
             configSync.AddConfigEntry(config.configHammerSwapFracOnPlace);
             configSync.AddConfigEntry(config.configHammerEffectsOverrideTTL);
             configSync.AddConfigEntry(config.configItemStandHideStandVisual);
+            configSync.AddConfigEntry(config.configIHKeepAreaGrabScale);
 
             configSync.AddConfigEntry(config.configAdminOnlyMode);
             configSync.AddConfigEntry(config.configRegisterPiecesForNonAdmins);
@@ -370,7 +374,7 @@ namespace VerdantsAscent
         private static void RefreshHammerTabsAndPieces()
         {
             if (Player.m_localPlayer != null)
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "Ascend");
         }
 
         private static void TryRun(string description, Action action)

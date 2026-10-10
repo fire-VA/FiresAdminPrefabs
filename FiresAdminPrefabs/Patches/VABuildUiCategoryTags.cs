@@ -60,7 +60,7 @@ namespace VerdantsAscent.Patches
 
         internal static void RequestBuildMenuRefresh() => BuildMenuTabs.RequestRefresh();
 
-        public bool Owns(PieceTable table) => HammerCategoryUI.IsHammerTable(table);
+        public bool Owns(PieceTable table) => HammerCategoryUI.IsOrganizable(table);
 
         public void CollectTabs(PieceTable table, List<BuildMenuTabs.Tab> into)
         {
@@ -83,6 +83,9 @@ namespace VerdantsAscent.Patches
                 if (index < 0 || index >= byCategory.Count) continue;
                 var pieces = byCategory[index];
                 if (pieces == null || pieces.Count == 0) continue;          // empty tab = no row, same as vanilla
+                // 1.1.208 (Fire 10-10: under Infinity Hammer's tool the hidden / dev-only tabs and both item-stand halves showed):
+                // the same view rules the menu pass prunes with, applied to the row itself.
+                if (!VABuildMenuVisibility.RowVisible(category, pieces)) continue;
 
                 // A row whose list holds only tool actions (Core lifts repair/remove into the menu's own buttons) or
                 // destroyed pieces would open empty, so it is no row either: listed exactly when Fill has a piece.
@@ -108,8 +111,9 @@ namespace VerdantsAscent.Patches
             if (byCategory == null || key < 0 || key >= byCategory.Count) return;
             var pieces = byCategory[key];
             if (pieces == null) return;
+            // 1.1.208: the same view rules per piece, so a visible tab never shows a hidden piece (Infinity Hammer's tool).
             foreach (var piece in pieces)
-                if (IsShowable(piece)) into.Add(piece);
+                if (IsShowable(piece) && VABuildMenuVisibility.PieceVisible(piece)) into.Add(piece);
         }
 
         private static bool IsShowable(Piece piece) => piece != null && !piece.m_repairPiece && !piece.m_removePiece;

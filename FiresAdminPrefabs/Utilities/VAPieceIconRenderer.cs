@@ -640,6 +640,13 @@ namespace VerdantsAscent.Utilities
             //    population in heavy-mod setups).
             foreach (var entry in VAItemStandStandinFactory.AllStandins)
             {
+                // Not previewed yet = no meshes to render; keep (or restore) the item's sprite instead.
+                if (VAItemStandStandinFactory.TryGetUnbuiltIcon(entry.Value, out var itemIcon))
+                {
+                    var standPiece = entry.Value != null ? entry.Value.GetComponent<Piece>() : null;
+                    if (standPiece != null && itemIcon != null) standPiece.m_icon = itemIcon;
+                    continue;
+                }
                 if (instance.PushForReRenderInternal(entry.Value)) requeued++;
             }
 
@@ -678,11 +685,15 @@ namespace VerdantsAscent.Utilities
         //
         // Returns true if the piece was queued (false if null or
         // already in the active session's queue).
+        private readonly Dictionary<Piece, Sprite> _reloadPrevious = new Dictionary<Piece, Sprite>();
+
         private bool PushForReRenderInternal(GameObject prefab)
         {
             if (prefab == null) return false;
             var piece = prefab.GetComponent<Piece>();
             if (piece == null) return false;
+            // 1.1.196: remember the old sprite; a failed re-render puts it back instead of leaving the icon blank.
+            if (piece.m_icon != null) _reloadPrevious[piece] = piece.m_icon;
             piece.m_icon = null;
             int instanceId = piece.GetInstanceID();
             if (!_enqueued.Add(instanceId))
@@ -856,6 +867,10 @@ namespace VerdantsAscent.Utilities
                         totalThrown++;
                         threw = true;
                     }
+
+                    if (sprite == null && _reloadPrevious.TryGetValue(piece, out var previous) && previous != null)
+                        piece.m_icon = previous;   // fap_reload_icons never blanks an icon it could not re-render
+                    _reloadPrevious.Remove(piece);
 
                     if (sprite != null)
                     {

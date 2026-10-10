@@ -302,7 +302,7 @@ namespace VerdantsAscent.Patches
 
                 // Instantiate copies VABakeParentLoader onto an Infinity Hammer clone too,
                 // so the component alone does not prove FAP ownership during an IH op.
-                if (VAInfinityHammerCompat.IsInfinityHammerActive()) return;
+                if (VAInfinityHammerCompat.IsIhCopyPlacing) return;   // 1.1.206: only an IH copy, not an IH-held hammer
                 if (root.GetComponent<VABakeParentLoader>() == null) return;
 
                 if (!_resolved)

@@ -128,6 +128,8 @@ namespace VerdantsAscent.Utilities
 
             if (ConfigManager.Instance.configVerboseLogging.Value)
                 Debug.Log($"{VaPieces.PluginName}: Placed {standPrefabName} at {pos} with item={itemName} (orientation={orientation}).");
+            // 1.1.197: one passive Debug line per placed stand (evidence only, no behaviour change).
+            VaPieces.Log?.LogDebug($"[FAP] item stand placed: {standPrefabName} {zdo.m_uid} at {pos:F1} item={itemName} orientation={orientation}");
             return 1;
         }
 

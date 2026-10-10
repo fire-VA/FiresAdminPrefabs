@@ -89,6 +89,16 @@ namespace VerdantsAscent.Utilities
         /// </summary>
         public static int VisualsBuilt { get; private set; }
 
+        // 1.1.196 (Arbby via Fire, "item stand icons vanished after fap_reload_icons"): a stand-in with no meshes yet can't be
+        // re-rendered; its icon is the item's own sprite, which fap_reload_icons puts back instead of blanking it.
+        public static bool TryGetUnbuiltIcon(GameObject standin, out Sprite icon)
+        {
+            icon = null;
+            if (standin == null || !_pendingVisuals.TryGetValue(standin, out var pending)) return false;
+            icon = pending.item?.Icon;
+            return true;
+        }
+
         public static void EnsureVisuals(GameObject standin)
         {
             if (standin == null || !_pendingVisuals.TryGetValue(standin, out var pending)) return;
@@ -97,6 +107,21 @@ namespace VerdantsAscent.Utilities
             if (pending.standPrefab == null) return;
             VAPieceIconRenderer.CopyVisualsRecursivePublic(pending.standPrefab.transform, standin.transform);
             BuildGhostItemAttachment(standin, pending.standPrefab, pending.item, pending.orientation);
+        }
+
+        // 1.1.196 (Fire's hand test 10-09: "[tag_blueberrypie_bal] (Shelf)"): localize the item's name token; a token no loaded
+        // mod translates comes back as "[token]", so fall back to the prefab name, made readable.
+        private static string ReadableItemName(VAItemStandRegistry.Entry item)
+        {
+            string token = item.ItemDrop?.m_itemData?.m_shared?.m_name;
+            string text = null;
+            if (!string.IsNullOrEmpty(token))
+            {
+                try { text = Localization.instance != null ? Localization.instance.Localize(token) : token; } catch { text = token; }
+            }
+            if (string.IsNullOrEmpty(text) || text.StartsWith("[", StringComparison.Ordinal) || text.StartsWith("$", StringComparison.Ordinal))
+                text = System.Text.RegularExpressions.Regex.Replace(item.Name ?? "", "(?<=[a-z])(?=[A-Z])|_", " ").Trim();
+            return text;
         }
 
         public static GameObject GetOrCreate(VAItemStandRegistry.Entry item,
@@ -131,7 +156,7 @@ namespace VerdantsAscent.Utilities
             _pendingVisuals[go] = (item, orientation, standPrefab);
 
             var piece = go.AddComponent<Piece>();
-            string itemDisplayName = item.ItemDrop?.m_itemData?.m_shared?.m_name;
+            string itemDisplayName = ReadableItemName(item);
             piece.m_name = string.IsNullOrEmpty(itemDisplayName)
                 ? $"Stand: {item.Name}"
                 : (orientation == Orientation.Vertical

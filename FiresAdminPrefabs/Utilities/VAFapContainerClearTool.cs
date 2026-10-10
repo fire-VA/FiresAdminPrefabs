@@ -69,7 +69,7 @@ namespace VerdantsAscent.Utilities
             var chests = new List<ZNetView>();
             foreach (var netView in VAAreaClearBrush.FindNetViewsInRadius(center, radius))
             {
-                if (netView.GetZDO().GetInt(ChestMarkerKey, 0) != 1) continue;
+                if (netView.GetZDO().GetInt(ChestMarkerKey, 0) == 0) continue;   // 1 = EWP respawn, 2 = Core respawn (1.1.171)
                 if (netView.GetComponent<Container>() == null) continue;
                 chests.Add(netView);
             }

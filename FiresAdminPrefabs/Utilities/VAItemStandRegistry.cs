@@ -77,6 +77,8 @@ namespace VerdantsAscent.Utilities
             var verticalStand = ResolveVanillaStand(VAItemStandStandinFactory.VanillaVerticalPrefabName);
             var horizontalStand = ResolveVanillaStand(VAItemStandStandinFactory.VanillaHorizontalPrefabName);
 
+            var seenLooks = new HashSet<string>(System.StringComparer.Ordinal);
+            int duplicates = 0;
             foreach (var itemPrefab in odb.m_items)
             {
                 if (itemPrefab == null) continue;
@@ -90,7 +92,15 @@ namespace VerdantsAscent.Utilities
                     continue;
                 }
 
-                if (itemPrefab.transform.Find("attach") == null) continue;
+                // 1.1.183 (Fire 10-07): any item that can be drawn - its own stand model, or its world model (FAP draws that,
+                // VAItemStandFallbackModel). VanillaFriendly only offers what a vanilla client can draw (VanillaAccepts* below).
+                // 1.1.207 (Fire 10-10: feasts / DragonEgg / DvergrKey on a stand were invisible, and taking one off made a
+                // real placed feast plus a vanilla NRE in ItemStand.DropItem): vanilla's take-off instantiates the item prefab and
+                // sets its Rigidbody's velocity. An "item" whose prefab is a placeable piece, or has no Rigidbody, can't come off a
+                // stand, so it's never offered (either VanillaFriendly setting).
+                if (itemPrefab.GetComponent<Piece>() != null || itemPrefab.GetComponent<Rigidbody>() == null) continue;
+                bool standModel = HasStandModel(itemPrefab);
+                if (!standModel && !VAItemStandFallbackModel.HasWorldModel(itemPrefab)) continue;
 
                 // An inventory icon is what separates a real item from the internal ones that
                 // only exist on a creature's hand — monster weapons, dummy drops. Those have no
@@ -98,16 +108,31 @@ namespace VerdantsAscent.Utilities
                 Sprite icon = ResolveIcon(drop.m_itemData.m_shared);
                 if (icon == null) continue;
 
+                // 1.1.196 (Fire's hand test 10-09, Arbby: "a TON of duplicates"): mods ship copies of the same item (same name
+                // token, same icon) under other prefab names; one stand entry per look, the first (vanilla loads first) wins.
+                string lookKey = (drop.m_itemData.m_shared.m_name ?? "") + "|" + icon.name;
+                if (!seenLooks.Add(lookKey))
+                {
+                    duplicates++;
+                    // 1.1.204 (Fire 10-09: "Skoll and Hati" stands placed EMPTY): the copy that won was the Fallen Warrior's
+                    // FW_KnifeSkollAndHati (NPC gear: same name + icon, no stand model), and the player's KnifeSkollAndHati was the one
+                    // dropped. The copy vanilla can draw on a stand wins the tie now.
+                    int at = _entries.FindIndex(x => x.ItemDrop.m_itemData.m_shared.m_name == drop.m_itemData.m_shared.m_name && x.Icon == icon);
+                    if (at < 0 || !standModel || HasStandModel(_entries[at].Prefab)) continue;
+                    _entries.RemoveAt(at);
+                }
+
                 _entries.Add(new Entry
                 {
                     Name = itemPrefab.name,
                     Prefab = itemPrefab,
                     ItemDrop = drop,
                     Icon = icon,
-                    VanillaAcceptsVertical = StandAccepts(verticalStand, drop.m_itemData),
-                    VanillaAcceptsHorizontal = StandAccepts(horizontalStand, drop.m_itemData),
+                    VanillaAcceptsVertical = standModel && StandAccepts(verticalStand, drop.m_itemData),
+                    VanillaAcceptsHorizontal = standModel && StandAccepts(horizontalStand, drop.m_itemData),
                 });
             }
+            if (duplicates > 0) VaPieces.Log?.LogDebug($"[FAP] item stands: {duplicates} duplicate item(s) left out (same name + icon as an earlier one), {_entries.Count} kept");
         }
 
         // Variant items (capes, shields, armour) keep one sprite per variant and can leave the
@@ -133,6 +158,15 @@ namespace VerdantsAscent.Utilities
 
         // Vanilla ItemStand.CanAttach, minus its drop-prefab lookup: that resolves the "attach"
         // child this registry already requires. IsSupported and IsUnsupported are vanilla's own.
+        // 1.1.182 (Fire 10-07: "the corked vial still doesn't show on the stand"): vanilla draws an item on a stand by instantiating
+        // its "attach" child (or that child's "attachobj"). Some items carry an EMPTY attach - BlobVial's is a bare Transform, no
+        // mesh, no children - so the item hangs but nothing is drawn. A stand model = an attach with at least one renderer.
+        public static bool HasStandModel(GameObject itemPrefab)
+        {
+            var attach = itemPrefab != null ? ItemStand.GetAttachPrefab(itemPrefab) : null;
+            return attach != null && ItemStand.GetAttachGameObject(attach).GetComponentsInChildren<Renderer>(true).Length > 0;
+        }
+
         private static bool StandAccepts(ItemStand stand, ItemDrop.ItemData item)
         {
             if (stand == null || item?.m_shared == null) return false;

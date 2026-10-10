@@ -10,52 +10,48 @@ namespace VerdantsAscent.Utilities
         public object Value;
     }
 
-    // The armed field edits. Unlike the chest queue, one placement does NOT consume this: it stays until the
-    // hammer's selection moves to a different prefab, the admin clears it, or the world is left.
+    // The armed field edits, per prefab. 1.1.169 (Fire 10-06: data presets stay queued like chest / monster presets): one
+    // placement does not consume them and moving the hammer to another piece no longer drops them; they stay on THAT prefab
+    // until the admin arms other values (or a data preset) for it, picks "No data preset", or leaves the world. Only that
+    // prefab's placements get them.
     // Plan: Docs/SPAWN_WITH_EXTRA_DATA.md
     internal static class VAExtraDataQueue
     {
-        private static string _prefabName;
-        private static readonly List<VAExtraValue> _values = new List<VAExtraValue>();
+        private static readonly Dictionary<string, List<VAExtraValue>> _byPrefab = new Dictionary<string, List<VAExtraValue>>();
+        private static readonly Dictionary<string, string> _presetByPrefab = new Dictionary<string, string>();
 
-        public static string ArmedPrefab => _prefabName;
-        public static int Count => _values.Count;
-        public static bool IsArmed => !string.IsNullOrEmpty(_prefabName) && _values.Count > 0;
+        public static bool IsArmedFor(string prefabName) => prefabName != null && _byPrefab.TryGetValue(prefabName, out var v) && v.Count > 0;
+        public static int CountFor(string prefabName) => prefabName != null && _byPrefab.TryGetValue(prefabName, out var v) ? v.Count : 0;
 
-        public static void Arm(string prefabName, List<VAExtraValue> values)
+        /// <summary>The data preset these values came from (null for values typed without saving a preset).</summary>
+        public static string PresetFor(string prefabName) => prefabName != null && _presetByPrefab.TryGetValue(prefabName, out var p) ? p : null;
+
+        public static void Arm(string prefabName, List<VAExtraValue> values, string presetName = null)
         {
-            _prefabName = prefabName;
-            _values.Clear();
-            if (values != null) _values.AddRange(values);
+            if (string.IsNullOrEmpty(prefabName)) return;
+            if (values == null || values.Count == 0) { Clear(prefabName); return; }
+            _byPrefab[prefabName] = new List<VAExtraValue>(values);
+            if (string.IsNullOrEmpty(presetName)) _presetByPrefab.Remove(prefabName); else _presetByPrefab[prefabName] = presetName;
         }
 
-        public static void Clear()
+        public static void Clear(string prefabName)
         {
-            _prefabName = null;
-            _values.Clear();
+            if (prefabName == null) return;
+            _byPrefab.Remove(prefabName);
+            _presetByPrefab.Remove(prefabName);
         }
 
         public static bool TryGetFor(string prefabName, out List<VAExtraValue> values)
         {
             values = null;
-            if (!IsArmed || prefabName != _prefabName) return false;
-            values = _values;
-            return true;
+            return prefabName != null && _byPrefab.TryGetValue(prefabName, out values) && values.Count > 0;
         }
 
-        /// <summary>Re-selecting the same prefab keeps the queue; anything else drops it, so extra data is never
-        /// applied to a piece the admin did not configure.</summary>
-        public static void OnSelectedPieceChanged(Piece selected)
+        public static string Describe(string prefabName)
         {
-            if (!IsArmed) return;
-            string selectedName = selected != null && selected.gameObject != null ? selected.gameObject.name : null;
-            if (selectedName == _prefabName) return;
-            Debug.Log($"{VaPieces.PluginName}: extra data for '{_prefabName}' cleared - hammer moved to "
-                + (string.IsNullOrEmpty(selectedName) ? "nothing" : selectedName));
-            Clear();
+            if (!IsArmedFor(prefabName)) return "nothing armed";
+            string preset = PresetFor(prefabName);
+            return $"{CountFor(prefabName)} field(s) armed on {prefabName}" + (preset != null ? $" (data preset '{preset}')" : "");
         }
-
-        public static string Describe() =>
-            IsArmed ? $"Extra data: {_values.Count} field(s) on {_prefabName}" : string.Empty;
     }
 }

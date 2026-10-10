@@ -206,6 +206,8 @@ namespace VerdantsAscent.Patches
             }
 
             VAChestConfigApplier.PopulateInventory(preset, container);
+            // 1.1.171: Core respawns it when Core has the API (va_chest = 2: the EWP rule leaves it alone)
+            VerdantsAscent.Utilities.VACoreLoot.TrackChest(preset, zdo);
         }
     }
 }
