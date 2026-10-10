@@ -1,3 +1,5 @@
+* v1.1.210 - Raw per-bundle tabs no longer show on the build menu in debug mode.
+
 * v1.1.209 - Works with Infinity Hammer: FAP places its own pieces under either hammer, leaves IH's menus alone (no blueprint-menu freeze); item-stand fixes.
 
 * v1.1.189 - updates and optimizations for Valheim 1.0

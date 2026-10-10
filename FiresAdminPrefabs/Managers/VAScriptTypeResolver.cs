@@ -112,7 +112,7 @@ namespace VerdantsAscent.Managers
             //    subclass — AddComponent works, JsonUtility.FromJsonOverwrite
             //    restores the captured field values. Method behaviour
             //    (Update/Awake/etc.) is NOT preserved — the original
-            //    host's compiled IL can't be cleanly read back as source.
+            //    host's compiled IL does not read back cleanly.
             if (Utilities.VARuntimeMonoStub.TryGetStub(typeFullName, out var monoStub))
             {
                 return Cache(typeFullName, monoStub, ResolutionMethod.MonoStub);

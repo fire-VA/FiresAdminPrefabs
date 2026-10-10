@@ -1,6 +1,6 @@
 {
     "name":  "FiresAdminPrefabs",
-    "version_number":  "1.1.209",
+    "version_number":  "1.1.210",
     "website_url":  "https://github.com/fire-VA/FiresAdminPrefabs",
     "description":  "Admin build suite: every vanilla prefab in the hammer with tabs + search, blueprints with full data fidelity and mesh-baking, monster/chest/clutter presets, clutter paint. Requires FiresUnifiedCore.",
     "dependencies":  [

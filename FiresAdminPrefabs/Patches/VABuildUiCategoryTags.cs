@@ -78,6 +78,9 @@ namespace VerdantsAscent.Patches
                 if (string.Equals(name, VAHammerTabOrganizer.FavoritesTabName, StringComparison.OrdinalIgnoreCase)) continue;
                 if (VAHammerTabOrganizer.IsTabHidden(name)) continue;
                 if (!VACategoryRegistry.TryGet(name, out var category)) continue;
+                // 1.1.210 (Fire 10-10: devcommands ON under Infinity Hammer's tool listed every raw bundle tab, "clutter"
+                // beside "Clutter"): a per-bundle tab is a row only when SortHammerByMod files pieces into it, in any mode.
+                if (IsRawBundleTab(name)) continue;
 
                 int index = (int)category;
                 if (index < 0 || index >= byCategory.Count) continue;
@@ -114,6 +117,14 @@ namespace VerdantsAscent.Patches
             // 1.1.208: the same view rules per piece, so a visible tab never shows a hidden piece (Infinity Hammer's tool).
             foreach (var piece in pieces)
                 if (IsShowable(piece) && VABuildMenuVisibility.PieceVisible(piece)) into.Add(piece);
+        }
+
+        private static bool IsRawBundleTab(string name)
+        {
+            if (ConfigManager.Instance != null && ConfigManager.Instance.configSortHammerByMod.Value) return false;
+            foreach (var bundleName in VAExternalBundleLoader.LoadedBundleNames)
+                if (string.Equals(bundleName, name, StringComparison.Ordinal)) return true;
+            return false;
         }
 
         private static bool IsShowable(Piece piece) => piece != null && !piece.m_repairPiece && !piece.m_removePiece;
