@@ -1,3 +1,5 @@
+* v1.1.211 - One Item Stands tab under Infinity Hammer; bundle rocks get the right shader; LODGroup warning fixed.
+
 * v1.1.210 - Raw per-bundle tabs no longer show on the build menu in debug mode.
 
 * v1.1.209 - Works with Infinity Hammer: FAP places its own pieces under either hammer, leaves IH's menus alone (no blueprint-menu freeze); item-stand fixes.

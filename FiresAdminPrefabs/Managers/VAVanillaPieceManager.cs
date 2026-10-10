@@ -444,6 +444,7 @@ namespace VerdantsAscent.Managers
                 pieceTable.m_pieces.RemoveAll(p => (UnityEngine.Object)p == (UnityEngine.Object)null);
                 _registeredForNonAdmins = true;
                 _initializing = false;
+                ShaderReplacement.FlushPendingNatureShaders();
                 Debug.Log($"{VaPieces.PluginName}: registered {registered} piece(s) on the hammer for a non-admin "
                     + "(RegisterPiecesForNonAdmins). They stay out of the build menu; other mods can still treat them as build pieces.");
                 try
@@ -559,6 +560,7 @@ namespace VerdantsAscent.Managers
             }
 
             _initializing = false;
+            ShaderReplacement.FlushPendingNatureShaders();
         }
 
         // Yielding variant of RegisterItemStandsAsStandins. 3,042 stand-ins

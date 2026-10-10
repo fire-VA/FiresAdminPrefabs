@@ -161,6 +161,13 @@ namespace VerdantsAscent.Patches
             // menu placeholder no vanilla client has. Neither belongs in a build a vanilla
             // client has to render. Hidden rather than unregistered, so turning the setting
             // back off brings them straight back.
+            // 1.1.211 (Fire 10-10: under Infinity Hammer's tool both Item Stands tabs showed, the real hammer one): the
+            // orientation ItemStandOrientation leaves off is no row, whatever lists the tool's table still holds.
+            if (!VAVanillaPieceManager.ShowStandOrientation(VAItemStandStandinFactory.Orientation.Vertical))
+                HideCategory(VACategoryRegistry.CatItemStandsV);
+            if (!VAVanillaPieceManager.ShowStandOrientation(VAItemStandStandinFactory.Orientation.Horizontal))
+                HideCategory(VACategoryRegistry.CatItemStandsH);
+
             if (_vanillaFriendly)
             {
                 HideCategory(VACategoryRegistry.CatBakedMeshes);
