@@ -1,4 +1,4 @@
-* v1.1.208 - Works with Infinity Hammer: FAP places its own pieces under either hammer, leaves IH's menus alone (no blueprint-menu freeze); item-stand fixes.
+* v1.1.209 - Works with Infinity Hammer: FAP places its own pieces under either hammer, leaves IH's menus alone (no blueprint-menu freeze); item-stand fixes.
 
 * v1.1.189 - updates and optimizations for Valheim 1.0
   - build menu, blueprint and placement fixes

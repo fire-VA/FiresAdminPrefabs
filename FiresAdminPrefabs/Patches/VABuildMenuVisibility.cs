@@ -66,6 +66,7 @@ namespace VerdantsAscent.Patches
             if (byCategory == null) return;
 
             RefreshViewRules();
+            _viewAppliedToLists = ViewingAsPlayer();   // 1.1.209: set by the pass that pruned the lists (1.1.208 set it from the row check too, so a menu open under IH's tool skipped the rebuild that runs the tab organizer: raw per-bundle tabs)
 
             table.m_availablePieces.RemoveWhere(IsHiddenFromMenu);
             table.m_enabledPieces.RemoveWhere(IsHiddenFromMenu);
@@ -149,7 +150,7 @@ namespace VerdantsAscent.Patches
             bool viewingAsPlayer = ViewingAsPlayer();
             _hideInjectedPieces = HideInjectedPiecesFromMenu || viewingAsPlayer;
             _hideAdminGatedPieces = viewingAsPlayer && AdminGatedHidingEnabled();
-            _viewAppliedToLists = viewingAsPlayer;
+            // 1.1.209: _viewAppliedToLists is NOT set here - only Apply (which really pruned the lists) may say "applied".
 
             // Client-only, every other player is a client without FAP, which is exactly who vanilla-friendly builds
             // for: a bundle prefab, stand-in or bake placed here would be invisible to them.

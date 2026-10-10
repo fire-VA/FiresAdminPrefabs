@@ -34,7 +34,7 @@ namespace VerdantsAscent
         public static VaPieces Instance;
         public const string PluginGUID = "com.Fire.adminprefabs";
         public const string PluginName = "FiresAdminPrefabs";
-        public const string PluginVersion = "1.1.208";
+        public const string PluginVersion = "1.1.209";
         private const string YamlDotNetDetectorGUID = "com.ValheimModding.YamlDotNetDetector";
         private const string MinimumCoreVersion = "0.2.126";
 
