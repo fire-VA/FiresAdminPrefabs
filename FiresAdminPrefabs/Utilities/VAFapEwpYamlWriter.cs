@@ -222,12 +222,24 @@ namespace VerdantsAscent.Utilities
             // respawns the ones they tagged. With vanilla-friendly
             // ON the modded tabs hide but EWP still respawns the
             // tagged effects so any non-FAP teammates see them too.
-            if (inFxTab
-                && userOptedIn
-                && VerdantsAscent.Utilities.VAEwpSoftDep.IsActive)
+            // 1.1.254: any self-destroying piece qualifies too (lavabomb_rock1), and with no EWP the FAP respawner marks it instead.
+            bool eligible = VerdantsAscent.Patches.VAFapRespawner.IsEligible(placedRoot.GetComponent<Piece>(), inFxTab);
+            // 1.1.259 point-of-use line (the team rule; [visual]'s persistence matrix test reads it): every opted-in or eligible placement
+            if (eligible || userOptedIn)
             {
-                zdo.Set(PersistMarkerKey, 1);
-                wroteRespawn = true;
+                var m0 = VerdantsAscent.Patches.VAFapRespawner.Mode(out string why0);
+                VaPieces.Log?.LogDebug($"[FAP Persist] placed '{prefabKey}' at {zdo.GetPosition():F1}: eligible {eligible} (fx tab {inFxTab}), opted in {userOptedIn}, mode {m0}{(why0 != null ? " (" + why0 + ")" : "")}, VanillaFriendly {cfg.configVanillaFriendly.Value}, UseEwp {cfg.configUseEwpForPersistence.Value}, EWP installed {VerdantsAscent.Patches.VAEwpDetector.IsEwpInstalled}");
+            }
+            if (eligible && userOptedIn)
+            {
+                var mode = VerdantsAscent.Patches.VAFapRespawner.Mode(out _);
+                if (mode == VerdantsAscent.Patches.VAPersistMode.Ewp)
+                {
+                    zdo.Set(PersistMarkerKey, 1);
+                    wroteRespawn = true;
+                }
+                else if (mode == VerdantsAscent.Patches.VAPersistMode.Fap)
+                    wroteRespawn = VerdantsAscent.Patches.VAFapRespawner.TagIfFapMode(zdo, prefabKey);
             }
 
             if (cfg.configVerboseLogging.Value)

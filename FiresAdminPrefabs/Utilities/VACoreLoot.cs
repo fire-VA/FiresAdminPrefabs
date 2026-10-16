@@ -16,7 +16,7 @@ namespace VerdantsAscent.Utilities
     // preset keeps its own seconds timer (min / max) and Core applies its no-player-within-range rule. Without it (no Core, or an
     // older Core) FAP falls back as before: chests through the EWP rule, item stands through FAP's own refill or EWP (its toggle).
     //   Chest: right after the placer stamps a preset chest, Track(zdo, min, max, stacking radius, refillWithDefaults: false,
-    //     carry keys). The chest's marker is va_chest = 2 (Core) instead of 1, so the EWP rule (filter va_chest 1) never also
+    //     carry keys). The chest's marker is va_chest = 0 on this route (1.1.214; was 2), so the EWP rule (filter va_chest 1) never also
     //     respawns it. The preset's loot travels on the chest as va_chest_loot (JSON); a chest Core respawns is filled once by its
     //     owner from it (Container Awake), so no peer needs FAP's preset file.
     //   Item stand: TrackRefill(zdo, min, max); Core's RefillDue(zdo) hangs the preset item back (VAItemStandApplier.HangItem).
@@ -24,7 +24,12 @@ namespace VerdantsAscent.Utilities
     public static class VACoreLoot
     {
         public const string KeyLoot = "va_chest_loot", KeyFilled = "va_chest_filled";
-        public const int MarkerCore = 2;
+        // 1.1.214 ([generator] Core 0.2.392 contract: a chest with va_chest != 0 is EWP's and Core never tracks it): the Core route stamps 0.
+        public const int MarkerCore = 0;
+        // 1.1.213 (Fire 10-12, Chunk by Chunk server: preset chests never came back while he waited by them): the chest's own
+        // "no player within" distance, read by Core's respawn (fires_loot_range, the key stands already use). The preset's
+        // va_chest_refill_clear_m, default 0 = it respawns with players right there; a Core without the key keeps [Loot]'s range.
+        public const string KeyPlayerRange = "fires_loot_range", PresetPlayerRange = "va_chest_refill_clear_m";
 
         private static bool _resolved;
         private static MethodInfo s_track, s_trackRefill, s_trackRefillRange;
@@ -53,7 +58,7 @@ namespace VerdantsAscent.Utilities
             _resolved = true;
             try
             {
-                var t = AccessTools.TypeByName("FiresCore.Loot.LootRespawn");
+                var t = global::VerdantsAscent.Utilities.QuietTypes.Find("FiresCore.Loot.LootRespawn");
                 if (t == null) return;
                 s_track = AccessTools.Method(t, "Track");
                 s_trackRefill = AccessTools.Method(t, "TrackRefill", new[] { typeof(ZDO), typeof(float), typeof(float) });
@@ -72,6 +77,7 @@ namespace VerdantsAscent.Utilities
         {
             VAChestConfigApplier.KeyChestMarker, VAChestConfigApplier.KeyAppliedPresetName, KeyLoot,
             "HasFields", "HasFieldsContainer", "Container.m_autoDestroyEmpty", preset.name,
+            KeyPlayerRange,
         };
 
         /// <summary>After a preset chest is stamped (as its owner). True when Core tracks it.</summary>
@@ -82,6 +88,7 @@ namespace VerdantsAscent.Utilities
             if (min <= 0f) return false;   // a one-shot loot template: no respawn
             float radius = Float(preset.TryGetFloatStr("va_prevent_stacking_radius"));
             zdo.Set(VAChestConfigApplier.KeyChestMarker, MarkerCore);
+            zdo.Set(KeyPlayerRange, Mathf.Max(0f, Float(preset.TryGetFloatStr(PresetPlayerRange))));
             zdo.Set(KeyLoot, JsonConvert.SerializeObject(new LootCopy { items = preset.items, itemAmount = preset.itemAmount }));
             zdo.Set(KeyFilled, true);
             s_track.Invoke(null, new object[] { zdo, min, max, radius > 0f ? radius : 1f, false, ChestCarryKeys(preset) });

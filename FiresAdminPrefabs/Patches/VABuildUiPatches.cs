@@ -1,3 +1,4 @@
+using System.Linq;
 using System;
 using System.Collections.Generic;
 using HarmonyLib;
@@ -34,7 +35,7 @@ namespace VerdantsAscent.Patches
         internal const float MinHeight = 320f, MaxHeight = 1400f;
 
         // One small corner handle, like the pre-1.0 build menu had - not four big squares.
-        private const float GripSize = 18f;
+        private const float GripSize = 22f;   // 1.1.202: was 18
 
         private static readonly Color GripColor = new Color(1f, 0.78f, 0.28f, 0.75f);
 
@@ -136,37 +137,17 @@ namespace VerdantsAscent.Patches
             {
                 var panel = ResolveWindowPanel(buildUi, root);
 
-                // ONE handle, bottom-right, like the pre-1.0 menu had. Four corner squares was a
-                // misread of the ask.
-                var gripGo = new GameObject("VAResizeGrip", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-                gripGo.transform.SetParent(panel, false);
-                var gripImg = gripGo.GetComponent<Image>();
-                gripImg.color = GripColor;
-                gripImg.raycastTarget = true;
-                var grt = gripImg.rectTransform;
-                grt.anchorMin = grt.anchorMax = grt.pivot = new Vector2(1f, 0f);   // bottom-right
-                grt.anchoredPosition = Vector2.zero;
-                grt.sizeDelta = new Vector2(GripSize, GripSize);
-                gripGo.AddComponent<VABuildUiResizeGrip>().Target = panel;
-
-                // The EventSystem only delivers drags to something with a Graphic, and nothing on this
-                // chain has one. Give the panel its own fully transparent raycast target: as the panel's
-                // OWN component it renders behind every child, so buttons, tags, the search field and the
-                // scroll view all keep their clicks, and only a drag on empty chrome reaches us. Same
-                // trick the pre-1.0 VAPanelDragger used.
-                var bg = panel.GetComponent<Image>();
-                if (bg == null)
-                {
-                    bg = panel.gameObject.AddComponent<Image>();
-                    bg.color = new Color(0f, 0f, 0f, 0f);
-                }
-                bg.raycastTarget = true;
-                if (bg.GetComponent<VABuildUiMoveHandler>() == null)
-                    bg.gameObject.AddComponent<VABuildUiMoveHandler>().Target = panel;
-
+                // 1.1.272 (UI audit, Tools\UI_HANDLING_AUDIT.md): Core is the ONE implementation of window move / scale / dock.
+                // The build menu is a Core HUD element ("fap.buildmenu", FiresShell.RegisterHudElement): Core's layout mode moves
+                // it, its corner grip (FiresResizeGrip) scales it, and Core saves the layout. FAP's own bottom-right grip, empty-
+                // chrome drag and saved scale / position are retired. The grid's saved width / height stay as the window's size.
                 NormalizeLayout(buildUi, panel);
+                var vanillaSize = panel.rect.size;   // 1.1.274: what a layout Reset returns to
                 RestoreGeometry(panel);
-                RestorePosition(panel);
+                if (!Utilities.CoreUiBridge.RegisterHud("fap.buildmenu", panel, "Build menu", "FiresAdminPrefabs", resizable: true,
+                        sizeChanged: s => VABuildUiWindowMarker.QueueSize(s), minSize: new Vector2(MinWidth, MinHeight),
+                        sizeReset: () => ResetSize(panel, vanillaSize)))   // 1.1.273: Core 0.2.574 SIZE mode = the grid width / height resize, as before
+                    Debug.Log($"{VaPieces.PluginName}: build menu stays where vanilla puts it (Core older than 0.2.572 has no HUD element API)");
             }
             catch (Exception ex)
             {
@@ -343,9 +324,24 @@ namespace VerdantsAscent.Patches
             rt.sizeDelta = new Vector2(w, h);
         }
         // Zoom and grid size are kept separately: a drag or a Shift+drag never discards the other one.
+        // 1.1.274 (Core 0.2.579 SizeReset): the layout Reset clears the saved grid size (NaN = vanilla) and puts the window back to vanilla's size
+        private static void ResetSize(RectTransform panel, Vector2 vanillaSize)
+        {
+            VABuildUiWindowMarker.CancelPending();
+            var cfg = ConfigManager.Instance;
+            if (cfg?.configBuildMenuWidth != null) cfg.configBuildMenuWidth.Value = float.NaN;
+            if (cfg?.configBuildMenuHeight != null) cfg.configBuildMenuHeight.Value = float.NaN;
+            if (panel != null)
+            {
+                panel.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, vanillaSize.x);
+                panel.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, vanillaSize.y);
+            }
+            Debug.Log($"{VaPieces.PluginName}: build menu size reset to vanilla {vanillaSize.x:0}x{vanillaSize.y:0} (Core layout Reset)");
+        }
+
         private static void RestoreGeometry(RectTransform panel)
         {
-            panel.localScale = Vector3.one * LoadScale();
+            // 1.1.272: no own scale (Core's HUD dock scales the window); only the saved grid size
 
             var cfg = ConfigManager.Instance;
             if (cfg?.configBuildMenuWidth == null || cfg.configBuildMenuHeight == null) return;
@@ -373,7 +369,21 @@ namespace VerdantsAscent.Patches
     }
 
     // Marks a BuildUi whose window controls are already attached.
-    internal sealed class VABuildUiWindowMarker : MonoBehaviour { }
+    // 1.1.273: also the debounce for Core's SIZE resize - BepInEx rewrites the .cfg on every Value set, so the grid size is
+    // saved once the drag has been still for half a second, not per frame.
+    internal sealed class VABuildUiWindowMarker : MonoBehaviour
+    {
+        private static Vector2 s_pending; private static float s_due = -1f;
+        internal static void QueueSize(Vector2 size) { s_pending = size; s_due = Time.unscaledTime + 0.5f; }
+        internal static void CancelPending() => s_due = -1f;   // 1.1.274: a Reset must not be overwritten by a queued save
+        private void Update()
+        {
+            if (s_due < 0f || Time.unscaledTime < s_due) return;
+            s_due = -1f;
+            VABuildUiWindow.SaveSize(s_pending);
+            Debug.Log($"{VaPieces.PluginName}: build menu size saved {s_pending.x:0}x{s_pending.y:0} (Core grip)");
+        }
+    }
 
     // Bridge FAP's own favorites onto Valheim 1.0's Favorites TAB.
     //
@@ -441,6 +451,17 @@ namespace VerdantsAscent.Patches
     internal sealed class VABuildUiResizeGrip : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
     {
         public RectTransform Target;
+
+        // 1.1.202 ([visual]'s ui_corner crop: VAGripSprite_1 resolved but nothing showed): the grip is the panel's FIRST child, so
+        // everything vanilla lays out after it draws on top. Keep it the last sibling whenever the menu shows, and say what it is.
+        private void OnEnable()
+        {
+            transform.SetAsLastSibling();
+            var img = GetComponent<Image>();
+            var rt = transform as RectTransform;
+            VaPieces.Log?.LogDebug($"[FAP] build-menu grip: sprite {(img != null && img.sprite != null ? img.sprite.name : "none")}, colour {(img != null ? img.color.ToString() : "-")}, "
+                + $"size {(rt != null ? rt.rect.size.ToString() : "-")}, sibling {transform.GetSiblingIndex() + 1}/{(transform.parent != null ? transform.parent.childCount : 0)} (last = on top)");
+        }
 
         private bool _gridMode;
         private Vector2 _startPointer;
@@ -538,8 +559,20 @@ namespace VerdantsAscent.Patches
         [HarmonyPostfix]
         public static void Postfix(BuildUi __instance)
         {
+            VerdantsAscent.Utilities.FapNativeTrace.Step("FAP window controls begin");
             VABuildUiWindow.Ensure(__instance);
             VABuildUiContextMenu.AttachEventClicks(__instance);   // 1.1.170
+            VerdantsAscent.Utilities.FapNativeTrace.Step("FAP window controls: grip + clicks attached");
+            // 1.1.207 (Fire 10-10: IH's tool still shows FAP's old tabs; where they come from wasn't provable from code): one
+            // evidence line per build-menu open, at Debug.
+            try
+            {
+                var t = Player.m_localPlayer?.m_buildPieces;
+                string labels = t?.m_categoryLabels != null ? string.Join(", ", t.m_categoryLabels.Take(14)) : "(none)";
+                string cats = t?.m_categories != null ? string.Join(",", t.m_categories.Take(14).Select(c => ((int)c).ToString())) : "(none)";
+                VaPieces.Log?.LogDebug($"[FAP] build menu opened: table '{t?.name}' organized={HammerCategoryUI.IsOrganizable(t)} hammer={HammerCategoryUI.IsHammerTable(t)} {HammerCategoryUI.IhStateText()} categories=[{cats}] labels=[{labels}]");
+            }
+            catch (System.Exception ex) { VaPieces.Log?.LogDebug($"[FAP] build menu opened: (evidence line failed: {ex.Message})"); }
         }
     }
 
@@ -593,6 +626,9 @@ namespace VerdantsAscent.Patches
         internal static void AttachEventClicks(BuildUi buildUi)
         {
             if (buildUi == null) return;
+            // 1.1.203: FAP's piece/tab context menu is for the Hammer; with another tool's table (Infinity Hammer's blueprint
+            // menu) the per-rebuild button sweep is skipped entirely.
+            if (!HammerCategoryUI.IsOrganizable(Player.m_localPlayer?.m_buildPieces)) return;
             foreach (var b in buildUi.GetComponentsInChildren<BuildUiPieceButton>(true))
                 if (b.GetComponent<RightClickOpener>() == null) b.gameObject.AddComponent<RightClickOpener>();
             foreach (var b in buildUi.GetComponentsInChildren<BuildUiTagButton>(true))
@@ -616,9 +652,14 @@ namespace VerdantsAscent.Patches
                 VaPieces.Log?.LogDebug($"[VABuildUi] event click {eventData.button} on {name}: ctrl {FiresCore.Input.FiresKeys.GetKey(KeyCode.LeftControl) || FiresCore.Input.FiresKeys.GetKey(KeyCode.RightControl)}, "
                     + $"shift {FiresCore.Input.FiresKeys.GetKey(KeyCode.LeftShift) || FiresCore.Input.FiresKeys.GetKey(KeyCode.RightShift)}, alt {FiresCore.Input.FiresKeys.GetKey(KeyCode.LeftAlt) || FiresCore.Input.FiresKeys.GetKey(KeyCode.RightAlt)}; "
                     + $"binding {(key != null ? $"{key.Key.Value} ctrl {key.Ctrl.Value} shift {key.Shift.Value} alt {key.Alt.Value}" : "none")}, already opened this frame {s_openedFrame == Time.frameCount}");
-                if (eventData.button != PointerEventData.InputButton.Right || s_openedFrame == Time.frameCount) return;
+                // 1.1.263 (Arbby via Fire): the binding may be the MIDDLE button. A middle click on a PIECE button is handled by the
+                // OnMiddleClick prefix below (it also has to stop vanilla's favourite toggle); here only tag buttons take it.
+                bool middleBinding = key != null && key.Key.Value == KeyCode.Mouse2;
+                var wanted = middleBinding ? PointerEventData.InputButton.Middle : PointerEventData.InputButton.Right;
+                if (eventData.button != wanted || s_openedFrame == Time.frameCount) return;
+                if (middleBinding && GetComponent<BuildUiPieceButton>() != null) return;
                 // 1.1.173 (the lead 15:5x: the click line fired, still no menu): every way out is logged, and the outcome.
-                string skip = key == null ? "no binding" : key.Key.Value != KeyCode.Mouse1 ? $"binding key {key.Key.Value} is not Mouse1"
+                string skip = key == null ? "no binding" : key.Key.Value != KeyCode.Mouse1 && key.Key.Value != KeyCode.Mouse2 ? $"binding key {key.Key.Value} is not a mouse button (Mouse1 / Mouse2)"
                     : !ModifiersHeld(key) ? "modifiers don't match the binding" : FiresCore.Input.FiresInputBlock.IsCapturing ? "Core's text-capture gate is on (a Fires text field or modal holds input)" : null;
                 if (skip != null) { VaPieces.Log?.LogDebug($"[VABuildUi] event click on {name}: no menu, {skip}"); return; }
                 Utilities.VARightClickMenu.NextPosition = eventData.position;   // at the click, not wherever the real cursor is
@@ -632,6 +673,28 @@ namespace VerdantsAscent.Patches
             }
         }
 
+        // 1.1.263 (Arbby via Fire: "if we rebind the context menue for fap to mmb it should BLOCK the vanilla mmb favorites quick
+        // action and just pull up our context menue, keeping the mmb favorites untouched otherwise"). Vanilla's middle click on a piece
+        // button is BuildUiPieceButton.OnMiddleClick -> BuildUi.PressedFavoriteButton. Only when [BuildMenu] ContextMenuKey is Mouse2
+        // (with its modifiers held) does FAP take the click: its piece menu opens (favourite is one of its entries) and vanilla's
+        // toggle is skipped. Any other binding: vanilla runs exactly as before.
+        internal static bool MiddleClickIsOurs(out FiresCore.Input.KeyBinding key)
+        {
+            key = ConfigManager.Instance?.configBuildMenuContextMenuKey;
+            return key != null && key.Key.Value == KeyCode.Mouse2 && ModifiersHeld(key) && !FiresCore.Input.FiresInputBlock.IsCapturing
+                && HammerCategoryUI.IsOrganizable(Player.m_localPlayer?.m_buildPieces);
+        }
+
+        internal static void OpenFromMiddleClick(BuildUiPieceButton button)
+        {
+            if (s_openedFrame == Time.frameCount || button == null || button.Piece == null) return;
+            Utilities.VARightClickMenu.NextPosition = Input.mousePosition;
+            VAHammerRightClickPatches.ShowPieceMenu(button.Piece);
+            Utilities.VARightClickMenu.NextPosition = null;
+            s_openedFrame = Time.frameCount;
+            VaPieces.Log?.LogDebug($"[VABuildUi] MMB -> FAP context menu (vanilla favourite skipped) on '{button.Piece.name}': {(Utilities.VARightClickMenu.IsOpen ? "open" : "NOT open after the call")}");
+        }
+
         private static GameObject TopmostUiUnderPointer()
         {
             var events = EventSystem.current;
@@ -639,6 +702,20 @@ namespace VerdantsAscent.Patches
             PointerHits.Clear();
             events.RaycastAll(new PointerEventData(events) { position = Input.mousePosition }, PointerHits);
             return PointerHits.Count > 0 ? PointerHits[0].gameObject : null;
+        }
+    }
+
+    // 1.1.263: vanilla's middle click on a piece button toggles a favourite. With FAP's context menu bound to the middle button, the
+    // click is FAP's instead (the menu opens, the favourite is untouched); with any other binding vanilla's toggle runs unchanged.
+    [HarmonyPatch(typeof(BuildUiPieceButton), "OnMiddleClick")]
+    public static class BuildUiPieceButton_OnMiddleClick_VAContextMenu_Patch
+    {
+        [HarmonyPrefix]
+        public static bool Prefix(BuildUiPieceButton __instance)
+        {
+            if (!VABuildUiContextMenu.MiddleClickIsOurs(out _)) return true;   // not bound to MMB: vanilla's favourite toggle
+            VABuildUiContextMenu.OpenFromMiddleClick(__instance);
+            return false;                                                      // one click, one action: no favourite toggle
         }
     }
 

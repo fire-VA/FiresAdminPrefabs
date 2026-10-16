@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Threading.Tasks;
 using BepInEx;
@@ -131,7 +132,7 @@ namespace VerdantsAscent.Utilities
                     _miLoadImage = imageConversionType.GetMethod("LoadImage",
                         System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
                         binder: null,
-                        types: new[] { typeof(Texture2D), typeof(byte[]) },
+                        types: new[] { typeof(Texture2D), typeof(byte[]), typeof(bool) },
                         modifiers: null);
                 }
                 catch { _miLoadImage = null; }
@@ -150,13 +151,15 @@ namespace VerdantsAscent.Utilities
             catch { return null; }
         }
 
-        public static bool LoadImageIntoTexture(Texture2D tex, byte[] data)
+        // 1.1.226 (memory, the lead 10-13): markNonReadable frees the CPU copy once the image is on the GPU (64 KB per 128x128
+        // icon, ~280 MB for a full icon cache). Readers of icon pixels (VABakeCacheIconBadge) already go through a RenderTexture.
+        public static bool LoadImageIntoTexture(Texture2D tex, byte[] data, bool markNonReadable = false)
         {
             var method = LoadImage_Method;
             if (method == null || tex == null || data == null) return false;
             try
             {
-                var result = method.Invoke(null, new object[] { tex, data });
+                var result = method.Invoke(null, new object[] { tex, data, markNonReadable });
                 return result is bool ok && ok;
             }
             catch { return false; }
@@ -300,6 +303,8 @@ namespace VerdantsAscent.Utilities
             if (piece == null) return;
             if (VaPieces.IsHeadless) return;
             if (piece.m_icon != null) return;
+            // 1.1.233: never queue an unnamed object, a lazy stub or a released lazy piece.
+            if (string.IsNullOrEmpty(piece.gameObject.name) || VALazyBundles.IsStub(piece.gameObject) || VALazyBundles.IsReleased(piece.gameObject)) { s_refusedEnqueues++; return; }
 
             // BUFFER ONLY — no I/O, no decode, no allocation beyond
             // the List.Add. Anything heavier waits for the gate.
@@ -352,6 +357,16 @@ namespace VerdantsAscent.Utilities
         // push into the active render queue. The PNG reads run on a worker one batch ahead of the
         // decode, so a slow or contended disk never lands on the main thread (one read took 92 ms
         // there while FAT's voxel cache was loading); only the decode is paced by the frame budget.
+        // 1.1.258: a flush pass whose snapshot no longer matches the list (logout cleared it) ends here, quietly.
+        private static bool SafeFlush => true;   // 1.1.264: always on, the key is gone (Fire 10-15)
+
+        private void AbortFlush(int snapshot)
+        {
+            _flushRunning = false;
+            Debug.Log($"{VaPieces.PluginName}: VAPieceIconRenderer - flush stopped: the pending list changed under it ({snapshot} -> {_pendingEnqueue.Count}){(s_quitting ? ", logout" : "")}.");
+            if (!s_quitting && _pendingEnqueue.Count > 0) KickFlush();
+        }
+
         private IEnumerator FlushPendingPaced()
         {
             // Extra half-second slack — the spawn-finalization frame
@@ -378,6 +393,9 @@ namespace VerdantsAscent.Utilities
                         do yield return null; while (!batch.Reading.IsCompleted);
                         frameStartMs = Time.realtimeSinceStartup * 1000f;
                     }
+                    // 1.1.258 (Ulvar 10-14): a logout clears _pendingEnqueue while this pass still holds its snapshot n; stop
+                    // the pass instead of reading (and later RemoveRange-ing) entries that are gone.
+                    if (SafeFlush && (s_quitting || _pendingEnqueue.Count < n)) { AbortFlush(n); yield break; }
                     if (batch.Reading.IsFaulted)
                         Debug.LogWarning($"{VaPieces.PluginName}: VAPieceIconRenderer — cached icon reads stopped early " +
                                          $"({batch.Reading.Exception?.GetBaseException().Message}); the unread icons render instead.");
@@ -417,6 +435,7 @@ namespace VerdantsAscent.Utilities
                 }
                 // Only the snapshot we processed — late enqueues (index >= n)
                 // survive and the while-loop picks them up next pass.
+                if (SafeFlush && _pendingEnqueue.Count < n) { AbortFlush(n); yield break; }   // 1.1.258: shrank during the last batch
                 _pendingEnqueue.RemoveRange(0, n);
             }
 
@@ -451,11 +470,125 @@ namespace VerdantsAscent.Utilities
             public Task Reading;
         }
 
-        private static string CachedIconPath(string prefabName) =>
-            Path.Combine(IconCacheDir, VAFapFileNames.ToSafeFileName(prefabName) + ".png");
+        // ── 1.1.238 CONTRACT (add-only; FDM 0.1.156+ calls these by reflection): icons for pieces whose look lives in another
+        // asset (FDM's FDMRoom_* wrappers have no mesh until their room asset loads). FDM loads the asset, calls RenderIconFor,
+        // and releases it at once: the render is synchronous, the copy is an INACTIVE stripped proxy (no Awake), nothing keeps
+        // a reference to `visual`, and the PNG is cached under the piece's prefab name, so the next start reads the cache. ──
+
+        /// <summary>True when an icon PNG for this prefab name is in FAP's icon cache.</summary>
+        public static bool HasCachedIcon(string prefabName)
+        {
+            if (string.IsNullOrEmpty(prefabName)) return false;
+            try { return File.Exists(CachedIconPath(prefabName)); } catch { return false; }
+        }
+
+        /// <summary>Renders <paramref name="visual"/> now as <paramref name="piece"/>'s icon (3/4 view from above at
+        /// <paramref name="pitchDeg"/>, framed to its bounds), sets piece.m_icon and caches the PNG under the piece's
+        /// prefab name. No-op on a dedicated server, headless, during logout/quit, or when nothing in it can be drawn.</summary>
+        public static void RenderIconFor(Piece piece, GameObject visual, float pitchDeg = 35f)
+        {
+            if (piece == null || visual == null || VaPieces.IsHeadless) return;
+            var inst = EnsureInstance();
+            if (inst == null) return;
+            string name = piece.gameObject.name;
+            s_saveName = name;
+            s_pitchDeg = Mathf.Clamp(pitchDeg, 5f, 85f);
+            Sprite sprite = null;
+            try { sprite = inst.RenderIcon(visual); }
+            catch (Exception ex) { VaPieces.Log?.LogDebug($"[IconRender] RenderIconFor '{name}' threw {ex.GetType().Name}: {ex.Message}"); }
+            finally { s_saveName = null; s_pitchDeg = 0f; }
+            if (sprite != null) { piece.m_icon = sprite; s_explicitRenders++; }
+            VaPieces.Log?.LogDebug($"[IconRender] RenderIconFor '{name}' from '{visual.name}' at {pitchDeg:0} deg: {(sprite != null ? "rendered + cached" : "nothing drawn")} ({s_why ?? "-"})");
+            s_why = null;
+        }
+
+        /// <summary>How many RenderIconFor calls produced an icon this session (tests/logs).</summary>
+        public static int ExplicitRenders => s_explicitRenders;
+
+        private static string s_saveName;
+        private static string s_why;
+
+        // What an explicit render's source holds, for the "nothing drawn" reason.
+        private static string ContentCensus(GameObject go)
+        {
+            int mf = 0, mfMesh = 0, smr = 0, rend = 0, rendOff = 0, inactive = 0, lods = 0;
+            foreach (var f in go.GetComponentsInChildren<MeshFilter>(true)) { mf++; if (f.sharedMesh != null) mfMesh++; }
+            foreach (var s in go.GetComponentsInChildren<SkinnedMeshRenderer>(true)) if (s.sharedMesh != null) smr++;
+            foreach (var r in go.GetComponentsInChildren<Renderer>(true)) { rend++; if (!r.enabled) rendOff++; }
+            foreach (var t in go.GetComponentsInChildren<Transform>(true)) if (!t.gameObject.activeSelf) inactive++;
+            lods = go.GetComponentsInChildren<LODGroup>(true).Length;
+            return $"{mf} MeshFilter ({mfMesh} with a mesh), {smr} skinned, {rend} renderer(s) ({rendOff} disabled), {inactive} inactive object(s), {lods} LODGroup(s), layer {go.layer}";
+        }
+
+        // Explicit renders: every inactive child switched on (the proxy is already stripped to visuals, LOD0 only, so no
+        // Awake runs any game code).
+        // Explicit renders: a renderer with no mesh, or a missing material/shader, is disabled (never drawn); the rest draw.
+        private static int DisableBrokenRenderers(GameObject root, out int left)
+        {
+            int dropped = 0; left = 0;
+            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null || !r.enabled || r is ParticleSystemRenderer) continue;
+                bool broken = false;
+                if (r is SkinnedMeshRenderer smr) broken = smr.sharedMesh == null;
+                else if (r is MeshRenderer) { var mf = r.GetComponent<MeshFilter>(); broken = mf == null || mf.sharedMesh == null; }
+                if (!broken) foreach (var m in r.sharedMaterials) if (m == null || m.shader == null) { broken = true; break; }
+                if (broken) { r.enabled = false; dropped++; } else left++;
+            }
+            return dropped;
+        }
+
+        private static void WakeAllVisuals(GameObject root)
+        {
+            foreach (var t in root.GetComponentsInChildren<Transform>(true)) if (!t.gameObject.activeSelf) t.gameObject.SetActive(true);
+        }
+        private static float s_pitchDeg;
+        private static int s_explicitRenders;
+
+        // A pitched 3/4 view: the default view's compass heading, raised to the given angle above the horizon.
+        private static Vector3 PitchedViewDirection(float pitchDeg)
+        {
+            var flat = new Vector3(CameraViewDirection.x, 0f, CameraViewDirection.z).normalized;
+            float rad = pitchDeg * Mathf.Deg2Rad;
+            // cameraDir points FROM the camera TO the target, so "from above" is a negative y.
+            return (flat * Mathf.Cos(rad) + Vector3.down * Mathf.Sin(rad)).normalized;
+        }
+
+        // An explicit render (RenderIconFor) needs no spawned player: the stage is far above the world. Never during logout/quit.
+        private static bool IsSafeForExplicitRender()
+        {
+            if (VaPieces.IsHeadless || s_quitting) return false;
+            try { if (Game.instance != null && GameShuttingDown(Game.instance)) return false; } catch { }
+            return true;
+        }
+
+        // 1.1.253: with [Icons] Improved FX capture ON, particle-only prefabs read and write "<name>__fx2.png", so the layered
+        // icons render once and the legacy PNGs stay for switching back. Mesh icons keep their one cache file.
+        private static readonly HashSet<string> s_fx2Names = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, bool> s_particleOnly = new Dictionary<string, bool>(StringComparer.Ordinal);
+
+        private static bool IsParticleOnly(GameObject prefab)
+        {
+            if (prefab == null) return false;
+            if (!s_particleOnly.TryGetValue(prefab.name, out bool only))
+            {
+                try { only = !HasMeshContent(prefab) && HasParticleContent(prefab); } catch { only = false; }
+                s_particleOnly[prefab.name] = only;
+            }
+            return only;
+        }
+
+        private static string CachedIconPath(string prefabName, GameObject prefab = null)
+        {
+            bool fx2 = ImprovedFxCapture && (s_fx2Names.Contains(prefabName) || IsParticleOnly(prefab));
+            return Path.Combine(IconCacheDir, VAFapFileNames.ToSafeFileName(prefabName) + (fx2 ? "__fx2.png" : ".png"));
+        }
 
         private static CachedIconReadBatch StartCachedIconReads(int start, int end)
         {
+            // 1.1.258 (Ulvar 10-14: ArgumentOutOfRange here on logout): the list can shrink under a running flush, so never
+            // index past what is there now.
+            if (SafeFlush) { end = Math.Min(end, _pendingEnqueue.Count); if (start > end) start = end; }
             var reads = new List<CachedIconRead>(end - start);
             for (int i = start; i < end; i++)
             {
@@ -466,7 +599,7 @@ namespace VerdantsAscent.Utilities
                 {
                     Piece = piece,
                     Name = name,
-                    Path = string.IsNullOrEmpty(name) ? null : CachedIconPath(name),
+                    Path = string.IsNullOrEmpty(name) ? null : CachedIconPath(name, piece.gameObject),
                 });
             }
             return new CachedIconReadBatch { Reads = reads, Reading = Task.Run(() => ReadCachedIconFiles(reads)) };
@@ -492,6 +625,7 @@ namespace VerdantsAscent.Utilities
         // I/O error or a failed decode, and the caller falls through to the render path.
         private static bool ApplyCachedIcon(CachedIconRead read)
         {
+            if (FapNativeTrace.InWindow) FapNativeTrace.Step("icon cached apply", read.Piece != null ? read.Piece.name : "null");
             if (read.Error != null)
                 Debug.LogWarning($"{VaPieces.PluginName}: VAPieceIconRenderer — cached icon read failed for '{read.Name}': {read.Error}");
             if (read.Png == null || read.Png.Length == 0) return false;
@@ -499,7 +633,7 @@ namespace VerdantsAscent.Utilities
             try
             {
                 var tex = new Texture2D(PlaceholderTextureSize, PlaceholderTextureSize, TextureFormat.RGBA32, mipChain: false);
-                if (!LoadImageIntoTexture(tex, read.Png))
+                if (!LoadImageIntoTexture(tex, read.Png, markNonReadable: true))
                 {
                     UnityEngine.Object.Destroy(tex);
                     return false;
@@ -640,11 +774,22 @@ namespace VerdantsAscent.Utilities
             //    population in heavy-mod setups).
             foreach (var entry in VAItemStandStandinFactory.AllStandins)
             {
+                // Not previewed yet = no meshes to render; keep (or restore) the item's sprite instead.
+                if (VAItemStandStandinFactory.TryGetUnbuiltIcon(entry.Value, out var itemIcon))
+                {
+                    var standPiece = entry.Value != null ? entry.Value.GetComponent<Piece>() : null;
+                    if (standPiece != null && itemIcon != null) standPiece.m_icon = itemIcon;
+                    continue;
+                }
                 if (instance.PushForReRenderInternal(entry.Value)) requeued++;
             }
 
             // 4) FX clear stand-ins (one per FX category — four total).
             foreach (var entry in VAFapEwpClearTool.AllStandins)
+            {
+                if (instance.PushForReRenderInternal(entry.Value)) requeued++;
+            }
+            foreach (var entry in VAFapPersistBrushTool.AllStandins)   // 1.1.260
             {
                 if (instance.PushForReRenderInternal(entry.Value)) requeued++;
             }
@@ -678,11 +823,15 @@ namespace VerdantsAscent.Utilities
         //
         // Returns true if the piece was queued (false if null or
         // already in the active session's queue).
+        private readonly Dictionary<Piece, Sprite> _reloadPrevious = new Dictionary<Piece, Sprite>();
+
         private bool PushForReRenderInternal(GameObject prefab)
         {
             if (prefab == null) return false;
             var piece = prefab.GetComponent<Piece>();
             if (piece == null) return false;
+            // 1.1.196: remember the old sprite; a failed re-render puts it back instead of leaving the icon blank.
+            if (piece.m_icon != null) _reloadPrevious[piece] = piece.m_icon;
             piece.m_icon = null;
             int instanceId = piece.GetInstanceID();
             if (!_enqueued.Add(instanceId))
@@ -749,9 +898,38 @@ namespace VerdantsAscent.Utilities
         // (Camera.Render, ReadPixels, EncodeToPNG, WriteAllBytes). Requires a
         // live, non-teleporting local player plus a streamed-in active area, so
         // the loading screen finishes before icon renders start competing for frames.
+        private static bool s_quitting;
+        // 1.1.233: counts for fap_lazy_bundle_test (reflection): renders refused for missing assets, enqueues refused, renders done.
+        public static int s_refusedRenders, s_refusedEnqueues, s_rendersDone;
+        public static int PendingCount => _pendingEnqueue.Count + (_instance != null ? _instance._queue.Count : 0);
+
+        // 1.1.232 (the lead, R-1013AP): a logout stops icon work at once: nothing queued renders, nothing pending flushes.
+        internal static void StopForLogout()
+        {
+            s_quitting = true;
+            int dropped = _pendingEnqueue.Count + (_instance != null ? _instance._queue.Count : 0);
+            _pendingEnqueue.Clear();
+            if (_instance != null) { _instance._queue.Clear(); _instance._enqueued.Clear(); }
+            Debug.Log($"{VaPieces.PluginName}: VAPieceIconRenderer — logout: icon renders stopped, {dropped} queued/pending dropped.");
+        }
+
+        [HarmonyLib.HarmonyPatch(typeof(Game), nameof(Game.Logout))]
+        private static class LogoutStop
+        {
+            [HarmonyLib.HarmonyPrefix] private static void Prefix() { try { StopForLogout(); } catch { } }
+        }
+
+        private static bool s_quitHooked;
+        private static readonly HarmonyLib.AccessTools.FieldRef<Game, bool> GameShuttingDown =
+            HarmonyLib.AccessTools.FieldRefAccess<Game, bool>("m_shuttingDown");
+
         private static bool IsSafeToRender()
         {
+            if (!s_quitHooked) { s_quitHooked = true; Application.quitting += () => s_quitting = true; }
             if (VaPieces.IsHeadless) return false;
+            // 1.1.231 (R-1013AO): nothing renders once logout or quit has begun.
+            if (s_quitting || Game.instance == null) return false;
+            try { if (GameShuttingDown(Game.instance)) return false; } catch { }
 
             var localPlayer = Player.m_localPlayer;
             if (localPlayer == null) return false;
@@ -833,6 +1011,15 @@ namespace VerdantsAscent.Utilities
                     // Pre-classify so the null-result bucketing below can tell
                     // intentional no-mesh skips apart from unexpected failures.
                     var pieceObject = piece.gameObject;
+                    // 1.1.231 (the lead, R-1013AO: UnityPlayer 0xc0000005 right after a flush, just after the lazy unload
+                    // released 32 pieces): never render a lazy stub, or a realized piece whose assets were released.
+                    if (pieceObject == null || string.IsNullOrEmpty(pieceObject.name) || VALazyBundles.IsStub(pieceObject) || VALazyBundles.IsReleased(pieceObject))
+                    {
+                        VaPieces.Log?.LogDebug($"[IconRender] skip '{(pieceObject != null ? pieceObject.name : "(destroyed)")}' (#{(ReferenceEquals(pieceObject, null) ? 0 : pieceObject.GetInstanceID())}): destroyed, unnamed, or a lazy piece not loaded now");
+                        continue;
+                    }
+                    VaPieces.Log?.LogDebug($"[IconRender] render '{pieceObject.name}' (#{pieceObject.GetInstanceID()}, scene '{pieceObject.scene.name}', {(VALazyBundles.BundleOf(pieceObject.name) != null ? "lazy" : "not lazy")})");
+                    FapNativeTrace.Step("icon render", $"'{pieceObject.name}' #{pieceObject.GetInstanceID()}");
                     bool hasMesh = pieceObject != null && HasMeshContent(pieceObject);
                     bool hasParticles = pieceObject != null && HasParticleContent(pieceObject);
 
@@ -857,10 +1044,14 @@ namespace VerdantsAscent.Utilities
                         threw = true;
                     }
 
+                    if (sprite == null && _reloadPrevious.TryGetValue(piece, out var previous) && previous != null)
+                        piece.m_icon = previous;   // fap_reload_icons never blanks an icon it could not re-render
+                    _reloadPrevious.Remove(piece);
+
                     if (sprite != null)
                     {
                         piece.m_icon = sprite;
-                        totalRendered++;
+                        totalRendered++; s_rendersDone++;
                     }
                     else if (!threw)
                     {
@@ -1063,6 +1254,12 @@ namespace VerdantsAscent.Utilities
         private Sprite RenderIcon(GameObject prefab)
         {
             if (prefab == null || _iconCamera == null) return null;
+            // 1.1.228: a lazy stub has no mesh; its icon comes from the cache, or from the real prefab once realized.
+            if (prefab == null || string.IsNullOrEmpty(prefab.name) || VALazyBundles.IsStub(prefab) || VALazyBundles.IsReleased(prefab)) { s_why = "unnamed, a lazy stub or released"; return null; }
+            if (!(s_saveName != null ? IsSafeForExplicitRender() : IsSafeToRender())) { s_why = "not safe to render now (logout/quit or no player)"; return null; }
+            string missing = MissingRenderAssets(prefab);
+            if (missing != null && s_saveName == null) { s_refusedRenders++; s_why = "refused: " + missing; VaPieces.Log?.LogDebug($"[IconRender] refuse '{prefab.name}' (#{prefab.GetInstanceID()}, scene '{prefab.scene.name}'): {missing}"); return null; }
+            if (s_saveName != null) s_why = "content: " + ContentCensus(prefab);
             EnsureRenderTexture();
 
             // Picks a render strategy from prefab content: mesh content → cheap
@@ -1075,6 +1272,17 @@ namespace VerdantsAscent.Utilities
                 if (HasMeshContent(prefab))
                 {
                     renderTarget = BuildRenderProxy(prefab);
+                    // 1.1.239 (FDM room icons, 29/29 "nothing drawn"): a room asset keeps parts of itself inactive, disabled or
+                    // behind LODGroups until it is placed. For an explicit render everything that can draw is switched on.
+                    if (s_saveName != null && renderTarget != null)
+                    {
+                        WakeAllVisuals(renderTarget);
+                        // 1.1.244 (the lead: rooms refused whole for "1/423 mesh(es) missing"): an explicit render drops only the
+                        // renderers that cannot draw (no mesh, a missing material or shader) and draws the rest.
+                        int dropped = DisableBrokenRenderers(renderTarget, out int left);
+                        if (dropped > 0) s_why += $"; {dropped} broken renderer(s) left out, {left} drawn";
+                        if (left == 0) { s_why += "; nothing drawable left"; NetworkObjectHelper.SafeDestroyImmediate(renderTarget); renderTarget = null; return null; }
+                    }
                 }
                 else if (HasParticleContent(prefab))
                 {
@@ -1087,7 +1295,7 @@ namespace VerdantsAscent.Utilities
                 // something that was never going to draw anything.
                 if (renderTarget == null)
                 {
-                    if (!HasAudioContent(prefab)) return null;
+                    if (!HasAudioContent(prefab)) { s_why += "; no mesh or particle content"; return null; }
 
                     var soundTex = BuildSoundOnlyIcon(prefab.name);
                     if (soundTex == null) return null;
@@ -1099,7 +1307,7 @@ namespace VerdantsAscent.Utilities
                 }
 
                 var renderers = renderTarget.GetComponentsInChildren<Renderer>(true);
-                if (renderers.Length == 0) return null;
+                if (renderers.Length == 0) { s_why += "; the proxy kept 0 renderers"; return null; }
 
                 // Particle icons must include ParticleSystemRenderer bounds (the
                 // particles ARE the content); mesh icons exclude them so emission
@@ -1146,7 +1354,15 @@ namespace VerdantsAscent.Utilities
                     RenderSettings.ambientGroundColor = prevGround;
                 }
 
-                if (tex == null) return null;
+                if (tex == null) { s_why += "; the capture returned nothing"; return null; }
+                if (s_saveName != null)
+                {
+                    int drawn = 0;
+                    var px = tex.GetPixels32();
+                    for (int i = 0; i < px.Length; i++) if (px[i].a > 8) drawn++;
+                    s_why += $"; renderers {renderers.Length}, bounds {bounds.size.x:0.#}x{bounds.size.y:0.#}x{bounds.size.z:0.#} m at {bounds.center}, {drawn} drawn pixel(s)";
+                    if (drawn == 0) { UnityEngine.Object.Destroy(tex); s_why += " (empty capture)"; return null; }
+                }
 
                 // Particle icons post-process: substitute a procedural fallback if
                 // the capture is essentially empty, else crop-and-upscale if sparse.
@@ -1157,10 +1373,12 @@ namespace VerdantsAscent.Utilities
                     if (maybeFallback != tex)
                     {
                         tex = maybeFallback;
+                        VaPieces.Log?.LogDebug($"[FxIcon] {prefab.name}: result fallback (procedural tile)");
                     }
                     else
                     {
                         tex = ZoomIfSparse(tex, prefab.name);
+                        VaPieces.Log?.LogDebug($"[FxIcon] {prefab.name}: result captured");
                     }
                 }
 
@@ -1169,12 +1387,13 @@ namespace VerdantsAscent.Utilities
                     new Rect(0, 0, IconSize, IconSize),
                     SpritePivotCenter,
                     SpritePixelsPerUnit);
-                sprite.name = prefab.name + "_icon";
+                sprite.name = (s_saveName ?? prefab.name) + "_icon";
 
                 // Persist to the icon cache so the next session hits
                 // FlushPendingPaced. Routed through QueueIconSave so the
                 // EncodeToPNG + WriteAllBytes work is deferred off this coroutine.
-                QueueIconSave(prefab.name, tex);
+                if (isParticleIcon && ImprovedFxCapture) s_fx2Names.Add(s_saveName ?? prefab.name);
+                QueueIconSave(s_saveName ?? prefab.name, tex);
 
                 return sprite;
             }
@@ -1221,8 +1440,214 @@ namespace VerdantsAscent.Utilities
         private const float MaxParticleDurationSeconds = 5f;
         private const float MinParticleSimTimeSeconds = 0.05f;
 
+        // 1.1.253 (Fire 10-14 "layer the group of fullest frames"): [Icons] Improved FX capture (default OFF).
+        // Additive / soft particle shaders write colour but little alpha, so the alpha gate above reads a bright effect as
+        // empty and the procedural fallback replaces it. The layered path samples LayeredSampleCount sim times, counts
+        // "lit" pixels by brightness over the backdrop, layers the fullest group (every frame within LayeredKeepFraction
+        // of the best, LayeredMinFrames..LayeredMaxFrames), normalises, and rebuilds alpha from brightness.
+        private const int LayeredSampleCount = 12;
+        private const int LayeredMinFrames = 3;
+        private const int LayeredMaxFrames = 5;
+        private const float LayeredKeepFraction = 0.7f;
+        private const int LitOverBackdrop = 24;   // max channel above the backdrop's (IconCameraBackground ~ 10,10,15)
+
+        private static int BackdropMax => Mathf.RoundToInt(Mathf.Max(IconCameraBackground.r, IconCameraBackground.g, IconCameraBackground.b) * 255f);
+
+        private static bool IsLit(Color32 c) =>
+            c.a > AlphaThreshold255 || Mathf.Max(c.r, Mathf.Max(c.g, c.b)) > BackdropMax + LitOverBackdrop;
+
+        private static bool ImprovedFxCapture => true;   // 1.1.264: always on, the key is gone (Fire 10-15)
+
+        private static float[] ParticleDurations(ParticleSystem[] particles)
+        {
+            var d = new float[particles.Length];
+            for (int i = 0; i < particles.Length; i++)
+            {
+                var ps = particles[i];
+                float duration = DefaultParticleDurationSeconds;
+                try
+                {
+                    var main = ps.main;
+                    if (main.duration > 0f) duration = main.duration;
+                    try { float life = main.startLifetime.constantMax; if (life > duration) duration = life; } catch { }
+                }
+                catch { }
+                d[i] = Mathf.Min(duration, MaxParticleDurationSeconds);
+            }
+            return d;
+        }
+
+        // 1.1.256 (R-FXICON A: 161 of 341 fallbacks drew NOTHING, not even colour): one line per zero-lit FX with what the camera
+        // framed vs where the particles are, how many are alive, and whether each renderer can draw at all.
+        private string DiagnoseZeroLit(GameObject instance)
+        {
+            var sb = new System.Text.StringBuilder();
+            try
+            {
+                // Suspect (a): what the camera was framed on. ComputeRenderBounds falls back to Bounds(0,0,0) when no renderer counts.
+                var rends = instance.GetComponentsInChildren<Renderer>(true);
+                int counted = rends.Count(x => x != null);
+                var framed = ComputeRenderBounds(rends, includeParticles: true);
+                bool atOrigin = counted == 0 || framed.center.sqrMagnitude < 1f;
+                sb.Append($"CAMERA framed on {_lastFramedBounds.center:F1} size {_lastFramedBounds.size:F2}{(_lastFramedBounds.center.sqrMagnitude < 1f ? " (WORLD ORIGIN)" : "")}; now bounds center {framed.center:F1} size {framed.size:F2}, renderers counted {counted}/{rends.Length}{(atOrigin ? " -> FRAMED AT WORLD ORIGIN (no renderer counted)" : "")}; ");
+                var cam = _iconCamera != null ? _iconCamera.transform : null;
+                sb.Append($"stage {StagePosition:F0}, cam {(cam != null ? cam.position.ToString("F1") + " fwd " + cam.forward.ToString("F2") : "none")}, ortho {(_iconCamera != null && _iconCamera.orthographic)} size {(_iconCamera != null ? _iconCamera.orthographicSize : 0f):F2}, active {instance.activeInHierarchy}");
+                foreach (var ps in instance.GetComponentsInChildren<ParticleSystem>(true).Take(6))
+                {
+                    var r = ps.GetComponent<ParticleSystemRenderer>();
+                    var mat = r != null ? r.sharedMaterial : null;
+                    string shader = mat == null ? "NO MATERIAL" : (mat.shader == null ? "NO SHADER" : mat.shader.name + (mat.shader.isSupported ? "" : " (UNSUPPORTED)"));
+                    var main = ps.main;
+                    sb.Append($" | '{ps.name}' alive {ps.particleCount}, go {ps.gameObject.activeInHierarchy}, renderer {(r == null ? "none" : (r.enabled ? "on" : "OFF") + " " + r.renderMode)}, layer {ps.gameObject.layer}, space {main.simulationSpace}, maxParticles {main.maxParticles}, rate {ps.emission.rateOverTimeMultiplier:0.#}/bursts {ps.emission.burstCount}, emission {(ps.emission.enabled ? "on" : "OFF")}, shader {shader}");
+                    if (r != null) sb.Append($", bounds {r.bounds.center:F1} size {r.bounds.size:F2}");
+                }
+            }
+            catch (System.Exception ex) { sb.Append(" (diag threw " + ex.GetType().Name + ")"); }
+            return sb.ToString();
+        }
+
+        // 1.1.257 (R-FXICON diag, 72 zero-lit): the camera was framed on renderer bounds taken once before simulating.
+        // Inactive child systems report bounds at (0,0,0), so the union centred halfway to the stage (-4000,1500,-4000), and
+        // world-space gibs fell ~200 m out of a 4 m frame. Now: pass 1 simulates every sample time and collects the live
+        // particles' WORLD positions; the camera frames a 10-90 % trimmed box of them (padded by the largest start size),
+        // so pass 2 renders where the particles actually are. Falls back to the old framing when nothing is alive.
+        private const int MaxFramingPoints = 4096;
+        private readonly ParticleSystem.Particle[] _framingBuffer = new ParticleSystem.Particle[1024];
+
+        private string FrameOnLiveParticles(ParticleSystem[] particles, float[] durations)
+        {
+            var xs = new List<float>(); var ys = new List<float>(); var zs = new List<float>();
+            float pad = 0.1f;
+            for (int f = 0; f < LayeredSampleCount && xs.Count < MaxFramingPoints; f++)
+            {
+                float fraction = (f + 1f) / LayeredSampleCount;
+                for (int i = 0; i < particles.Length; i++)
+                {
+                    var ps = particles[i];
+                    try { ps.Simulate(Mathf.Max(MinParticleSimTimeSeconds, durations[i] * fraction), withChildren: false, restart: true); } catch { continue; }
+                    if (!ps.gameObject.activeInHierarchy) continue;
+                    var r = ps.GetComponent<ParticleSystemRenderer>();
+                    if (r == null || !r.enabled) continue;
+                    int count = ps.GetParticles(_framingBuffer);
+                    bool local = ps.main.simulationSpace == ParticleSystemSimulationSpace.Local;
+                    for (int p = 0; p < count && xs.Count < MaxFramingPoints; p++)
+                    {
+                        var w = local ? ps.transform.TransformPoint(_framingBuffer[p].position) : _framingBuffer[p].position;
+                        xs.Add(w.x); ys.Add(w.y); zs.Add(w.z);
+                        float s = _framingBuffer[p].GetCurrentSize(ps);
+                        if (s > pad) pad = s;
+                    }
+                }
+            }
+            if (xs.Count == 0) return "no live particles in pass 1, kept renderer-bounds framing";
+            xs.Sort(); ys.Sort(); zs.Sort();
+            int lo = (int)(xs.Count * 0.1f), hi = Mathf.Max(lo, (int)(xs.Count * 0.9f) - 1);
+            var min = new Vector3(xs[lo], ys[lo], zs[lo]); var max = new Vector3(xs[hi], ys[hi], zs[hi]);
+            var b = new Bounds((min + max) * 0.5f, (max - min) + Vector3.one * Mathf.Min(pad, 4f));
+            if (b.size.sqrMagnitude < DegenerateBoundsSqrThreshold) b.size = Vector3.one * 0.5f;
+            FrameCameraOnBounds(b);
+            return $"framed on {xs.Count} live particle point(s): {b.center:F1} size {b.size:F2}";
+        }
+
+        private Texture2D RenderParticleLayered(GameObject instance, string prefabName)
+        {
+            var particles = instance.GetComponentsInChildren<ParticleSystem>(includeInactive: true).Where(p => p != null).ToArray();
+            var durations = ParticleDurations(particles);
+            int n = IconSize * IconSize;
+            var frames = new Color32[LayeredSampleCount][];
+            var lit = new int[LayeredSampleCount];
+            var times = new float[LayeredSampleCount];
+            int alphaOnlyBest = 0;
+            string framing = "renderer bounds (as approved in R-FXICON B)";
+            int best = 0; int[] order = null;
+            var scratch = new Texture2D(IconSize, IconSize, TextureFormat.RGBA32, false);
+            try
+            {
+              for (int attempt = 0; attempt < 2; attempt++)
+              {
+                if (attempt == 1)
+                {
+                    // 1.1.257: retry ONLY when the approved framing saw nothing, so the icons Fire OK'd stay byte-identical.
+                    framing = "retry: " + FrameOnLiveParticles(particles, durations);
+                    if (framing.StartsWith("retry: no live")) break;
+                }
+                for (int f = 0; f < LayeredSampleCount; f++)
+                {
+                    float fraction = (f + 1f) / LayeredSampleCount;
+                    times[f] = fraction;
+                    for (int i = 0; i < particles.Length; i++)
+                    {
+                        try { particles[i].Simulate(Mathf.Max(MinParticleSimTimeSeconds, durations[i] * fraction), withChildren: false, restart: true); }
+                        catch { }
+                    }
+                    _iconCamera.Render();
+                    RenderTexture.active = _renderTexture;
+                    scratch.ReadPixels(new Rect(0, 0, IconSize, IconSize), 0, 0);
+                    RenderTexture.active = null;
+                    var px = scratch.GetPixels32();
+                    int count = 0, alphaCount = 0;
+                    for (int i = 0; i < n; i++) { if (IsLit(px[i])) count++; if (px[i].a > AlphaThreshold255) alphaCount++; }
+                    frames[f] = px; lit[f] = count;
+                    if (alphaCount > alphaOnlyBest) alphaOnlyBest = alphaCount;
+                }
+                order = Enumerable.Range(0, LayeredSampleCount).OrderByDescending(i => lit[i]).ToArray();
+                best = lit[order[0]];
+                if (best > 0) break;
+              }
+            }
+            finally { Destroy(scratch); }
+
+            if (best == 0)
+            {
+                VaPieces.Log?.LogDebug($"[FxIcon] {prefabName}: fallback (no lit pixels in {LayeredSampleCount} frames, {particles.Length} systems)");
+                VaPieces.Log?.LogDebug($"[FxIcon] {prefabName}: zero-lit diag: {DiagnoseZeroLit(instance)}; framing: {framing}");
+                // 1.1.256: an empty texture, not null. Null skipped SubstituteFallbackIfEmpty, so these kept the piece's
+                // stand-in icon (the wooden ring in R-FXICON B) instead of the procedural tile the legacy path gave them.
+                var empty = new Texture2D(IconSize, IconSize, TextureFormat.RGBA32, false) { name = prefabName + "_icon_tex", wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+                empty.SetPixels32(new Color32[IconSize * IconSize]);
+                empty.Apply();
+                return empty;
+            }
+            var chosen = order.Where((i, rank) => rank < LayeredMaxFrames && lit[i] > 0 && (rank < LayeredMinFrames || lit[i] >= best * LayeredKeepFraction)).ToArray();
+
+            // Additive layer over the backdrop, then normalise so the brightest channel lands at 255.
+            int bg = BackdropMax;
+            var sum = new int[n * 3];
+            var alpha = new byte[n];
+            foreach (int f in chosen)
+            {
+                var px = frames[f];
+                for (int i = 0; i < n; i++)
+                {
+                    var c = px[i];
+                    sum[i * 3] += Mathf.Max(0, c.r - bg); sum[i * 3 + 1] += Mathf.Max(0, c.g - bg); sum[i * 3 + 2] += Mathf.Max(0, c.b - bg);
+                    if (c.a > alpha[i]) alpha[i] = c.a;
+                }
+            }
+            int peak = 1;
+            for (int i = 0; i < sum.Length; i++) if (sum[i] > peak) peak = sum[i];
+            float scale = 255f / peak;
+            var outPx = new Color32[n];
+            int finalLit = 0;
+            for (int i = 0; i < n; i++)
+            {
+                byte r = (byte)Mathf.Min(255, sum[i * 3] * scale), g = (byte)Mathf.Min(255, sum[i * 3 + 1] * scale), b = (byte)Mathf.Min(255, sum[i * 3 + 2] * scale);
+                byte lum = (byte)Mathf.Min(255, Mathf.Max(r, Mathf.Max(g, b)) * 1.5f);
+                byte a = (byte)Mathf.Max(alpha[i], lum < LitOverBackdrop ? 0 : lum);
+                outPx[i] = new Color32(r, g, b, a);
+                if (a > AlphaThreshold255) finalLit++;
+            }
+            VaPieces.Log?.LogDebug($"[FxIcon] {prefabName}: layered k={chosen.Length} t=[{string.Join(",", chosen.Select(i => times[i].ToString("0.00")).ToArray())}] " +
+                                   $"px=[{string.Join(",", chosen.Select(i => lit[i].ToString()).ToArray())}] of {n}, alpha-only best {alphaOnlyBest}, final {finalLit}, systems {particles.Length}; {framing}");
+            var tex = new Texture2D(IconSize, IconSize, TextureFormat.RGBA32, false) { name = prefabName + "_icon_tex", wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+            tex.SetPixels32(outPx);
+            tex.Apply();
+            return tex;
+        }
+
         private Texture2D RenderParticleComposite(GameObject instance, string prefabName)
         {
+            if (ImprovedFxCapture) return RenderParticleLayered(instance, prefabName);
             var particles = instance.GetComponentsInChildren<ParticleSystem>(includeInactive: true);
 
             // Precompute each system's effective duration (max of emission
@@ -1307,6 +1732,13 @@ namespace VerdantsAscent.Utilities
             {
                 Destroy(scratch);
             }
+
+            // 1.1.253 measurement (the "before" for the layered path): how much the alpha gate sees vs what is actually lit.
+            int alphaPx = 0, litPx = 0;
+            for (int i = 0; i < accumulator.Length; i++) { if (accumulator[i].a > AlphaThreshold255) alphaPx++; if (IsLit(accumulator[i])) litPx++; }
+            VaPieces.Log?.LogDebug($"[FxIcon] {prefabName}: legacy {CompositeFrameCount}-frame max, alpha px {alphaPx}, lit px {litPx} of {accumulator.Length}, systems {psCount}" +
+                                   (alphaPx <= accumulator.Length / 100 && litPx > alphaPx * 3 ? " (bright but alpha-empty: the fallback will replace it)" : ""));
+            if (litPx == 0) VaPieces.Log?.LogDebug($"[FxIcon] {prefabName}: zero-lit diag: {DiagnoseZeroLit(instance)}");
 
             var tex = new Texture2D(IconSize, IconSize, TextureFormat.RGBA32, false)
             {
@@ -1965,16 +2397,63 @@ namespace VerdantsAscent.Utilities
             // component another one [RequireComponent]s and logs an error when you
             // try, so ordering by "how many things does this type require" puts e.g.
             // CharacterDrop ahead of the Humanoid it depends on.
-            var all = new List<Component>(root.GetComponentsInChildren<Component>(true));
-            all.Sort((a, b) => RequireDepth(b).CompareTo(RequireDepth(a)));
-
-            foreach (var c in all)
+            // 1.1.256 (R-FXICON B: "Can't remove Humanoid because CharacterDrop depends on it", "Can't remove ZNetView /
+            // Destructible because TriggerPersistentEventOnDestroy depends on it"): counting a type's RequireComponent
+            // attributes is not a dependency order (Humanoid inherits more of them than CharacterDrop has). Each pass now
+            // removes only components that nothing still on the same GameObject requires, until a pass removes nothing.
+            var pending = new List<Component>();
+            foreach (var c in root.GetComponentsInChildren<Component>(true))
             {
-                if (c == null) continue;               // already went with a dependency
-                if (IsIconVisualComponent(c)) continue;
+                if (c == null || IsIconVisualComponent(c)) continue;
                 if (c is Animator animator) { animator.enabled = false; continue; }
-                SafeDestroyComponent(c);
+                pending.Add(c);
             }
+            for (int pass = 0; pass < 8 && pending.Count > 0; pass++)
+            {
+                int before = pending.Count;
+                for (int i = pending.Count - 1; i >= 0; i--)
+                {
+                    var c = pending[i];
+                    if (c == null) { pending.RemoveAt(i); continue; }
+                    if (IsRequiredBySibling(c)) continue;
+                    SafeDestroyComponent(c);
+                    pending.RemoveAt(i);
+                }
+                if (pending.Count == before) break;   // whatever is left is required by a kept visual component: it stays
+            }
+        }
+
+        private static readonly Dictionary<Type, Type[]> _requiredTypes = new Dictionary<Type, Type[]>();
+
+        private static Type[] RequiredTypes(Type t)
+        {
+            if (_requiredTypes.TryGetValue(t, out var req)) return req;
+            var list = new List<Type>();
+            try
+            {
+                foreach (var attr in t.GetCustomAttributes(typeof(RequireComponent), inherit: true))
+                {
+                    var rc = (RequireComponent)attr;
+                    if (rc.m_Type0 != null) list.Add(rc.m_Type0);
+                    if (rc.m_Type1 != null) list.Add(rc.m_Type1);
+                    if (rc.m_Type2 != null) list.Add(rc.m_Type2);
+                }
+            }
+            catch { }
+            return _requiredTypes[t] = list.ToArray();
+        }
+
+        // True when another live component on c's GameObject has a [RequireComponent] that c satisfies.
+        private static bool IsRequiredBySibling(Component c)
+        {
+            var type = c.GetType();
+            foreach (var other in c.GetComponents<Component>())
+            {
+                if (other == null || ReferenceEquals(other, c)) continue;
+                foreach (var req in RequiredTypes(other.GetType()))
+                    if (req.IsAssignableFrom(type)) return true;
+            }
+            return false;
         }
 
         private static readonly Dictionary<Type, int> _requireDepth = new Dictionary<Type, int>();
@@ -2017,6 +2496,29 @@ namespace VerdantsAscent.Utilities
                 default:
                     return false;
             }
+        }
+
+        // 1.1.268 ([lead] 10-15, R-FAD4: "Can't remove ZNetView / Destructible because TriggerPersistentEventOnDestroy depends
+        // on it", "Can't remove Humanoid because CharacterDrop depends on it"): the impostor bake and the item-stand fallback
+        // stripped MonoBehaviours in list order. Shared here: each pass destroys only what no live sibling [RequireComponent]s,
+        // until a pass removes nothing. Returns how many were left (still required by a kept component).
+        internal static int DestroyDependentsFirst(List<Component> pending, string who)
+        {
+            for (int pass = 0; pass < 8 && pending.Count > 0; pass++)
+            {
+                int before = pending.Count;
+                for (int i = pending.Count - 1; i >= 0; i--)
+                {
+                    var c = pending[i];
+                    if (c == null) { pending.RemoveAt(i); continue; }
+                    if (IsRequiredBySibling(c)) continue;
+                    SafeDestroyComponent(c);
+                    pending.RemoveAt(i);
+                }
+                if (pending.Count == before) break;
+            }
+            if (pending.Count > 0) VaPieces.Log?.LogDebug($"[IconRender] {who}: {pending.Count} component(s) kept, required by a kept component");
+            return pending.Count;
         }
 
         private static void SafeDestroyComponent(Component c)
@@ -2574,6 +3076,34 @@ namespace VerdantsAscent.Utilities
         // (i.e. at least one MeshFilter or SkinnedMeshRenderer has an
         // actual sharedMesh set). Drives the proxy-vs-instance decision
         // in RenderIcon.
+        // 1.1.233 (the lead, R-1013AP): a renderer with a missing mesh or material (released bundle assets) is never drawn.
+        // Returns null when every renderer is whole, else what is missing (for the log).
+        private static string MissingRenderAssets(GameObject prefab)
+        {
+            int meshes = 0, noMesh = 0, renderers = 0, noMat = 0;
+            foreach (var mf in prefab.GetComponentsInChildren<MeshFilter>(true))
+            {
+                if (mf == null) continue;
+                var r = mf.GetComponent<MeshRenderer>();
+                if (r == null || !r.enabled) continue;
+                meshes++;
+                if (mf.sharedMesh == null) noMesh++;
+            }
+            foreach (var smr in prefab.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (smr == null || !smr.enabled) continue;
+                meshes++;
+                if (smr.sharedMesh == null) noMesh++;
+            }
+            foreach (var r in prefab.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null || !r.enabled || r is ParticleSystemRenderer) continue;
+                renderers++;
+                foreach (var m in r.sharedMaterials) if (m == null || m.shader == null) { noMat++; break; }
+            }
+            return noMesh == 0 && noMat == 0 ? null : $"{noMesh}/{meshes} mesh(es) missing, {noMat}/{renderers} renderer(s) with a missing material";
+        }
+
         private static bool HasMeshContent(GameObject prefab)
         {
             if (prefab == null) return false;
@@ -2690,13 +3220,21 @@ namespace VerdantsAscent.Utilities
 
             // Strip ALL MonoBehaviours while inactive. DestroyImmediate so the
             // strip completes before SetActive(true) (Destroy defers a frame).
-            var monoBehaviours = instance.GetComponentsInChildren<MonoBehaviour>(includeInactive: true);
-            for (int i = 0; i < monoBehaviours.Length; i++)
+            // 1.1.256: dependents first (see PrepareProxyVisuals), so Unity never logs "Can't remove X because Y depends on it".
+            var monoBehaviours = new List<MonoBehaviour>(instance.GetComponentsInChildren<MonoBehaviour>(includeInactive: true));
+            for (int pass = 0; pass < 8 && monoBehaviours.Count > 0; pass++)
             {
-                var monoBehaviour = monoBehaviours[i];
-                if (monoBehaviour == null) continue;
-                try { UnityEngine.Object.DestroyImmediate(monoBehaviour); }
-                catch { /* component might have RequireComponent guards; ignore */ }
+                int before = monoBehaviours.Count;
+                for (int i = monoBehaviours.Count - 1; i >= 0; i--)
+                {
+                    var monoBehaviour = monoBehaviours[i];
+                    if (monoBehaviour == null) { monoBehaviours.RemoveAt(i); continue; }
+                    if (IsRequiredBySibling(monoBehaviour)) continue;
+                    try { UnityEngine.Object.DestroyImmediate(monoBehaviour); }
+                    catch { }
+                    monoBehaviours.RemoveAt(i);
+                }
+                if (monoBehaviours.Count == before) break;
             }
 
             // Strip Colliders (no physics on the icon stage) and LODGroups (force LOD0).
@@ -2866,14 +3404,17 @@ namespace VerdantsAscent.Utilities
 #pragma warning restore CS0162
         }
 
+        private Bounds _lastFramedBounds;   // 1.1.256: what the camera was actually framed on, for the zero-lit diag
+
         private void FrameCameraOnBounds(Bounds bounds)
         {
+            _lastFramedBounds = bounds;
             Vector3 center = bounds.center;
             float size = bounds.size.magnitude;
             float distance = size * CameraDistanceFactor;
 
             // Three-quarter angled view matching the Unity inspector-preview look.
-            Vector3 cameraDir = CameraViewDirection.normalized;
+            Vector3 cameraDir = s_pitchDeg > 0f ? PitchedViewDirection(s_pitchDeg) : CameraViewDirection.normalized;
             _iconCamera.transform.position = center - cameraDir * distance;
             _iconCamera.transform.LookAt(center);
 

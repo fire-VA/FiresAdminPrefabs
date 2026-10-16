@@ -63,7 +63,7 @@ namespace VerdantsAscent.Managers
             new Dictionary<ResolutionMethod, int>();
 
         public static string AliasesPath =>
-            Path.Combine(Paths.ConfigPath, "FiresAdminPrefabs", "Manifests", "script_type_aliases.json");
+            Path.Combine(VerdantsAscent.Utilities.VAFapCachePaths.ManifestsDir, "script_type_aliases.json");
 
         // Main entry. Returns the resolved Type + the method that found
         // it. Never returns null — if all strategies miss, returns the

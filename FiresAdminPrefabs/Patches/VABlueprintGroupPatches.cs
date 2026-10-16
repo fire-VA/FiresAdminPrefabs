@@ -31,7 +31,7 @@ namespace VerdantsAscent.Patches
                     // Infinity Hammer's ZDO snapshot copies the group id verbatim when
                     // area-selecting over FAP pieces, so an IH copy would self-register
                     // and later be swept by the cascade.
-                    if (VAInfinityHammerCompat.IsInfinityHammerActive()) return;
+                    if (VAInfinityHammerCompat.IsIhCopyPlacing) return;   // 1.1.206: only an IH copy, not an IH-held hammer
 
                     VABlueprintGroupRegistry.Register(groupId, __instance);
                 }
@@ -58,6 +58,11 @@ namespace VerdantsAscent.Patches
                     if (!__instance.IsValid()) return;
                     var zdo = __instance.GetZDO();
                     if (zdo == null) return;
+
+                    // 1.1.261 (Fire 10-15, Arbby/Con on bri's world): with VanillaFriendly on, show what a vanilla client sees.
+                    // Vanilla never reads a stored scale on these prefabs (m_syncInitialScale off), so neither do we. Display only:
+                    // the ZDO keeps its scale, and turning VanillaFriendly off brings the look back on the next load.
+                    if (VAVanillaFriendlyScale.Skip(__instance, zdo)) return;
 
                     Vector3 scale = zdo.GetVec3(ZDOVars.s_scaleHash, Vector3.zero);
                     if (scale != Vector3.zero)

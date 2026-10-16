@@ -45,6 +45,8 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configItemStandUseEwp;   // 1.1.168
         public ConfigEntry<string> configVanillaFriendlyEffectAllowlist;
         public ConfigEntry<bool> configVanillaFriendly;
+        public ConfigEntry<bool> configHideDevPrefabs;
+        public ConfigEntry<bool> configFapRespawner;
         public ConfigEntry<bool> configUseEwpForPersistence;
         public ConfigEntry<bool> configSortHammerByMod;
         public ConfigEntry<BundleNatureShaderMode> configBundleNatureShader;
@@ -52,7 +54,7 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configBundleImpostors;
         public ConfigEntry<float> configBundleImpostorDistance, configBundleImpostorCullDistance;
         public ConfigEntry<string> configBundleNatureShaderAllOf;
-        public ConfigEntry<string> configBundleClutterAllOf;
+
         public ConfigEntry<string> configCustomPersistentPrefabs;
 
         // ────── Performance ──────
@@ -67,6 +69,14 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configInjectionSingleWalk;
         public ConfigEntry<string> configDediSkipRenderMeshes;
         public ConfigEntry<string> configClientLazyRenderMeshes;
+        public ConfigEntry<bool> configClientNonReadableRenderMeshes;
+        public ConfigEntry<bool> configDediUnloadTextures;
+        public ConfigEntry<bool> configLazyBundlesPreloadAll;
+        public ConfigEntry<int> configLazyBundlesLookAheadZones;
+        public ConfigEntry<int> configLazyBundlesUnloadMinutes;
+        public ConfigEntry<bool> configBuildMenuNativeTrace;
+        public ConfigEntry<bool> configTextureLibraryAtSpawn;   // 1.1.249
+        public ConfigEntry<bool> configShowAdminPieceUnlocks;
         public ConfigEntry<string> configRemovedPrefabPlaceholders;
         public ConfigEntry<string> configKeepDeadScriptSlotBundles;
 
@@ -90,6 +100,7 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configSortVanillaFirst;
         public ConfigEntry<bool> configHideAdminGatedPieces;
         public FiresCore.Input.KeyBinding configBuildMenuContextMenuKey;
+        public FiresCore.Input.KeyBinding configSnapDefaultKey;
 
         // ────── Sync ──────
         public ConfigEntry<bool> configAutoPushOnPlace;
@@ -105,19 +116,19 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configHammerSwapFracOnPlace;
         public ConfigEntry<bool> configHammerEffectsOverrideTTL;
         public ConfigEntry<bool> configItemStandHideStandVisual;
+        public ConfigEntry<string> configItemStandOrientation;   // 1.1.197: Horizontal | Vertical | Both
+
+        // ────── Infinity Hammer ──────
+        public ConfigEntry<bool> configIHKeepAreaGrabScale;
 
         private HashSet<string> _bundleNatureShaderAllOfSet;
         private string _bundleNatureShaderAllOfRaw;
-        private HashSet<string> _bundleClutterAllOfSet;
-        private string _bundleClutterAllOfRaw;
 
         public bool IsBundleInNatureShaderAllOf(string bundleName) =>
             IsBundleListed(bundleName, configBundleNatureShaderAllOf,
                 ref _bundleNatureShaderAllOfSet, ref _bundleNatureShaderAllOfRaw);
 
-        public bool IsBundleInClutterAllOf(string bundleName) =>
-            IsBundleListed(bundleName, configBundleClutterAllOf,
-                ref _bundleClutterAllOfSet, ref _bundleClutterAllOfRaw);
+
 
         // Re-parsed only when the raw string changes, so the init scan doesn't split
         // and lowercase the list once per prefab.
@@ -142,7 +153,7 @@ namespace VerdantsAscent.Managers
 
         public void Initialize(ConfigFile config)
         {
-            configItemStandUseEwp = config.Bind("Item stands", "UseEwpForRefill", false,
+            configItemStandUseEwp = config.Bind("ItemStands", "UseEwpForRefill", false,   // 1.1.217: was [Item stands] (a second item-stand section); the value migrates once (RemoveRetiredEntries)
                 "Item stand presets with a refill timer: on (and Expand World Prefabs installed) = EWP does the refill, even when Core is installed - FAP writes expand_prefabs_FAP_itemstands.yaml (per preset: the stand's item-taken state pokes it after the time, the poke puts the item back) and stamps each refillable stand with int fap_stand. Off (or no EWP) = Core's loot respawn, else FAP refills the stand itself; the rule file is removed.");
             configVerboseLogging = config.Bind("General", "VerboseLogging", false,
                 "Enable detailed debug logs.");
@@ -164,6 +175,14 @@ namespace VerdantsAscent.Managers
             configVanillaFriendly = config.Bind("General", "VanillaFriendly", false,
                 "When true, disables features that need this mod loaded on every client to display correctly (PS/Audio looping, scale sync, TimedDestruction cancel). The expanded hammer + placement configs still work; placed effects just won't loop or sync scale to vanilla clients. Pair with UseEwpForPersistence to get respawn-on-destroy behavior via ExpandWorldPrefabs instead.");
 
+            configHideDevPrefabs = config.Bind("Build Menu", "Hide dev prefabs", false,
+                "When true, dev / test prefabs (e.g. SeekerEgg_alwayshatch, *_dev, *_debug, *_test) are left out of the build menu. Off by default so admins can place anything; they always carry an amber caution badge in the grid. Local, applies the next time the menu refreshes.");
+
+
+
+            configFapRespawner = config.Bind("Persistence", "FAP respawner", false,
+                "When true (and VanillaFriendly is off and EWP persistence isn't in use), pieces placed with 'Place with Persistence' - FX plus anything with a TTL or self-destroy, e.g. lavabomb_rock1 - keep running (their TTL is cancelled) and FAP itself re-creates them 2 s after they are destroyed. Hammer removal never respawns. Modded clients only: a vanilla client sees the piece expire. With EWP persistence on, EWP does the respawning instead.");
+
             configUseEwpForPersistence = config.Bind("General", "UseEwpForPersistence", false,
                 "When true (requires ExpandWorldPrefabs on the server), effect-eligible placements get tagged with FAP_persist=1 so EWP respawns them on destroy. The single universal rule in expand_prefabs_FAP.yaml + the shared FAP_Respawn data entry in data_FAP.yaml are written once at mod load by every side that runs FAP (client, host, or dedicated server); no client→server push needed. Independent of VanillaFriendly — VanillaFriendly only controls which tabs surface modded content; EWP persistence is its own thing and works in either mode.");
 
@@ -174,36 +193,32 @@ namespace VerdantsAscent.Managers
                 "Shader installed on nature-detected bundle prefabs (trees, bushes, plants, pickables, mine-rocks) to fix the broken-alpha-cutout look bundle materials usually ship with. Vegetation (default) = Valheim's Custom/Vegetation; Standard = Unity Standard in cutout mode (revert option if Vegetation produces wrong textures on a particular bundle). Flips re-apply live, no world reload needed.");
 
             configBundleCullDistance = config.Bind("Performance", "BundleCullDistance", 200f,
-                new ConfigDescription("Bundle prefabs that ship without an LODGroup (e.g. Balrond's Poplar, Willow, Cypress) stop rendering past this many metres; 0 = never culled (as before). Prefabs with their own LODs are untouched. Applies at load.",
-                    new AcceptableValueRange<float>(0f, 1000f)));
+                new BepInEx.Configuration.ConfigDescription("Bundle prefabs that ship without an LODGroup (e.g. Balrond's Poplar, Willow, Cypress) stop rendering past this many metres; 0 = never culled (as before). Prefabs with their own LODs are untouched. Applies at load.",
+                    new BepInEx.Configuration.AcceptableValueRange<float>(0f, 1000f)));
             configBundleImpostors = config.Bind("Performance", "BundleImpostors", true,
                 "Those same no-LOD bundle prefabs get a baked impostor (a 16-triangle cutout billboard rendered from the prefab at load) as their far detail level, instead of only being culled. Applies at load.");
             configBundleImpostorDistance = config.Bind("Performance", "BundleImpostorDistance", 60f,
-                new ConfigDescription("Metres up to which an impostor-carrying bundle prefab draws its full mesh; past it, the impostor. Applies at load.",
-                    new AcceptableValueRange<float>(10f, 500f)));
+                new BepInEx.Configuration.ConfigDescription("Metres up to which an impostor-carrying bundle prefab draws its full mesh; past it, the impostor. Applies at load.",
+                    new BepInEx.Configuration.AcceptableValueRange<float>(10f, 500f)));
             configBundleImpostorCullDistance = config.Bind("Performance", "BundleImpostorCullDistance", 800f,
-                new ConfigDescription("Metres up to which the impostor draws; past it, nothing. 0 = never culled. Applies at load.",
-                    new AcceptableValueRange<float>(0f, 3000f)));
+                new BepInEx.Configuration.ConfigDescription("Metres up to which the impostor draws; past it, nothing. 0 = never culled. Applies at load.",
+                    new BepInEx.Configuration.AcceptableValueRange<float>(0f, 3000f)));
             configEnableBlueprintBake = config.Bind("Performance", "EnableBlueprintMeshBake", false,
                 "Shows the 'Bake to prefab...' action when you right-click a blueprint in the hammer. Baking is explicit and per-blueprint — nothing is baked just by placing one, and the fap_bake_diagnose / fap_bake_all commands work whether this is on or off. Baking combines the blueprint's static pieces into roughly one mesh per material and writes a .bakebundle into config/FiresAdminPrefabs/Assets with a .bakemanifest sidecar; the result appears on the Baked Meshes tab after a RELAUNCH, because bundles are registered at world load. Interactive pieces (doors, chests, fireplaces, signs, pickables, plants, item stands, wards) are kept aside and spawned as real objects when the baked piece is placed, so they still work; the combined geometry keeps its colliders but is invulnerable — no per-piece damage or salvage, and hammering any part removes the whole placement. Multiplayer: the server and every other client need that .bakebundle too (fap_push_bundle sends it), or the placement is a missing prefab to them. Local setting, not server-synced.");
 
             configBakeExcludeTransparent = config.Bind("Performance", "BakeExcludeTransparentPieces", true,
                 "When ON, blueprint pieces with transparent-queue materials (renderQueue >= 2500) — and FiresGlass windows by name — are kept OUT of the combined bake mesh and spawn as live pieces instead. Combining transparent geometry breaks per-piece depth sorting (glass panes draw through walls / in the wrong order once merged). Costs a few live objects per blueprint; visual correctness for stained glass. Applies to NEW bakes; re-bake existing blueprints to apply.");
 
-            configBakedLodLowDetailDistance = config.Bind("Performance", "BakedLodLowDetailDistance", 90f,
-                "Distance in metres at which a baked blueprint's geometry switches to its low-detail level. A bake is split into 64m cubes and each cube switches on its own, measured from its middle, so standing inside a megabuild keeps full detail around you and drops the rest. Below about 80 the cubes near you start switching while you are still standing in them. Higher is closer to the old always-full-detail behaviour. Measured against Valheim's default 65 field of view, and your graphics quality's LOD Bias scales it the same way it scales every other LOD in the game. Applies on the next world load.");
+            configBakedLodLowDetailDistance = config.Bind("Performance", "BakedLodLowDetailDistance", 90f, new BepInEx.Configuration.ConfigDescription("Distance in metres at which a baked blueprint's geometry switches to its low-detail level. A bake is split into 64m cubes and each cube switches on its own, measured from its middle, so standing inside a megabuild keeps full detail around you and drops the rest. Below about 80 the cubes near you start switching while you are still standing in them. Higher is closer to the old always-full-detail behaviour. Measured against Valheim's default 65 field of view, and your graphics quality's LOD Bias scales it the same way it scales every other LOD in the game. Applies on the next world load.", new BepInEx.Configuration.AcceptableValueRange<float>(0f, 1000f)));
 
-            configBakedLodCullDistance = config.Bind("Performance", "BakedLodCullDistance", 0f,
-                "Distance in metres past which a baked blueprint stops drawing entirely. 0 (default) means never — baked pieces are distant-rendered on purpose, so a castle stays on the horizon. Set a value only if you want very large bakes to vanish beyond a range. Applies on the next world load.");
+            configBakedLodCullDistance = config.Bind("Performance", "BakedLodCullDistance", 0f, new BepInEx.Configuration.ConfigDescription("Distance in metres past which a baked blueprint stops drawing entirely. 0 (default) means never — baked pieces are distant-rendered on purpose, so a castle stays on the horizon. Set a value only if you want very large bakes to vanish beyond a range. Applies on the next world load.", new BepInEx.Configuration.AcceptableValueRange<float>(0f, 5000f)));
 
             configBakedLodShadowProxy = config.Bind("Performance", "BakedLodShadowProxy", true,
                 "When ON, a baked blueprint's full-detail geometry casts no shadows; its low-detail geometry casts them instead. Shadows are re-rendered once per cascade, so a megabuild that draws 18 million triangles was drawing well over a hundred million a frame. Shadow shapes get coarser near the build; thin details like railings stop casting. Turn OFF to go back to shadows from the full-detail mesh. Applies on the next world load.");
 
-            configGhostCacheBudgetMB = config.Bind("Performance", "GhostCacheBudgetMB", 12288,
-                "Total size in megabytes the blueprint ghost cache is allowed to occupy. Picking a blueprint in the hammer shows a placement preview, and that preview is baked once and kept on disk so the next pick is instant; a large library can run to several gigabytes, and before this setting existed nothing ever deleted an entry. When a fresh bake pushes the folder over this number, the least-recently-picked entries are deleted until it fits. Every entry belongs to a blueprint you still have - there is no dead weight to collect - so an eviction costs a rebake the next time that blueprint is picked. Treat this as a runaway guard rather than a tight cap: the default is comfortably above a large library so it rarely fires. 0 disables eviction entirely. The cache lives outside BepInEx/config so it is never swept into a profile or modpack export. Read live, no reload needed.");
+            configGhostCacheBudgetMB = config.Bind("Performance", "GhostCacheBudgetMB", 12288, new BepInEx.Configuration.ConfigDescription("Total size in megabytes the blueprint ghost cache is allowed to occupy. Picking a blueprint in the hammer shows a placement preview, and that preview is baked once and kept on disk so the next pick is instant; a large library can run to several gigabytes, and before this setting existed nothing ever deleted an entry. When a fresh bake pushes the folder over this number, the least-recently-picked entries are deleted until it fits. Every entry belongs to a blueprint you still have - there is no dead weight to collect - so an eviction costs a rebake the next time that blueprint is picked. Treat this as a runaway guard rather than a tight cap: the default is comfortably above a large library so it rarely fires. 0 disables eviction entirely. The cache lives outside BepInEx/config so it is never swept into a profile or modpack export. Read live, no reload needed.", new BepInEx.Configuration.AcceptableValueRange<int>(256, 65536)));
 
-            configGhostCacheWarnPerBlueprintMB = config.Bind("Performance", "GhostCacheWarnPerBlueprintMB", 512,
-                "Logs a warning when a single blueprint's ghost cache is written at or above this many megabytes. Purely a report - the file is always written and the placement preview you see never changes. It exists because a handful of megabuilds dominate the cache: on one 516-entry library, 24 files held 77% of the disk and the largest single blueprint was 1.8 GB. The warning names them so you can decide what to keep. 0 turns the warning off. Read live, no reload needed.");
+            configGhostCacheWarnPerBlueprintMB = config.Bind("Performance", "GhostCacheWarnPerBlueprintMB", 512, new BepInEx.Configuration.ConfigDescription("Logs a warning when a single blueprint's ghost cache is written at or above this many megabytes. Purely a report - the file is always written and the placement preview you see never changes. It exists because a handful of megabuilds dominate the cache: on one 516-entry library, 24 files held 77% of the disk and the largest single blueprint was 1.8 GB. The warning names them so you can decide what to keep. 0 turns the warning off. Read live, no reload needed.", new BepInEx.Configuration.AcceptableValueRange<int>(16, 8192)));
 
             configBundleLoadingBudget = config.Bind("Performance", "BundleLoadingBudget", UnityEngine.ThreadPriority.High,
                 "How much time per frame Unity may spend loading this mod's asset bundles in the background, while it is loading them. Valheim pins background loading to its lowest setting unless something asks for more, which means a large Assets folder barely loads at all before the world does - and then the whole remainder is paid in one frozen frame as you join, measured at over ten seconds on a 233-bundle folder. Raising it lets that work finish during the menu and the load screen instead. Low is the game's own default and effectively restores the old behaviour; High is the fastest. The request goes through Valheim's own loading-budget controller, which always applies the highest outstanding request, so this never takes time away from the game's own loading - and it is released the moment the bundles are in, so nothing else in the session is affected. If the main menu feels less smooth while a very large Assets folder loads, step this down. Read when loading starts.");
@@ -212,7 +227,7 @@ namespace VerdantsAscent.Managers
                 "How bundle prefabs are checked as they join the world: missing scripts, vanilla singletons, EffectArea and Pickable heals, the network view. On: one walk of each prefab's hierarchy feeds every check. Off: the older way, a separate walk per check. Both make exactly the same repairs; the load log prints the time of each step either way, so the two can be compared, and Off is the fallback. Takes effect at the next world load.");
 
             configDediSkipRenderMeshes = config.Bind("Performance", "DediSkipRenderMeshes", "ConsMassiveTower,CastleTowerMassive",
-                "Dedicated server only. Comma-separated bundle prefab names whose render meshes the server drops right after loading their bundle. A server draws nothing, but a mesh loaded from a bundle still sits in its memory: the castle tower these two names share is 12.2 million vertices, about 800 MB on the server. Collision is separate (boxes and a small mesh) and is always kept, as is any mesh a collider uses, so players, building and support work exactly as before. Clients are never affected. Empty turns it off. Takes effect at the next server start.");
+                "Dedicated server only. Comma-separated bundle prefab names whose render meshes the server drops right after loading their bundle. '*' drops every bundle prefab's render mesh (colliders kept; a placed bake parent with no bake cache then never re-bakes on the server).) A server draws nothing, but a mesh loaded from a bundle still sits in its memory: the castle tower these two names share is 12.2 million vertices, about 800 MB on the server. Collision is separate (boxes and a small mesh) and is always kept, as is any mesh a collider uses, so players, building and support work exactly as before. Clients are never affected. Empty turns it off. Takes effect at the next server start.");
 configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPlaceholders", "ConsMassiveTower,CastleTowerMassive",
                 "Comma-separated names of pieces that were REMOVED from the bundles. Worlds that already have one placed keep its save data, and without a prefab by that name the game would log 'Missing prefab hash' every frame near it. FAP registers an invisible, empty placeholder under each name that no loaded bundle provides, so those saves load quietly and the piece comes back if its bundle ever carries it again. Empty turns it off.");
             configKeepDeadScriptSlotBundles = config.Bind("Compatibility", "KeepDeadScriptSlotBundles", "moregates",
@@ -222,35 +237,49 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 "moregates: its bundle carries only Valheim's own scripts and SimpleMeshCombine, all present in Valheim 1.0.");
             configClientLazyRenderMeshes = config.Bind("Performance", "ClientLazyRenderMeshes", "ConsMassiveTower,CastleTowerMassive",                "Clients only. Comma-separated bundle prefab names whose render-mesh DATA is unloaded right after their bundle loads and comes back from the bundle the first time one of them is built or loaded near you. The castle tower these two names share is 12.2 million vertices, about 1.6 GB per client, and most sessions never see one. Its look and its collision are unchanged (colliders are never touched); only the memory waits until a tower is there. Empty turns it off. Takes effect at the next game start.");
 
+            configLazyBundlesPreloadAll = config.Bind("LazyBundles", "PreloadAll", false,
+                "Clients only. When true, every FiresAdminPrefabs\\Assets bundle loads whole at game start (the old way: no stub, no wait, most memory). When false, building pieces from those bundles are listed on the Hammer at once but load only when you take one out, when one is about to appear, or when one is within LookAheadZones of you; items, creatures and other prefabs still load at start. Takes effect at the next game start.");
+            configLazyBundlesLookAheadZones = config.Bind("LazyBundles", "LookAheadZones", 3,
+                new BepInEx.Configuration.ConfigDescription("Clients only. Pieces this many zones (64 m each) around you are loaded in the background before they come into view, so walking into a build does not wait for its bundle. Higher = fewer waits, more memory. Live.",
+                    new BepInEx.Configuration.AcceptableValueRange<int>(1, 8)));
+            configLazyBundlesUnloadMinutes = config.Bind("LazyBundles", "UnloadMinutes", 10,
+                new BepInEx.Configuration.ConfigDescription("Clients only. A bundle piece nothing has used for this many minutes (none near you, none in hand) is unloaded again. 0 keeps everything once loaded. Live.",
+                    new BepInEx.Configuration.AcceptableValueRange<int>(0, 240)));
+
+            configBuildMenuNativeTrace = config.Bind("Diagnostics", "BuildMenuNativeTrace", false,
+                "Crash hunt (10-13, ntdll 0xc0000005 while the build menu opens): every step of opening the build menu is written AND flushed to BepInEx\\FiresTests\\fat_native_trace.log (FAT's file when FAT is loaded, else fap_native_trace.log), so the last line after a hard crash names the step. Clients only. Turn off once the crash is found.");
+            configShowAdminPieceUnlocks = config.Bind("General", "Show unlock messages for admin pieces", false,
+                "When off, the pieces FAP adds to the Hammer become known silently: no \"new piece\" popup for each of them (they arrive in bulk). Vanilla pieces keep their messages; Server Devcommands' own 'Disable unlock messages' still applies to everything. Live.");
+            configTextureLibraryAtSpawn = config.Bind("Diagnostics", "Texture library at spawn", false,
+                "1.1.249 (the lead 10-14, A/B): build the cross-bundle texture cache after the player spawns instead of during the scene load, keeping ~54 synchronous LoadAllAssets out of Unity's scene-switch sweep (the intermittent 'UnloadUnusedAssets incorrect' error). Off = as before (built on the first lookup). Lookups before the spawn then find nothing. Takes effect next load.");
+            // 1.1.271: [Diagnostics] BuildMenuSubFilterRows retired (Fire: sub-sections come from the top-right sort tab, never the left list)
+
+            configDediUnloadTextures = config.Bind("Performance", "DediUnloadTextures", true,
+                "Dedicated server only. The textures of pieces loaded from FiresAdminPrefabs\\Assets bundles are unloaded from the server's memory right after loading: a server draws nothing. Anything that reads one gets it back from its bundle. Off keeps them loaded. Takes effect at the next server start.");
+
+            configClientNonReadableRenderMeshes = config.Bind("Performance", "ClientNonReadableRenderMeshes", true,
+                "Clients only. The render meshes of pieces loaded from FiresAdminPrefabs\\Assets bundles drop their CPU-side copy once they are on the graphics card, which saves memory (the big building rips keep over a gigabyte of copies otherwise). Looks are unchanged; collision meshes and animated (skinned) meshes keep theirs, and the blueprint bake reads the others back from the graphics card. Off keeps every copy. Takes effect at the next game start.");
+
             configBundleNatureShaderAllOf = config.Bind("General", "BundleNatureShaderAllOf", "biomeflora",
                 "Comma-separated bundle filenames whose prefabs should ALL get the BundleNatureShader treatment, bypassing the per-prefab nature heuristic. Use for entirely-foliage bundles whose prefab names don't contain tree/bush/flower keywords (cacti, succulents, ferns named 'XYZ_BF'). Case-insensitive. Adding entries requires a world reload — flips of the BundleNatureShader mode itself are live, but this list controls which prefabs are eligible.");
-
-            configBundleClutterAllOf = config.Bind("General", "BundleClutterAllOf", "newcluttermarch2022",
-                "Comma-separated bundle filenames whose prefabs should ALL be routed to the dedicated 'Clutter' hammer tab — regardless of whether the prefab has an InstanceRenderer or appears in ClutterSystem.m_clutter. Use for entirely-clutter bundles (grass tufts, small decorations). Vanilla clutter and prefabs with InstanceRenderer are auto-detected and routed even when not on this list. Case-insensitive. Live toggle: flips re-categorize without a world reload.");
 
             configCustomPersistentPrefabs = config.Bind("General", "CustomPersistentPrefabs", "",
                 "Comma-separated prefab names that should receive EWP-persistence treatment in addition to the auto-detected effect prefabs (vfx_/fx_/sfx_ + TimedDestruction). Use for vanilla prefabs that auto-destroy themselves but you want to come back via EWP respawn — e.g. 'lavabomb_rock1'. Names are exact (no wildcards). The mod also maintains a hidden curated list of these built-in; this config adds yours on top.");
 
-            configTabDisplayNames = config.Bind("HammerTabs", "TabDisplayNames", "",
+            configTabDisplayNames = config.Bind("BuildMenu", "TabDisplayNames", "",
                 "Custom display names for hammer tabs (per-client; the on-disk folder names are unchanged). Comma-separated 'FolderName=Display Name' pairs. Set in-game via right-click a user tab → Rename — you normally don't edit this by hand.");
 
-            configClutterPaintRadius = config.Bind("Clutter", "PaintRadius", 4f,
-                "Radius (in meters) of the clutter-paint brush. When a clutter piece is selected in the hammer, each click paints clutter in a circle of this radius around the cursor instead of placing a single instance. Matches RPGmaker's paint_clutter default. Live: flips take effect on next click.");
+            configClutterPaintRadius = config.Bind("Clutter", "PaintRadius", 4f, new BepInEx.Configuration.ConfigDescription("Radius (in meters) of the clutter-paint brush. When a clutter piece is selected in the hammer, each click paints clutter in a circle of this radius around the cursor instead of placing a single instance. Matches RPGmaker's paint_clutter default. Live: flips take effect on next click.", new BepInEx.Configuration.AcceptableValueRange<float>(0.5f, 50f)));
 
-            configClutterPaintDensity = config.Bind("Clutter", "PaintDensity", 1f,
-                "Density multiplier for the clutter-paint brush. 1.0 = default spacing, 2.0 = twice as dense, 0.5 = sparser. Higher values look lusher but spawn more GameObjects per click. Live: flips take effect on next click.");
+            configClutterPaintDensity = config.Bind("Clutter", "PaintDensity", 1f, new BepInEx.Configuration.ConfigDescription("Density multiplier for the clutter-paint brush. 1.0 = default spacing, 2.0 = twice as dense, 0.5 = sparser. Higher values look lusher but spawn more GameObjects per click. Live: flips take effect on next click.", new BepInEx.Configuration.AcceptableValueRange<float>(0.05f, 10f)));
 
-            configFxClearRadius = config.Bind("FxClear", "Radius", 4f,
-                "Radius (meters) of the FX-clear brush. When the FAP_FxClearTool stand-in piece (in the Effect tab) is selected and clicked, every ZNetView in the brush radius that's tagged with both fap_piece=1 and FAP_persist=1 has FAP_persist cleared to 0 and is destroyed. Shift+Scroll resizes live. Surgical scope: vanilla world objects and non-FAP placements are never touched.");
+            configFxClearRadius = config.Bind("FxClear", "Radius", 4f, new BepInEx.Configuration.ConfigDescription("Radius (meters) of the FX-clear brush. When the FAP_FxClearTool stand-in piece (in the Effect tab) is selected and clicked, every ZNetView in the brush radius that's tagged with both fap_piece=1 and FAP_persist=1 has FAP_persist cleared to 0 and is destroyed. Shift+Scroll resizes live. Surgical scope: vanilla world objects and non-FAP placements are never touched.", new BepInEx.Configuration.AcceptableValueRange<float>(0.5f, 50f)));
 
-            configFxClearDurationSec = config.Bind("FxClear", "WatchdogDurationSec", 10f,
-                "How long after a clear click the watchdog keeps re-scanning the same area for FX that EWP respawned during the destroy/sync race window. Server sometimes processes our destroy before our FAP_persist clear-sync arrives, so EWP fires the respawn rule before the clear lands. Watchdog catches those late respawns. 10s is comfortable for typical LAN; bump to 20-30s if your server is under load.");
+            configFxClearDurationSec = config.Bind("FxClear", "WatchdogDurationSec", 10f, new BepInEx.Configuration.ConfigDescription("How long after a clear click the watchdog keeps re-scanning the same area for FX that EWP respawned during the destroy/sync race window. Server sometimes processes our destroy before our FAP_persist clear-sync arrives, so EWP fires the respawn rule before the clear lands. Watchdog catches those late respawns. 10s is comfortable for typical LAN; bump to 20-30s if your server is under load.", new BepInEx.Configuration.AcceptableValueRange<float>(0f, 120f)));
 
-            configFxClearTickIntervalSec = config.Bind("FxClear", "WatchdogTickIntervalSec", 0.5f,
-                "Interval between watchdog re-scans during the duration window. 0.5s catches respawns within half a second; lower = quicker catch but more CPU per click. Clamped to >= 0.1s.");
+            configFxClearTickIntervalSec = config.Bind("FxClear", "WatchdogTickIntervalSec", 0.5f, new BepInEx.Configuration.ConfigDescription("Interval between watchdog re-scans during the duration window. 0.5s catches respawns within half a second; lower = quicker catch but more CPU per click. Clamped to >= 0.1s.", new BepInEx.Configuration.AcceptableValueRange<float>(0.05f, 10f)));
 
-            configConfigWindowScale = config.Bind("UI", "ConfigWindowScale", 1.0f,
-                "Scale of the right-click configure windows (monster/container/clutter). Drag any corner of a config window to resize it; the chosen scale persists here. Range 0.7-2.5.");
+            configConfigWindowScale = config.Bind("General", "ConfigWindowScale", 1.0f, new BepInEx.Configuration.ConfigDescription("Scale of the right-click configure windows (monster/container/clutter). Drag any corner of a config window to resize it; the chosen scale persists here. Range 0.7-2.5.", new BepInEx.Configuration.AcceptableValueRange<float>(0.5f, 3f)));
 
             configBuildMenuWidth = config.Bind("BuildMenu", "WindowWidth", float.NaN,
                 "Build menu window width. Set by dragging the bottom-right grip, which grows the grid (Shift+drag zooms instead); NaN = vanilla default.");
@@ -259,9 +288,9 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 "Build menu window height. Set by dragging the bottom-right grip, which grows the grid (Shift+drag zooms instead); NaN = vanilla default.");
 
             configBuildMenuScale = config.Bind("BuildMenu", "WindowScale", 1f,
-                new ConfigDescription(
+                new BepInEx.Configuration.ConfigDescription(
                     "Build menu zoom. Set by Shift+dragging the bottom-right grip (a plain drag grows the grid). Range 0.7-2.5.",
-                    new AcceptableValueRange<float>(0.7f, 2.5f)));
+                    new BepInEx.Configuration.AcceptableValueRange<float>(0.7f, 2.5f)));
 
             // Screen position, not anchoredPosition: the window re-anchors to centre on
             // first attach, so a saved position means the same thing at any resolution.
@@ -279,9 +308,13 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
 
             configBuildMenuContextMenuKey = new FiresCore.Input.KeyBinding(config, "BuildMenu", "ContextMenuKey", KeyCode.Mouse1,
                 defaultShift: true,
-                description: "Opens FiresAdminPrefabs' menu for the build menu piece or tab under the cursor (favorites, hide, move to tab, rename, and the rest). Default Shift + right click; Mouse1 is the right mouse button. ContextMenuKey_Ctrl / _Shift / _Alt pick the modifiers to hold, and a modifier left off must not be held. A plain right click stays vanilla's: it closes the build menu. Live.");
+                description: "Opens FiresAdminPrefabs' menu for the build menu piece or tab under the cursor (favorites, hide, move to tab, rename, and the rest). Default Shift + right click; Mouse1 is the right mouse button; Mouse2 (the middle button, e.g. with ContextMenuKey_Shift = false for a plain middle click) also works, and then a middle click on a piece opens this menu INSTEAD of vanilla's favourite toggle (the menu has a favourite entry). ContextMenuKey_Ctrl / _Shift / _Alt pick the modifiers to hold, and a modifier left off must not be held. A plain right click stays vanilla's: it closes the build menu. Live.");
 
-            configAutoPushOnPlace = config.Bind("Sync", "AutoPushOnPlace", true,
+            configSnapDefaultKey = new FiresCore.Input.KeyBinding(config, "BuildMenu", "SnapDefaultKey", KeyCode.Q,
+                defaultShift: true,
+                description: "With a piece in hand, makes the snap point you cycled to YOUR default for that piece: the next time you take it out, it starts on that point. Pressing it again on the same point clears it. Per player and per piece, saved on this computer only (config\\FiresAdminPrefabs\\SnapDefaults). Default Shift + Q. SnapDefaultKey_Ctrl / _Shift / _Alt pick the modifiers. Live.");
+
+            configAutoPushOnPlace = config.Bind("General", "AutoPushOnPlace", true,
                 "When ON, placing a respawning chest/monster (or saving/deleting a preset) automatically pushes FAP's preset yaml (config/data/data_FAP*.yaml) + EWP rule yaml (config/expand_world/expand_prefabs_FAP*.yaml) up to the connected server, debounced ~2s so bulk building doesn't spam. Only fires for admins connected to a REMOTE server (on a listen-host the files are already local). When OFF, push only via the 'fap_push_presets' console command or FiresRPGmaker's 'pushcfgs'. The server always admin-gates the inbound write, so this toggle only controls the client-side auto-trigger.");
 
             configHammerForceClipGround = config.Bind("HammerToggles", "ForceClipGround", true,
@@ -321,6 +354,13 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 "this toggle preserves that variety in zone generators but bypasses it when YOU\n" +
                 "place the piece via hammer. Disable to let vanilla random-rotation run for hammer\n" +
                 "placements too.");
+            // 1.1.197 (Arbby via Fire: "one item stand tab, not two; the menu is huge"): which stand tabs the hammer gets.
+            configItemStandOrientation = config.Bind("ItemStands", "StandOrientation", "Horizontal",
+                new BepInEx.Configuration.ConfigDescription("Which item-stand tab the hammer shows: Horizontal (shelf), Vertical (wall) or Both. Only the chosen\n" +
+                    "orientation's stands are built, so the menu is smaller and opens faster. Also swappable live from\n" +
+                    "Shift+Right-click on the Item Stands tab. Live.",
+                    new AcceptableValueList<string>("Horizontal", "Vertical", "Both")));
+            configItemStandOrientation.SettingChanged += (_, __) => VAVanillaPieceManager.ApplyItemStandOrientation();
             configItemStandHideStandVisual = config.Bind("HammerToggles", "ItemStandHideStandVisual", false,
                 "When true, every ItemStand in the world with an item attached hides its own mesh\n" +
                 "visual (wall plate / shelf base) so only the attached item shows — clean floating-\n" +
@@ -336,6 +376,38 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 "component disabled; every ParticleSystem.main.loop set true; every AudioSource.loop\n" +
                 "set true. A ZDO flag is written so the override survives zone reload (re-applied on\n" +
                 "each Piece.Awake). Disable to let vanilla TTL/non-loop behavior run.");
+            configIHKeepAreaGrabScale = config.Bind("Compatibility", "InfinityHammerKeepAreaGrabScale", true,
+                "When true, objects placed from an Infinity Hammer multi-object selection (area grab,\n" +
+                "zoop, a blueprint) keep the size the ghost showed. With World Edit Commands 1.78 and\n" +
+                "newer, a selection scaled with the hammer places each object back at the size it was\n" +
+                "grabbed at. Only vanilla-scalable objects (trees, rocks, bushes) are touched, and the\n" +
+                "size goes into vanilla's own scale field, so it survives a relog, shows the same in a\n" +
+                "vanilla client and saves into blueprints. Single-object placement is unchanged. Live.");
+
+            // 1.1.196 (Fire's hand test 10-09: area-grab scale still not applied): 1.1.192 flipped the default to true, but every
+            // existing cfg kept its saved false. One-time migration: turn it on once; a later false by hand is kept.
+            var migrations = config.Bind("Internal", "AppliedMigrations", "",
+                "Bookkeeping for one-time settings migrations. Leave as is.");
+            // 1.1.199 (Fire: no dead keys): [General] BundleClutterAllOf is gone; drop it from existing cfg files once.
+            try
+            {
+                var orphansProp = typeof(ConfigFile).GetProperty("OrphanedEntries",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                if (orphansProp?.GetValue(config) is System.Collections.Generic.Dictionary<ConfigDefinition, string> orphans
+                    && orphans.Remove(new ConfigDefinition("General", "BundleClutterAllOf")))
+                {
+                    config.Save();
+                    UnityEngine.Debug.Log("FiresAdminPrefabs: removed the retired [General] BundleClutterAllOf from the cfg.");
+                }
+            }
+            catch { }
+
+            if (!(migrations.Value ?? "").Contains("keepareagrabscale-on"))
+            {
+                configIHKeepAreaGrabScale.Value = true;
+                migrations.Value = string.IsNullOrEmpty(migrations.Value) ? "keepareagrabscale-on" : migrations.Value + ",keepareagrabscale-on";
+                UnityEngine.Debug.Log("FiresAdminPrefabs: migrated [InfinityHammer] KeepAreaGrabScale to true (new default since 1.1.192; set it false again to opt out).");
+            }
 
             RegisterLiveReapplyHandlers();
             SetupConfigWatcher(config);
@@ -349,7 +421,7 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
             configVanillaFriendly.SettingChanged += recategorize;
             configUseEwpForPersistence.SettingChanged += recategorize;
             configSortHammerByMod.SettingChanged += recategorize;
-            configBundleClutterAllOf.SettingChanged += recategorize;
+
             configItemStandUseEwp.SettingChanged += (_, __) => VAItemStandEwp.Write();   // 1.1.181: write / remove the EWP refill script live
 
             configVanillaFriendlyEffectAllowlist.SettingChanged += (_, __) =>
@@ -459,7 +531,7 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 VAVanillaPieceManager.InitializeOnce();
 
                 if (Player.m_localPlayer != null)
-                    Player.m_localPlayer.UpdateAvailablePiecesList();
+                    VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "ConfigManager");
             }
             catch (Exception ex)
             {

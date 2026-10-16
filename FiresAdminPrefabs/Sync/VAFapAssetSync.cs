@@ -122,7 +122,9 @@ namespace VerdantsAscent.Sync
                 }
             }
 
-            public void Append(string relPath, int index, byte[] bytes)
+            public void Append(string relPath, int index, byte[] bytes) => Append(relPath, index, bytes, bytes?.Length ?? 0);
+
+            public void Append(string relPath, int index, byte[] bytes, int count)
             {
                 if (_stream == null) return;
                 if (!string.Equals(relPath, RelPath, StringComparison.OrdinalIgnoreCase))
@@ -137,13 +139,14 @@ namespace VerdantsAscent.Sync
                     Abort();
                     return;
                 }
-                if (bytes == null || bytes.Length == 0) { _nextIndex++; return; }
+                if (bytes == null || count <= 0) { _nextIndex++; return; }
+                if (count > bytes.Length) count = bytes.Length;
 
                 try
                 {
-                    _stream.Write(bytes, 0, bytes.Length);
-                    _hasher.TransformBlock(bytes, 0, bytes.Length, null, 0);
-                    BytesWritten += bytes.Length;
+                    _stream.Write(bytes, 0, count);
+                    _hasher.TransformBlock(bytes, 0, count, null, 0);
+                    BytesWritten += count;
                     _nextIndex++;
                 }
                 catch (Exception ex)
@@ -231,8 +234,7 @@ namespace VerdantsAscent.Sync
             return $"{bytes / (double)GiB:F2} GB";
         }
 
-        private static string RootAbsolutePath(string relPath) =>
-            Path.Combine(VAFapSyncManifest.RootDir, relPath.Replace('/', Path.DirectorySeparatorChar));
+        private static string RootAbsolutePath(string relPath) => VAFapSyncManifest.AbsolutePath(relPath);   // 1.1.254: per-folder roots
 
         private static string ConfigAbsolutePath(string relPath) =>
             Path.Combine(Paths.ConfigPath, relPath.Replace('/', Path.DirectorySeparatorChar));
@@ -283,6 +285,29 @@ namespace VerdantsAscent.Sync
             // has joined yet (HR2: 866 ms blocked in OnClientManifest at the first join; see WarmReassembly).
             try { Debug.Log($"[FAP Sync] Join path warmed on the main thread: reassembly {VAFapSyncChunker.WarmReassembly():F0} ms."); }
             catch (Exception ex) { Debug.LogWarning($"[FAP Sync] Join path warm-up failed: {ex.Message}"); }
+        }
+
+        // A rebuild after an admin push, off the main thread like the startup build. A client that joins meanwhile is
+        // still answered from the previous manifest; the swap is one assignment under the lock.
+        private static IEnumerator Server_RebuildManifestCoroutine(string why)
+        {
+            float startTime = Time.realtimeSinceStartup;
+            VAFapSyncManifest.Manifest manifest = null;
+            Exception buildError = null;
+            yield return VAFapSyncManifest.BuildLocalManifestAsync((built, error) =>
+            {
+                manifest = built;
+                buildError = error;
+            });
+            if (buildError != null || manifest == null)
+            {
+                Debug.LogWarning($"[FAP Sync] Server manifest rebuild after {why} failed: {buildError?.Message ?? "no manifest produced"}; "
+                    + "joining clients keep getting the previous one until a restart.");
+                yield break;
+            }
+            lock (_serverManifestLock) _serverManifest = manifest;
+            VaPieces.Log?.LogDebug($"[FAP Sync] Server manifest rebuilt after {why}: {manifest.Entries.Count} file(s) in "
+                + $"{(Time.realtimeSinceStartup - startTime):F1}s.");
         }
 
         // Mono compiles a method on its first call. These run on the main thread at a join (the RPC handlers' lambdas, this
@@ -826,7 +851,11 @@ namespace VerdantsAscent.Sync
                 OnClientFileFailed(relPath, "could not be opened for writing");
         }
 
-        public static void Client_HandleFileChunk(string relPath, int index, byte[] bytes)
+        public static void Client_HandleFileChunk(string relPath, int index, byte[] bytes) =>
+            Client_HandleFileChunk(relPath, index, bytes, bytes?.Length ?? 0);
+
+        // 1.1.246: `bytes` may be a reused buffer; only the first `count` bytes belong to this block.
+        public static void Client_HandleFileChunk(string relPath, int index, byte[] bytes, int count)
         {
             // Append is a no-op once the receiver has aborted, so without this the rest
             // of a half-gigabyte bundle arrives and is thrown away without a word.
@@ -843,7 +872,7 @@ namespace VerdantsAscent.Sync
 
             _clientLastActivity = Time.realtimeSinceStartup;
             bool wasActive = _clientReceiver.IsActive;
-            _clientReceiver.Append(relPath, index, bytes);
+            _clientReceiver.Append(relPath, index, bytes, count);
             if (wasActive && !_clientReceiver.IsActive)
                 OnClientFileFailed(relPath, $"dropped at block {index}");
         }
@@ -1662,12 +1691,15 @@ namespace VerdantsAscent.Sync
             _pendingBakedWrites = 0;
             if (bakedWrites > 0)
             {
-                // Without this the next client would diff against the pre-push hash
-                // snapshot and never download the new bundle.
-                VAFapSyncManifest.InvalidateCache();
+                // The join manifest built at startup still describes the old files, so joining clients were offered a
+                // re-pushed bundle under its OLD hash and threw the download away as a mismatch until a server restart
+                // (1.1.191). Rebuild it. Deleting the hash cache here did not help (the manifest object was never
+                // rebuilt) and only forced a full re-hash later; the cache already re-hashes any file whose size or
+                // modification time changed, which every pushed file has.
+                _host.StartCoroutine(Server_RebuildManifestCoroutine($"admin {sender}'s push of {bakedWrites} baked file(s)"));
                 string bakedNote = $"{bakedWrites} baked file(s) stored — clients pull them on connect, "
                     + "the server registers the piece on its next world load";
-                Debug.Log($"[FAP Push] {bakedNote}. Sync manifest cache invalidated.");
+                Debug.Log($"[FAP Push] {bakedNote}. Sync manifest rebuilding.");
                 if (bakedWrites == count)
                 {
                     _host.StartCoroutine(Server_AckCoroutine(sender, true, bakedNote));

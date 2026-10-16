@@ -58,7 +58,7 @@ namespace VerdantsAscent.Managers
         // Frame budget for the heavy InitializeOnce coroutine: after this many ms of work it
         // yields to Unity so the game stays smooth while the hammer populates. Kept small
         // (well under a 60fps frame) so this runs in the background after spawn WITHOUT visible
-        // stutter â€” the old 100ms budget meant a deliberate ~10fps floor for the whole scan,
+        // stutter - the old 100ms budget meant a deliberate ~10fps floor for the whole scan,
         // which read as "the hammer keeps hanging the main thread." The scan just takes more
         // (smooth) frames now; total wall-clock is similar.
         private const long InitFrameBudgetMs = 8;
@@ -67,7 +67,7 @@ namespace VerdantsAscent.Managers
         private const float LateClutterRefreshTimeoutSeconds = 600f;
 
         // Minimum squared bounds size before procedural snap points are worth
-        // generating â€” below this the prefab has effectively no extent.
+        // generating - below this the prefab has effectively no extent.
         private const float MinSnapBoundsSqrSize = 0.001f;
 
         // Minimum vertical half-extent before top-face snap points are emitted;
@@ -93,7 +93,7 @@ namespace VerdantsAscent.Managers
             "Random", "random"
         };
 
-        // Filter: prefab names always rejected regardless of components â€”
+        // Filter: prefab names always rejected regardless of components  - 
         // things the player shouldn't spawn (Odin, the Valkyrie cutscene actor,
         // treasure chests) or internal markers.
         private static readonly HashSet<string> _hardSkipNames = new HashSet<string>
@@ -113,7 +113,7 @@ namespace VerdantsAscent.Managers
             "TreasureChest_plains_stone", "TreasureChest_mountaincave_hildir",
             "TreasureChest_plainsfortress_hildir",
             "TreasureChest_forestcrypt_hildir",
-            // FAP-internal bake-parent template â€” the empty template must never
+            // FAP-internal bake-parent template - the empty template must never
             // be hammer-selectable (the per-blueprint piece_<name> prefabs in
             // the Baked Meshes tab are the user-facing entry point).
             "VA_BakeParent",
@@ -145,7 +145,7 @@ namespace VerdantsAscent.Managers
         }
 
         // Public entry point. Called from Ascend.WaitForZNetReady once
-        // ZNetScene + ObjectDB are populated. Idempotent â€” guarded by
+        // ZNetScene + ObjectDB are populated. Idempotent - guarded by
         // _initialized so a config reload re-running this is a no-op.
         public static void InitializeOnce()
         {
@@ -160,12 +160,12 @@ namespace VerdantsAscent.Managers
                 return;
             }
 
-            // Admin gate â€” the single funnel for everything this mod adds to
+            // Admin gate - the single funnel for everything this mod adds to
             // the hammer. Deliberately leaves _initialized false so a mid-session
             // admin promotion re-fires InitializeOnce on the next world load.
             //
             // RegisterPiecesForNonAdmins keeps a non-admin's pieces REGISTERED on the
-            // table â€” other mods only treat a prefab as a build piece when it is, and
+            // table - other mods only treat a prefab as a build piece when it is, and
             // their clones then render for players who never see the pieces themselves.
             // VABuildMenuVisibility is what keeps them out of the build menu.
             bool registrationOnly = !IsAdminGateOpen();
@@ -207,13 +207,13 @@ namespace VerdantsAscent.Managers
                 return;
             }
 
-            // Must run BEFORE category registration: it builds the prefabâ†’tab
+            // Must run BEFORE category registration: it builds the prefab->tab
             // override map and records folder names so they can be registered
             // as real PieceCategory values right after the built-ins.
             VAHammerTabOrganizer.LoadFromDisk();
 
             // Register our custom categories BEFORE we start assigning pieces
-            // to them â€” AssignCategory needs the PieceCategory value to exist.
+            // to them - AssignCategory needs the PieceCategory value to exist.
             VACategoryRegistry.RegisterAll(pieceTable);
 
             // Register every user-defined tab folder as a real category.
@@ -249,9 +249,9 @@ namespace VerdantsAscent.Managers
                 return;
             }
 
-            // Fallback (no coroutine host): drain synchronously and immediately â€” the spawn-gate is
+            // Fallback (no coroutine host): drain synchronously and immediately - the spawn-gate is
             // skipped here, since a sync drain can't wait for a spawn that hasn't happened yet.
-            Debug.LogWarning($"{VaPieces.PluginName}: VaPieces.Instance null â€” running heavy init synchronously (UI will hitch).");
+            Debug.LogWarning($"{VaPieces.PluginName}: VaPieces.Instance null - running heavy init synchronously (UI will hitch).");
             var stopwatch = Stopwatch.StartNew();
             var enumerator = InitializeHeavyWorkCoroutine(scene, pieceTable, existingBuildables, deferUntilSpawn: false, registrationOnly);
             while (enumerator.MoveNext()) { /* drain synchronously */ }
@@ -263,16 +263,32 @@ namespace VerdantsAscent.Managers
         // ZNetScene.m_prefabs. RegisterAll is async (yields between bundles
         // for responsiveness); with a large library (100+ bundles, ~138s) it
         // commonly finishes AFTER the hammer scan's one-shot snapshot, so the
-        // late bundles never land in the PieceTable â€” the user bakes them all
+        // late bundles never land in the PieceTable - the user bakes them all
         // but only the early ones show on the hammer. RegisterAll calls this
         // at its tail to add exactly those, idempotently (anything already on
         // the hammer is skipped). No-ops if the hammer table doesn't exist yet
-        // (player not spawned) â€” the normal scan, which runs later, gets them.
+        // (player not spawned) - the normal scan, which runs later, gets them.
         // Turns one eligible ZNetScene prefab into a hammer piece. Shared by the
         // initial scan and the late bundle pass so both produce identical pieces.
         // Returns true when the prefab was newly added to the PieceTable.
         private static bool ProcessEligibleForHammer(GameObject prefab, PieceTable pieceTable, out bool injectedFreshPiece)
         {
+            injectedFreshPiece = false;
+            if (VAExternalBundleLoader.IsRemovedPrefabPlaceholder(prefab)) return false;
+            // Another mod's Jotunn prefab is never modified (the rule and its reasons: VAJotunnGuard).
+            switch (VAJotunnGuard.Classify(prefab))
+            {
+                case VAJotunnGuard.Decision.LeaveAlone:
+                    VAJotunnGuard.RecordLeftAlone(prefab.name);
+                    return false;
+                case VAJotunnGuard.Decision.ByReference:
+                    _eligibleByName[prefab.name] = prefab;
+                    if (pieceTable.m_pieces.Contains(prefab)) return false;
+                    pieceTable.m_pieces.Add(prefab);
+                    _injectedPrefabHashes.Add(prefab.name.GetStableHashCode());
+                    VAJotunnGuard.RecordByReference(prefab.name);
+                    return true;
+            }
             _eligibleByName[prefab.name] = prefab;
             injectedFreshPiece = EnsurePieceComponent(prefab);
             EnsurePersistentZNetView(prefab);
@@ -314,8 +330,52 @@ namespace VerdantsAscent.Managers
             }
 
             if (added > 0)
-                Debug.Log($"{VaPieces.PluginName}: VAVanillaPieceManager.RegisterLateBundlePieces â€” added {added} late bundle piece(s) to the hammer.");
+                Debug.Log($"{VaPieces.PluginName}: VAVanillaPieceManager.RegisterLateBundlePieces - added {added} late bundle piece(s) to the hammer.");
             return added;
+        }
+
+        // 1.1.228 (lazy bundles): a stub's real prefab takes the stub's place on the Hammer: the same table slot, the
+        // category the stub was routed to, and the same hammer preparation as any bundle piece.
+        public static void ReplaceRealizedPiece(GameObject stub, GameObject real)
+        {
+            if ((UnityEngine.Object)real == (UnityEngine.Object)null) return;
+            var pieceTable = GetHammerPieceTable();
+            var stubPiece = stub != null ? stub.GetComponent<Piece>() : null;
+            if (pieceTable == null)
+            {
+                if (stub != null && _eligibleByName.TryGetValue(stub.name, out var e) && e == stub) _eligibleByName[real.name] = real;
+                return;
+            }
+            int slot = stub != null ? pieceTable.m_pieces.IndexOf(stub) : -1;
+            ProcessEligibleForHammer(real, pieceTable, out _);
+            var realPiece = real.GetComponent<Piece>();
+            if (realPiece != null && stubPiece != null)
+            {
+                realPiece.m_category = stubPiece.m_category;
+                if (realPiece.m_icon == null && stubPiece.m_icon != null) realPiece.m_icon = stubPiece.m_icon;   // the cached icon
+                if (realPiece.m_icon == null) VAPieceIconRenderer.Enqueue(realPiece);
+            }
+            if (slot >= 0)
+            {
+                int added = pieceTable.m_pieces.LastIndexOf(real);
+                if (added >= 0 && added != slot) { pieceTable.m_pieces.RemoveAt(added); if (added < slot) slot--; }
+                pieceTable.m_pieces[slot] = real;
+            }
+        }
+
+        // 1.1.230 (lazy bundles stage 3): an idle realized piece hands its Hammer slot back to its stub, and FAP's own
+        // tables let go of it so its assets can be released.
+        public static void RestoreStubPiece(GameObject real, GameObject stub)
+        {
+            if ((UnityEngine.Object)stub == (UnityEngine.Object)null) return;
+            if (real != null && _eligibleByName.TryGetValue(real.name, out var e) && e == real) _eligibleByName[real.name] = stub;
+            var pieceTable = GetHammerPieceTable();
+            if (pieceTable == null || real == null) return;
+            int slot = pieceTable.m_pieces.IndexOf(real);
+            if (slot >= 0) pieceTable.m_pieces[slot] = stub;
+            var realPiece = real.GetComponent<Piece>();
+            var stubPiece = stub.GetComponent<Piece>();
+            if (realPiece != null && stubPiece != null && stubPiece.m_icon == null) stubPiece.m_icon = realPiece.m_icon;
         }
 
         // Puts one ZNetScene prefab on the hammer by name, for a caller that needs the piece
@@ -348,6 +408,7 @@ namespace VerdantsAscent.Managers
             bool deferUntilSpawn,
             bool registrationOnly)
         {
+            VAJotunnGuard.Reset();   // 1.1.219: Jotunn's registries read fresh for this world
             // Hold the entire heavy build until the local player exists. None of it (hammer scan,
             // stand-ins, icon queue) is needed until the build menu opens, and running it during
             // world-load stacked multi-second stalls onto an already-heavy login. The null-check
@@ -374,7 +435,7 @@ namespace VerdantsAscent.Managers
 
             // Snapshot the prefab list so the foreach iterator stays valid
             // even if some patch elsewhere mutates ZNetScene.m_prefabs
-            // during our yield windows. Cheap â€” references only.
+            // during our yield windows. Cheap - references only.
             var prefabSnapshot = scene.m_prefabs.ToList();
 
             foreach (var prefab in prefabSnapshot)
@@ -384,7 +445,7 @@ namespace VerdantsAscent.Managers
 
                 // Already-injected skip. _injectedPrefabHashes is static and
                 // survives world-unload, but bundle prefabs are rebuilt fresh
-                // each session â€” so also require the cached _eligibleByName
+                // each session - so also require the cached _eligibleByName
                 // entry to be the SAME live instance, or session 2's Baked
                 // Meshes tab loses its entries to a stale hash match.
                 int hash = prefab.name.GetStableHashCode();
@@ -397,7 +458,7 @@ namespace VerdantsAscent.Managers
                 }
 
                 // Clutter early-exit. Clutter passes IsEligible but must NOT
-                // get Piece/SnapPoint mutations on the vanilla template â€” those
+                // get Piece/SnapPoint mutations on the vanilla template - those
                 // leak onto every painted clone. The stand-in builder below
                 // handles all clutter paths uniformly.
                 if (IsClutterPrefab(prefab))
@@ -418,7 +479,7 @@ namespace VerdantsAscent.Managers
                     registered++;
                 if (addedFreshPiece) injected++;
 
-                // Frame budget â€” hand back to Unity once we've burned through it.
+                // Frame budget - hand back to Unity once we've burned through it.
                 if (frameStopwatch.ElapsedMilliseconds >= InitFrameBudgetMs)
                 {
                     yield return null;
@@ -426,7 +487,7 @@ namespace VerdantsAscent.Managers
                 }
             }
 
-            // Curated MVBP-parity pass â€” a handful of vanilla prefabs players
+            // Curated MVBP-parity pass - a handful of vanilla prefabs players
             // expect from MoreVanillaBuildPrefabs kept silently missing from
             // the generic scan (user report: rock4_coast / rock4_forest /
             // rock4_heath / stone_floor unfindable even via search). Injection
@@ -434,19 +495,21 @@ namespace VerdantsAscent.Managers
             // generic filter would have taken it, so a regression is visible
             // in the log instead of vanishing.
             EnsureCuratedVanillaInjects(scene, pieceTable, ref registered, ref injected);
+            VAJotunnGuard.ReportOnce();   // 1.1.219: one line for the Jotunn-owned prefabs
 
             // Registration-only stops here: the pieces other mods need are on the table, and
-            // everything below is build-menu content for an admin â€” stand-ins, icons, tab files.
+            // everything below is build-menu content for an admin - stand-ins, icons, tab files.
             if (registrationOnly)
             {
                 pieceTable.m_pieces.RemoveAll(p => (UnityEngine.Object)p == (UnityEngine.Object)null);
                 _registeredForNonAdmins = true;
                 _initializing = false;
+                ShaderReplacement.FlushPendingNatureShaders();
                 Debug.Log($"{VaPieces.PluginName}: registered {registered} piece(s) on the hammer for a non-admin "
                     + "(RegisterPiecesForNonAdmins). They stay out of the build menu; other mods can still treat them as build pieces.");
                 try
                 {
-                    if (Player.m_localPlayer != null) Player.m_localPlayer.UpdateAvailablePiecesList();
+                    if (Player.m_localPlayer != null) VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
                 }
                 catch (Exception ex)
                 {
@@ -455,31 +518,31 @@ namespace VerdantsAscent.Managers
                 yield break;
             }
 
-            // Yield between major sub-passes â€” the stand-in factories below
+            // Yield between major sub-passes - the stand-in factories below
             // instantiate GameObjects, which is itself heavy work.
             yield return null;
             frameStopwatch.Restart();
 
             // Second pass: a hammer-tab stand-in for every ClutterSystem entry.
-            // Stand-ins are FAP-owned GameObjects that never spawn â€” placement
+            // Stand-ins are FAP-owned GameObjects that never spawn - placement
             // is intercepted and dispatched against the real clutter prefab, so
             // the vanilla clutter templates are never mutated.
             int vanillaClutterAdded = RegisterClutterAsStandins(pieceTable);
             yield return null;
             frameStopwatch.Restart();
 
-            // FX clear brush â€” admin tool that scrubs FAP_persist + destroys
+            // FX clear brush - admin tool that scrubs FAP_persist + destroys
             // EWP-persistent FX placed by FAP. Goes in the FX (Vanilla) tab
             // so it sits with the FX placements it's meant to clean up.
             RegisterFxClearStandin(pieceTable);
 
-            // Item-stand tabs â€” one tile per (eligible item, orientation).
+            // Item-stand tabs - one tile per (eligible item, orientation).
             // Placement spawns a vanilla itemstand/itemstandh with the chosen
             // item pre-attached via the s_item ZDO field.
             yield return InitializeItemStandStandinsCoroutine(pieceTable);
             frameStopwatch.Restart();
 
-            // Monsters tab â€” a placeable stand-in for every Character prefab.
+            // Monsters tab - a placeable stand-in for every Character prefab.
             // Placement dispatches to VAMonsterSpawner; right-click opens the
             // Configure-monster UI for per-spawn overrides.
             yield return InitializeMonsterStandinsCoroutine(pieceTable);
@@ -516,6 +579,9 @@ namespace VerdantsAscent.Managers
                       $"{_eligibleByName.Count} eligible, {injected} got fresh Piece component, {registered} new hammer entries " +
                       $"(+{vanillaClutterAdded} vanilla ClutterSystem prefabs)");
 
+            // 1.1.227: lazy third-party bundles, stage 1. The stub data of every Assets bundle, written once per bundle version.
+            Utilities.VALazyBundleManifest.WriteMissing(scene, pieceTable);
+
             // Write the final tab layout to disk so new prefabs land in their
             // natural-fit tab on next launch; user edits are preserved.
             // The tail from here used to run in one frame after the stand-ins, 355 ms at "world settling" where the player
@@ -527,13 +593,13 @@ namespace VerdantsAscent.Managers
 
             // AFTER the FAP tabs claim their prefabs: materialize the vanilla
             // categories as folders too (Misc, Crafting, Building*, Furniture...),
-            // seeded with whatever isn't listed anywhere else â€” so vanilla tabs
+            // seeded with whatever isn't listed anywhere else - so vanilla tabs
             // can be reorganized and reordered from disk like any custom tab.
             VAHammerTabOrganizer.EnsureVanillaTabFolders(GetHammerPieceTable());
             yield return null;
 
             // Infinity Hammer zoop needs a per-prefab dimension to know its step
-            // size, and IH only ships them for vanilla pieces â€” push collider
+            // size, and IH only ships them for vanilla pieces - push collider
             // AABBs for our injected pieces so zoop works on them out of the box.
             yield return VerdantsAscent.Patches.InfinityHammerMeasureGuard.PushDimensionsForInjectedCoroutine(_eligibleByName, InitFrameBudgetMs);
             yield return null;
@@ -549,7 +615,7 @@ namespace VerdantsAscent.Managers
             try
             {
                 if (Player.m_localPlayer != null)
-                    Player.m_localPlayer.UpdateAvailablePiecesList();
+                    VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
             }
             catch (Exception ex)
             {
@@ -557,11 +623,12 @@ namespace VerdantsAscent.Managers
             }
 
             _initializing = false;
+            ShaderReplacement.FlushPendingNatureShaders();
         }
 
         // Yielding variant of RegisterItemStandsAsStandins. 3,042 stand-ins
-        // (1,521 items Ã— 2 orientations) instantiated synchronously was the
-        // second-biggest cost in the old init path â€” each GetOrCreate does
+        // (1,521 items x 2 orientations) instantiated synchronously was the
+        // second-biggest cost in the old init path - each GetOrCreate does
         // an Instantiate + a Piece component + a Renderer copy. Budget per
         // frame keeps that work spread out instead of stalling.
         private static IEnumerator InitializeItemStandStandinsCoroutine(PieceTable pieceTable)
@@ -583,9 +650,11 @@ namespace VerdantsAscent.Managers
             // the enumerator across our yield windows.
             var entries = VAItemStandRegistry.All.ToList();
 
+            bool showV = ShowStandOrientation(VAItemStandStandinFactory.Orientation.Vertical);
+            bool showH = ShowStandOrientation(VAItemStandStandinFactory.Orientation.Horizontal);
             foreach (var entry in entries)
             {
-                if (!vanillaOnly || entry.VanillaAcceptsVertical)
+                if (showV && (!vanillaOnly || entry.VanillaAcceptsVertical))
                 {
                     var verticalStandin = VAItemStandStandinFactory.GetOrCreate(
                         entry, VAItemStandStandinFactory.Orientation.Vertical, verticalCat);
@@ -595,7 +664,7 @@ namespace VerdantsAscent.Managers
                         verticalAdded++;
                     }
                 }
-                if (horizontalRegistered && (!vanillaOnly || entry.VanillaAcceptsHorizontal))
+                if (showH && horizontalRegistered && (!vanillaOnly || entry.VanillaAcceptsHorizontal))
                 {
                     var horizontalStandin = VAItemStandStandinFactory.GetOrCreate(
                         entry, VAItemStandStandinFactory.Orientation.Horizontal, horizontalCat);
@@ -665,14 +734,14 @@ namespace VerdantsAscent.Managers
 
         // Builds a FAP-owned stand-in for every clutter prefab in
         // VAClutterRegistry (which mirrors ClutterSystem.m_clutter). Vanilla
-        // clutter prefabs are NEVER mutated. Idempotent â€” the factory caches
+        // clutter prefabs are NEVER mutated. Idempotent - the factory caches
         // per clutter name and the pieceTable add is guarded by Contains.
         private static int RegisterClutterAsStandins(PieceTable pieceTable)
         {
             if (pieceTable == null) return 0;
 
             // Vanilla-friendly keeps the Clutter tab off the table entirely. Without the
-            // category there is nowhere to file a stand-in, and default(PieceCategory) is Misc â€”
+            // category there is nowhere to file a stand-in, and default(PieceCategory) is Misc  - 
             // which is how clutter used to end up in a vanilla tab in vanilla-friendly mode.
             if (!VACategoryRegistry.TryGet(VACategoryRegistry.CatClutter, out var clutterCat)) return 0;
 
@@ -714,10 +783,10 @@ namespace VerdantsAscent.Managers
             {
                 if (!VACategoryRegistry.TryGet(name, out var cat)) continue;
                 var standin = VAFapEwpClearTool.EnsureStandinFor(cat);
-                if (standin == null) continue;
-                if (pieceTable.m_pieces.Contains(standin)) continue;
-                pieceTable.m_pieces.Add(standin);
-                added++;
+                if (standin != null && !pieceTable.m_pieces.Contains(standin)) { pieceTable.m_pieces.Add(standin); added++; }
+                // 1.1.260: the Make Persistent Brush sits next to the FX Clear Brush in each FX tab
+                var persist = VAFapPersistBrushTool.EnsureStandinFor(cat);
+                if (persist != null && !pieceTable.m_pieces.Contains(persist)) { pieceTable.m_pieces.Add(persist); added++; }
             }
             if (added > 0 && ConfigManager.Instance.configVerboseLogging.Value)
             {
@@ -729,6 +798,42 @@ namespace VerdantsAscent.Managers
         // two per item (vertical + horizontal). Separate cache resolves per
         // orientation so a missing vanilla horizontal prefab on an old install
         // doesn't block the vertical tab.
+        // 1.1.197 (Arbby via Fire): [ItemStands] StandOrientation = Horizontal | Vertical | Both.
+        internal static bool ShowStandOrientation(VAItemStandStandinFactory.Orientation orientation)
+        {
+            string mode = ConfigManager.Instance?.configItemStandOrientation?.Value ?? "Horizontal";
+            if (string.Equals(mode, "Both", StringComparison.OrdinalIgnoreCase)) return true;
+            return orientation == VAItemStandStandinFactory.Orientation.Vertical
+                ? string.Equals(mode, "Vertical", StringComparison.OrdinalIgnoreCase)
+                : !string.Equals(mode, "Vertical", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Live swap (config change or the Item Stands tab's right-click menu): drop the hidden orientation's stand-ins from
+        // the hammer, add the shown one's, re-sync the tabs and repaint the menu, without closing the hammer.
+        public static void ApplyItemStandOrientation()
+        {
+            try
+            {
+                var table = GetHammerPieceTable();
+                if (table == null) return;
+                int removed = 0;
+                foreach (var kv in VAItemStandStandinFactory.AllStandins)
+                {
+                    if (kv.Value == null || !VAItemStandStandinFactory.TryResolve(kv.Value, out _, out var o)) continue;
+                    if (!ShowStandOrientation(o) && table.m_pieces.Remove(kv.Value)) removed++;
+                }
+                int before = table.m_pieces.Count;
+                RegisterItemStandsAsStandins(table);
+                VACategoryRegistry.SyncCategories(table);
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
+                VaPieces.Log?.LogDebug($"[FAP] item stand orientation = {ConfigManager.Instance.configItemStandOrientation.Value}: {removed} stand-in(s) removed, {table.m_pieces.Count - before} added");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"{VaPieces.PluginName}: item stand orientation swap failed: {ex.Message}");
+            }
+        }
+
         private static void RegisterItemStandsAsStandins(PieceTable pieceTable)
         {
             if (pieceTable == null) return;
@@ -738,17 +843,20 @@ namespace VerdantsAscent.Managers
 
             int verticalAdded = 0;
             int horizontalAdded = 0;
+            bool showV = ShowStandOrientation(VAItemStandStandinFactory.Orientation.Vertical);
+            bool showH = ShowStandOrientation(VAItemStandStandinFactory.Orientation.Horizontal);
+            bool vanillaOnly = ConfigManager.Instance.configVanillaFriendly.Value;
             foreach (var entry in VAItemStandRegistry.All)
             {
-                var verticalStandin = VAItemStandStandinFactory.GetOrCreate(
-                    entry, VAItemStandStandinFactory.Orientation.Vertical, verticalCat);
+                var verticalStandin = showV && (!vanillaOnly || entry.VanillaAcceptsVertical) ? VAItemStandStandinFactory.GetOrCreate(
+                    entry, VAItemStandStandinFactory.Orientation.Vertical, verticalCat) : null;
                 if (verticalStandin != null && !pieceTable.m_pieces.Contains(verticalStandin))
                 {
                     pieceTable.m_pieces.Add(verticalStandin);
                     verticalAdded++;
                 }
-                var horizontalStandin = VAItemStandStandinFactory.GetOrCreate(
-                    entry, VAItemStandStandinFactory.Orientation.Horizontal, horizontalCat);
+                var horizontalStandin = showH && (!vanillaOnly || entry.VanillaAcceptsHorizontal) ? VAItemStandStandinFactory.GetOrCreate(
+                    entry, VAItemStandStandinFactory.Orientation.Horizontal, horizontalCat) : null;
                 if (horizontalStandin != null && !pieceTable.m_pieces.Contains(horizontalStandin))
                 {
                     pieceTable.m_pieces.Add(horizontalStandin);
@@ -777,7 +885,7 @@ namespace VerdantsAscent.Managers
                 (UnityEngine.Object)go != (UnityEngine.Object)null
                 && string.Equals(go.name, prefabName, StringComparison.Ordinal));
             if (removed > 0 && Player.m_localPlayer != null)
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
             return removed;
         }
 
@@ -812,7 +920,7 @@ namespace VerdantsAscent.Managers
             }
             if (matched > 0 && Player.m_localPlayer != null)
             {
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
                 VABuildUiCategoryTags.RequestBuildMenuRefresh();
             }
             return matched;
@@ -833,7 +941,7 @@ namespace VerdantsAscent.Managers
             if (added > 0)
             {
                 if (Player.m_localPlayer != null)
-                    Player.m_localPlayer.UpdateAvailablePiecesList();
+                    VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
                 if (ConfigManager.Instance.configVerboseLogging.Value)
                     Debug.Log($"{VaPieces.PluginName}: RefreshClutterStandins added {added} late-arriving clutter stand-in(s).");
             }
@@ -862,7 +970,7 @@ namespace VerdantsAscent.Managers
 
         public static bool IsAdminGateOpen()
         {
-            // Config off â†’ gate is fully open, no admin check needed.
+            // Config off -> gate is fully open, no admin check needed.
             if (!ConfigManager.Instance.configAdminOnlyMode.Value) return true;
 
             // AdminOnlyMode is the server's to enforce; on a server without FAP there is nothing to enforce it with.
@@ -871,12 +979,12 @@ namespace VerdantsAscent.Managers
             // THE canonical Fires local-admin check. Unions IsServer(),
             // Valheim's own server-synced admin list, and Core's lockExempt
             // push, so whichever signal lands first grants admin. This gate
-            // used to read ONLY our private ServerSync instance's IsAdmin â€”
+            // used to read ONLY our private ServerSync instance's IsAdmin  - 
             // a different ConfigSync from Core's, which on a real server can
             // simply never receive the grant even while Valheim and Core both
             // have it. That left a genuine admin gated out of their own hammer.
             try { if (FiresCore.Sync.AdminSyncing.IsLocalAdmin()) return true; }
-            catch { /* Core missing or ZNet mid-teardown â†’ fall through */ }
+            catch { /* Core missing or ZNet mid-teardown -> fall through */ }
 
             // Our own ServerSync instance is a SEPARATE ConfigSync from Core's,
             // so keep it as one more signal rather than dropping a grant this
@@ -947,9 +1055,9 @@ namespace VerdantsAscent.Managers
             }
             // Rebuilding the lists is only half of it: BuildUi repaints when the piece count it
             // last saw changed, and a setting that only re-buckets or hides pieces can leave that
-            // count identical â€” so the recorded count is cleared as well.
+            // count identical - so the recorded count is cleared as well.
             if (Player.m_localPlayer != null)
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
             Patches.VABuildUiCategoryTags.RequestBuildMenuRefresh();
             if (moved > 0 && ConfigManager.Instance.configVerboseLogging.Value)
                 Debug.Log($"{VaPieces.PluginName}: RecategorizeEligiblePieces moved {moved} pieces between tabs after config toggle.");
@@ -982,7 +1090,7 @@ namespace VerdantsAscent.Managers
                 queued++;
             }
 
-            // Monster stand-ins â€” same pattern as clutter; without this loop
+            // Monster stand-ins - same pattern as clutter; without this loop
             // the Monsters tab shows only vanilla's shield-icon fallback.
             foreach (var entry in VerdantsAscent.Utilities.VAMonsterStandinFactory.AllStandins)
             {
@@ -1039,19 +1147,19 @@ namespace VerdantsAscent.Managers
                     var prefab = scene.GetPrefab(name);
                     if (prefab == null)
                     {
-                        Debug.LogWarning($"{VaPieces.PluginName}: curated inject '{name}' â€” prefab not found in ZNetScene; skipped.");
+                        Debug.LogWarning($"{VaPieces.PluginName}: curated inject '{name}' - prefab not found in ZNetScene; skipped.");
                         continue;
                     }
                     if (VAHammerTabOrganizer.IsIgnored(name))
                     {
-                        Debug.Log($"{VaPieces.PluginName}: curated inject '{name}' â€” on the user's Ignore list; respected.");
+                        Debug.Log($"{VaPieces.PluginName}: curated inject '{name}' - on the user's Ignore list; respected.");
                         continue;
                     }
                     if (pieceTable.m_pieces.Contains(prefab)) continue;
 
                     if (ProcessEligibleForHammer(prefab, pieceTable, out bool fresh)) registered++;
                     if (fresh) injected++;
-                    Debug.Log($"{VaPieces.PluginName}: curated inject '{name}' â€” added to the hammer (generic scan had missed it).");
+                    Debug.Log($"{VaPieces.PluginName}: curated inject '{name}' - added to the hammer (generic scan had missed it).");
                 }
                 catch (Exception ex)
                 {
@@ -1073,11 +1181,14 @@ namespace VerdantsAscent.Managers
         {
             if ((UnityEngine.Object)prefab == (UnityEngine.Object)null) return false;
 
-            // Ignore gate â€” checked early so we don't waste the rest
+            // Ignore gate - checked early so we don't waste the rest
             // of the filter on a prefab the user has explicitly hidden.
             if (VAHammerTabOrganizer.IsIgnored(prefab.name)) return false;
 
-            // Skip-bundle gate â€” bundles whose tab folder was renamed to "Skip"
+            // RemovedPrefabPlaceholders stubs (the removed castle tower) keep old saves loading; they are not pieces.
+            if (VAExternalBundleLoader.IsRemovedPrefabPlaceholder(prefab)) return false;
+
+            // Skip-bundle gate - bundles whose tab folder was renamed to "Skip"
             // have all their prefabs filtered out, including future ones.
             if (VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out var srcBundleForSkip)
                 && VAHammerTabOrganizer.IsBundleSkipped(srcBundleForSkip))
@@ -1085,7 +1196,7 @@ namespace VerdantsAscent.Managers
                 return false;
             }
 
-            // Must be a root prefab â€” child GameObjects in the prefab list
+            // Must be a root prefab - child GameObjects in the prefab list
             // are usually broken references and never make sense to place.
             if (prefab.transform.parent != null) return false;
 
@@ -1160,9 +1271,9 @@ namespace VerdantsAscent.Managers
 
         // Names of every prefab already registered as buildable on any active
         // PieceTable, so the scan doesn't add duplicates.
-        // Map of "<name>_frac" â†’ base prefab for every fractured prefab whose
+        // Map of "<name>_frac" -> base prefab for every fractured prefab whose
         // non-fractured counterpart is also in ZNetScene. Populated at scan
-        // time, queried at placement time by HammerFracSwapPatch â€” a direct
+        // time, queried at placement time by HammerFracSwapPatch - a direct
         // lookup avoids GetPrefab's method dispatch on the hot path.
         private static readonly Dictionary<string, GameObject> _fracToBaseMap
             = new Dictionary<string, GameObject>(StringComparer.Ordinal);
@@ -1196,7 +1307,7 @@ namespace VerdantsAscent.Managers
             }
 
             if (_fracToBaseMap.Count > 0)
-                Debug.Log($"{VaPieces.PluginName}: built _fracâ†’base swap map with {_fracToBaseMap.Count} entries");
+                Debug.Log($"{VaPieces.PluginName}: built _frac->base swap map with {_fracToBaseMap.Count} entries");
         }
 
         private static HashSet<string> CollectAlreadyBuildablePrefabs()
@@ -1221,7 +1332,7 @@ namespace VerdantsAscent.Managers
         }
 
         // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        // Piece injection â€” the main fix vs MVBP
+        // Piece injection - the main fix vs MVBP
         // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
         // Adds a Piece (with placement-ghost-friendly flags) if the prefab
@@ -1238,14 +1349,14 @@ namespace VerdantsAscent.Managers
             var piece = prefab.GetComponent<Piece>();
             if ((UnityEngine.Object)piece != (UnityEngine.Object)null)
             {
-                // Author already specified a Piece â€” respect their flags
+                // Author already specified a Piece - respect their flags
                 // entirely. We still apply our category default if they
                 // forgot to set one (Max means "uninitialized").
                 if (VerdantsAscent.Utilities.VAPieceCategoryRuntime.IsHidden(piece.m_category))
                     piece.m_category = Piece.PieceCategory.Misc;
 
                 // Re-apply the user's disk tab layout on top of the authored
-                // category every load â€” it's authoritative, and without this
+                // category every load - it's authoritative, and without this
                 // re-application a move/hide reverts to the prefab's authored
                 // category on the next world load. Resolves custom tabs AND
                 // vanilla-category folder names.
@@ -1258,7 +1369,7 @@ namespace VerdantsAscent.Managers
                 {
                     // User hid this prefab via Ignore/ or Hidden_<tab>/.
                     // Max is vanilla's "skip in UpdateAvailable" sentinel
-                    // â€” the piece stays registered (functional via
+                    // - the piece stays registered (functional via
                     // spawn commands, ZDO sync, etc.) but doesn't show
                     // in any hammer tab.
                     piece.m_category = VerdantsAscent.Utilities.VAPieceCategoryRuntime.Hidden;
@@ -1269,7 +1380,7 @@ namespace VerdantsAscent.Managers
             piece = prefab.AddComponent<Piece>();
 
             // The injected-piece defaults. The two clip flags are the
-            // load-bearing change vs MVBP â€” see the class header comment.
+            // load-bearing change vs MVBP - see the class header comment.
             piece.m_name = prefab.name;
             piece.m_description = BuildPieceDescription(prefab);
             piece.m_enabled = true;
@@ -1286,7 +1397,7 @@ namespace VerdantsAscent.Managers
             // Removable by default so the player can undo placements.
             piece.m_canBeRemoved = true;
 
-            // Default these to safe values â€” none of the surface-restriction
+            // Default these to safe values - none of the surface-restriction
             // flags should be set for a generic injected piece, otherwise
             // the player gets unexplained "can't build here" messages.
             piece.m_groundOnly = false;
@@ -1304,7 +1415,7 @@ namespace VerdantsAscent.Managers
             piece.m_onlyInBiome = Heightmap.Biome.None;
             piece.m_randomTarget = false;
 
-            // No crafting station required â€” placeable bare-handed once
+            // No crafting station required - placeable bare-handed once
             // recipes are configured (config layer to come).
             piece.m_craftingStation = null;
 
@@ -1318,7 +1429,7 @@ namespace VerdantsAscent.Managers
 
         // Forces ZNetView.m_persistent=true on injected pieces and FX so the
         // placement survives a zone reload (vanilla FX ships transient). EXCEPT
-        // clutter, which must stay non-persistent â€” it's rendered via the
+        // clutter, which must stay non-persistent - it's rendered via the
         // TerrainComp replay pipeline, and persisting it spawns invalid renamed
         // ZDOs that NRE-cascade on return-to-zone.
         private static void EnsurePersistentZNetView(GameObject prefab)
@@ -1326,7 +1437,7 @@ namespace VerdantsAscent.Managers
             var nview = prefab.GetComponent<ZNetView>();
             if ((UnityEngine.Object)nview == (UnityEngine.Object)null) return;
 
-            // Clutter exception â€” keep m_persistent=false. Belt-and-suspenders
+            // Clutter exception - keep m_persistent=false. Belt-and-suspenders
             // setting (rather than just early-return) defends against any
             // other code path that might have flipped it back to true.
             if (IsClutterPrefab(prefab))
@@ -1342,9 +1453,9 @@ namespace VerdantsAscent.Managers
         // Category auto-assignment
         // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-        // Buckets a freshly-injected piece into a hammer tab: fx_/vfx_/sfx_ â†’
+        // Buckets a freshly-injected piece into a hammer tab: fx_/vfx_/sfx_ ->
         // FX/VFX (split Vanilla vs Modded by IsVanillaCompatibleEffect), nature
-        // prefabs â†’ Nature, everything else â†’ CreatorShop. Runs the vanilla-
+        // prefabs -> Nature, everything else -> CreatorShop. Runs the vanilla-
         // compat check before EnsurePersistentZNetView mutates the prefab, so
         // it sees the untouched state a vanilla client would.
         private static Piece.PieceCategory AutoCategorize(GameObject prefab)
@@ -1361,7 +1472,7 @@ namespace VerdantsAscent.Managers
                 return overrideCat;
             }
 
-            // Baked-mesh routing â€” second priority. The VABakeParentLoader
+            // Baked-mesh routing - second priority. The VABakeParentLoader
             // component is unique to baked bundle prefabs, so it's a reliable
             // type-based identifier that can't collide with a name prefix. Sits
             // above clutter/SortHammerByMod/FX so a baked blueprint is never
@@ -1372,7 +1483,7 @@ namespace VerdantsAscent.Managers
                 return bakedCat;
             }
 
-            // Clutter routing â€” third priority. Clutter-identified prefabs land
+            // Clutter routing - third priority. Clutter-identified prefabs land
             // in the dedicated Clutter tab.
             if (IsClutterPrefab(prefab)
                 && VACategoryRegistry.TryGet(VACategoryRegistry.CatClutter, out var clutterCat))
@@ -1406,7 +1517,7 @@ namespace VerdantsAscent.Managers
 
             bool vanillaFriendly = ConfigManager.Instance.configVanillaFriendly.Value;
 
-            // FX/VFX routing â€” one tab per effect class. Vanilla-friendly also files effects a
+            // FX/VFX routing - one tab per effect class. Vanilla-friendly also files effects a
             // vanilla client can't keep under Max; the build menu asks IsVanillaUnsafeEffect
             // itself, because the disk tab layout re-stamps categories on every UpdateAvailable.
             if (name.StartsWith("vfx_", StringComparison.Ordinal))
@@ -1441,7 +1552,7 @@ namespace VerdantsAscent.Managers
         }
 
         // Play-tested effect prefabs that ARE vanilla-friendly despite failing
-        // the strict component check below â€” their primary visual loops fine on
+        // the strict component check below - their primary visual loops fine on
         // vanilla even when a sub-particle burst doesn't.
         private static readonly HashSet<string> _vanillaFriendlyEffectAllowlist =
             new HashSet<string>(StringComparer.Ordinal)
@@ -1468,10 +1579,10 @@ namespace VerdantsAscent.Managers
 
         // True if an effect prefab will display correctly on a vanilla client.
         // Tier 1 is the user allowlist above; tier 2 rejects the two things a
-        // vanilla client can't compensate for â€” a TimedDestruction in the
+        // vanilla client can't compensate for - a TimedDestruction in the
         // subtree (would self-destruct) or any non-looping finite-duration
         // ParticleSystem (would stop emitting after its duration).
-        // The one answer to "would this effect still be there for a client without FAP" â€” the
+        // The one answer to "would this effect still be there for a client without FAP" - the
         // categoriser, the piece description and the build menu all ask through here. False for
         // anything that isn't an effect, and false once the server persists effects via EWP,
         // which replays them for every client regardless.
@@ -1552,7 +1663,7 @@ namespace VerdantsAscent.Managers
             return true;
         }
 
-        // True if any ParticleSystem is non-looping with a finite duration â€”
+        // True if any ParticleSystem is non-looping with a finite duration  - 
         // i.e. on a vanilla client it stops emitting after its duration. Gates
         // the m_description hover note about partial-loop behavior.
         private static bool HasNonLoopingParticleSystem(GameObject prefab)
@@ -1571,14 +1682,14 @@ namespace VerdantsAscent.Managers
 
         // Builds a piece's m_description. Most get an empty string; the
         // exceptions are advisory (yellow) notes flagging vanilla-compatibility
-        // concerns â€” clutter, modded-only effects, and effects whose particles
+        // concerns - clutter, modded-only effects, and effects whose particles
         // may not loop on clients without this mod.
         private static string BuildPieceDescription(GameObject prefab)
         {
             if (prefab == null) return string.Empty;
 
             string name = prefab.name;
-            // Clutter â€” painted positions live in our TerrainComp ZDO bytes
+            // Clutter - painted positions live in our TerrainComp ZDO bytes
             // that vanilla clients don't read. Vanilla clutter still spawns
             // naturally there (just not our exact patches); modded clutter
             // has no such fallback.
@@ -1659,10 +1770,9 @@ namespace VerdantsAscent.Managers
         {
             if (prefab == null) return false;
 
-            // 0. Fast-path: the bundle router's resolved-category cache (O(1)
-            //    name lookup). If it says Clutter, skip the deep walk below.
-            var routerCat = VABundleAssetRouter.GetCategory(prefab.name);
-            if (routerCat == VABundleAssetRouter.BundleCategory.Clutter) return true;
+            // 1.1.199 (Fire 10-09: benches, paintings, rugs, tables in the Clutter tab): Clutter is ONLY instanced
+            // vegetation, i.e. an InstanceRenderer or a ClutterSystem entry. A bundle's "clutter" manifest category or the
+            // BundleClutterAllOf list no longer pulls ordinary objects in; those go to CreatorShop like any other prefab.
 
             // 1. InstanceRenderer anywhere in the hierarchy (GetComponentInChildren
             //    so nested bundle renderers count, matching the router's own
@@ -1687,17 +1797,10 @@ namespace VerdantsAscent.Managers
                 if (_clutterSystemNames.Contains(prefab.name)) return true;
             }
 
-            // 3. Bundle on user-managed clutter AllOf list
-            if (VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out var srcBundle)
-                && ConfigManager.Instance.IsBundleInClutterAllOf(srcBundle))
-            {
-                return true;
-            }
-
             return false;
         }
 
-        // Heuristic for "this is a nature prefab" â€” structural signals
+        // Heuristic for "this is a nature prefab" - structural signals
         // (Pickable/MineRock/Plant/Tree components) first because they're more
         // reliable than the name-keyword fallback, then name keywords.
         internal static bool IsNaturePrefab(GameObject prefab)
@@ -1707,12 +1810,12 @@ namespace VerdantsAscent.Managers
             if (prefab.GetComponent<MineRock5>() != null) return true;
             if (prefab.GetComponent<Plant>() != null) return true;
 
-            // Whole-rock prefabs (rock4_coast etc.) carry Destructible only â€”
-            // the MineRock5 lives on their _frac counterpart â€” so route by the
+            // Whole-rock prefabs (rock4_coast etc.) carry Destructible only  - 
+            // the MineRock5 lives on their _frac counterpart - so route by the
             // vanilla rock naming too.
             if (prefab.name.StartsWith("rock", StringComparison.OrdinalIgnoreCase)) return true;
 
-            // TreeBase / TreeLog â€” bundle trees usually carry one or both.
+            // TreeBase / TreeLog - bundle trees usually carry one or both.
             // GetComponentInChildren in case the author nested them under a
             // child node (missed by a root-only check on some bundle trees).
             if (prefab.GetComponentInChildren<TreeBase>(includeInactive: true) != null) return true;
@@ -1764,7 +1867,7 @@ namespace VerdantsAscent.Managers
             }
         }
 
-        // Default fuel order â€” Resin first (lantern-like, the most
+        // Default fuel order - Resin first (lantern-like, the most
         // common bundle case), Coal second, Wood third. Resolved once
         // per session and cached so the per-instance Awake patch
         // doesn't re-walk ObjectDB on every Fireplace spawn.
@@ -1776,7 +1879,7 @@ namespace VerdantsAscent.Managers
         {
             if (_cachedFallbackFuel != null) return _cachedFallbackFuel;
             // Re-attempt resolution if ObjectDB has woken up since
-            // the last failed attempt â€” cheap retry, ObjectDB is a
+            // the last failed attempt - cheap retry, ObjectDB is a
             // single field read.
             if (_fallbackFuelLookupAttempted && _cachedFallbackFuel == null)
             {
@@ -1812,11 +1915,11 @@ namespace VerdantsAscent.Managers
                 && fp.m_fuelItem.m_itemData != null
                 && fp.m_fuelItem.m_itemData.m_shared != null)
             {
-                return;  // data is healthy â€” leave alone
+                return;  // data is healthy - leave alone
             }
 
             // Inject a fallback fuel item so the piece stays refillable. If
-            // ObjectDB isn't ready yet, bail without mutating â€” the Awake
+            // ObjectDB isn't ready yet, bail without mutating - the Awake
             // postfix retries per-instance once ObjectDB is live.
             var fallback = ResolveFallbackFuelItem();
             if (fallback != null)
@@ -1825,7 +1928,7 @@ namespace VerdantsAscent.Managers
                 if (ConfigManager.Instance != null
                     && ConfigManager.Instance.configVerboseLogging.Value)
                 {
-                    Debug.Log($"{VaPieces.PluginName}: NeutralizeBrokenFireplaceInstance â€” '{ownerName}' had Fireplace with null m_fuelItem; injected fallback '{fallback.gameObject.name}' so refill/hover works without NRE.");
+                    Debug.Log($"{VaPieces.PluginName}: NeutralizeBrokenFireplaceInstance - '{ownerName}' had Fireplace with null m_fuelItem; injected fallback '{fallback.gameObject.name}' so refill/hover works without NRE.");
                 }
                 return;
             }
@@ -1836,7 +1939,7 @@ namespace VerdantsAscent.Managers
             if (ConfigManager.Instance != null
                 && ConfigManager.Instance.configVerboseLogging.Value)
             {
-                Debug.LogWarning($"{VaPieces.PluginName}: NeutralizeBrokenFireplaceInstance â€” '{ownerName}' had Fireplace with null m_fuelItem AND no fallback fuel resolvable from ObjectDB (Resin/Coal/Wood missing). Flipped m_canRefill=false as last resort.");
+                Debug.LogWarning($"{VaPieces.PluginName}: NeutralizeBrokenFireplaceInstance - '{ownerName}' had Fireplace with null m_fuelItem AND no fallback fuel resolvable from ObjectDB (Resin/Coal/Wood missing). Flipped m_canRefill=false as last resort.");
             }
         }
 
@@ -1861,7 +1964,7 @@ namespace VerdantsAscent.Managers
             float yMin = centerY - halfY;
             float yMax = centerY + halfY;
 
-            // Bottom face corners â€” these are the ones that matter for
+            // Bottom face corners - these are the ones that matter for
             // ground-snapping and floor-edge chains.
             AddSnapPoint(prefab, new Vector3(-halfX, yMin, -halfZ));
             AddSnapPoint(prefab, new Vector3(halfX, yMin, -halfZ));
@@ -1869,7 +1972,7 @@ namespace VerdantsAscent.Managers
             AddSnapPoint(prefab, new Vector3(halfX, yMin, halfZ));
             AddSnapPoint(prefab, new Vector3(0f, yMin, 0f));
 
-            // Top face corners â€” only emit if the prefab actually has
+            // Top face corners - only emit if the prefab actually has
             // vertical span (skip ground-flat decals).
             if (halfY > TopSnapMinHalfHeight)
             {
@@ -1908,13 +2011,13 @@ namespace VerdantsAscent.Managers
             foreach (var renderer in renderers)
             {
                 if (renderer == null) continue;
-                // Skip particle systems â€” their bounds balloon out into
+                // Skip particle systems - their bounds balloon out into
                 // emit volumes and would produce nonsense snap points.
                 if (renderer is ParticleSystemRenderer) continue;
 
                 var worldBounds = renderer.bounds;
                 var localCenter = rootInverse.MultiplyPoint3x4(worldBounds.center);
-                // World-space size used as-is â€” snap points don't need sub-pixel
+                // World-space size used as-is - snap points don't need sub-pixel
                 // accuracy, so the rotation error from skipping the AABB-of-AABB
                 // transform is acceptable.
                 var localBounds = new Bounds(localCenter, worldBounds.size);
@@ -1940,7 +2043,7 @@ namespace VerdantsAscent.Managers
             snap.transform.SetParent(prefab.transform, worldPositionStays: false);
             snap.transform.localPosition = localPosition;
             snap.transform.localRotation = Quaternion.identity;
-            // Snap points are tag-found, not visibility-found â€” leaving
+            // Snap points are tag-found, not visibility-found - leaving
             // them active is the convention in vanilla and costs nothing.
             snap.SetActive(true);
         }

@@ -85,7 +85,7 @@ namespace VerdantsAscent.Utilities
                 root.SetActive(false);
                 var inst = UnityEngine.Object.Instantiate(prefab, root.transform);
                 inst.transform.localPosition = Vector3.zero; inst.transform.localRotation = Quaternion.identity;
-                foreach (var mb in inst.GetComponentsInChildren<MonoBehaviour>(true)) try { UnityEngine.Object.DestroyImmediate(mb); } catch { }
+                VAPieceIconRenderer.DestroyDependentsFirst(new List<Component>(inst.GetComponentsInChildren<MonoBehaviour>(true)), "impostor bake " + prefab.name);   // 1.1.268: dependents first
                 foreach (var lg in inst.GetComponentsInChildren<LODGroup>(true)) lg.enabled = false;
                 foreach (var t in inst.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = BakeLayer;
                 root.SetActive(true);

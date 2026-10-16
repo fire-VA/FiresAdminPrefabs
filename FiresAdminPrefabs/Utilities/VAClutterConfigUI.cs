@@ -84,7 +84,7 @@ namespace VerdantsAscent.Utilities
         // Shader
         private string _swaySpeed = "", _swayDistance = "", _pushDistance = "";
 
-        private static void BindLayout()
+        internal static void BindLayout()
         {
             if (s_opacity != null) return;
             var cfg = VaPieces.Instance.Config;
@@ -288,7 +288,7 @@ namespace VerdantsAscent.Utilities
                 if (!string.Equals(preset.clutterPrefab, _clutterPrefab, StringComparison.Ordinal)) continue;
                 matched++;
                 string captured = preset.name;
-                items.Add(new VARightClickMenu.Item("→ " + preset.name, () => LoadPresetIntoForm(captured)));
+                items.Add(new VARightClickMenu.Item("» " + preset.name, () => LoadPresetIntoForm(captured)));
             }
             if (matched == 0)
             {
@@ -483,7 +483,7 @@ namespace VerdantsAscent.Utilities
             _selectedPresetName = preset.name;
             VAClutterPresetStore.SetActive(_clutterPrefab, preset.name);
 
-            // Applier runs the ClearAll → regen cycle so visible clutter updates within a tick.
+            // Applier runs the ClearAll » regen cycle so visible clutter updates within a tick.
             bool ok = VAClutterConfigApplier.Apply(preset);
             if (ok)
             {

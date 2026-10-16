@@ -60,7 +60,7 @@ namespace VerdantsAscent.Utilities
         private Vector2 _scroll;
         private bool _resizing;
 
-        private static void BindLayout()
+        internal static void BindLayout()
         {
             if (s_opacity != null) return;
             var cfg = VaPieces.Instance.Config;

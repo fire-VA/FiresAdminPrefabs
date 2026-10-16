@@ -27,8 +27,13 @@ namespace VerdantsAscent.Patches
         private static readonly Dictionary<string, Piece.PieceCategory> _byName =
             new Dictionary<string, Piece.PieceCategory>(StringComparer.Ordinal);
 
-        // Max itself is vanilla's "no selection" sentinel, so allocation starts above it.
-        private static int _nextCategoryValue = VerdantsAscent.Utilities.VAPieceCategoryRuntime.Max + 1;
+        // 1.1.251 (Fire's Discord / Ulvar + the lead's JotunnRepro, 10-14): allocation runs DOWN from just below All. Jotunn gives its
+        // custom categories (Enum names count - 1), i.e. Max+1 upward, checking names only, never values, so FAP's old Max+1 upward
+        // allocation handed out the SAME numbers and Jotunn's tags (filtering on piece.m_category) listed FAP's pieces. From the top
+        // down the two never meet unless more than ~85 custom categories exist in total. Values already defined in the enum or used
+        // by FAP are skipped; nothing is allocated at or below Max. Nothing persists these numbers (FAP keys everything by name).
+        private static int _nextCategoryValue = (int)Piece.PieceCategory.All - 1;
+        private static bool _loggedRange;
 
         public static bool TryGet(string name, out Piece.PieceCategory category)
             => _byName.TryGetValue(name, out category);
@@ -64,10 +69,43 @@ namespace VerdantsAscent.Patches
         public static Piece.PieceCategory GetOrAdd(string name)
         {
             if (_byName.TryGetValue(name, out var existing)) return existing;
-            var value = (Piece.PieceCategory)(_nextCategoryValue++);
+            int floor = VerdantsAscent.Utilities.VAPieceCategoryRuntime.Max;
+            while (_nextCategoryValue > floor
+                   && (Enum.IsDefined(typeof(Piece.PieceCategory), _nextCategoryValue) || _byName.ContainsValue((Piece.PieceCategory)_nextCategoryValue)))
+                _nextCategoryValue--;
+            if (_nextCategoryValue <= floor)
+            {
+                Debug.LogError($"{VaPieces.PluginName}: no free build category value left for '{name}' (FAP allocates {(int)Piece.PieceCategory.All - 1} down to {floor + 1}); it shares the last one.");
+                _nextCategoryValue = floor + 1;
+            }
+            var value = (Piece.PieceCategory)(_nextCategoryValue--);
             _byName[name] = value;
+            VaPieces.Log?.LogDebug($"[FAP] category '{name}' = {(int)value} (allocated top-down below All; Jotunn and other mods allocate upward from {floor + 1})");
+            if (!_loggedRange && _byName.Count >= 2) { _loggedRange = true; VaPieces.Log?.LogDebug($"[FAP] categories allocate from {(int)Piece.PieceCategory.All - 1} downward"); }
             return value;
         }
+
+        // 1.1.234 (Fire 10-13: one Dungeons tab filtered by room set). CONTRACT, add-only: FDM calls it by reflection.
+        // Named filters inside one category, shown on the build menu's left list as indented rows under the category's
+        // row (the category row itself is "All"). Order = call order; the same filterLabel again replaces its match.
+        // False when the category is unknown (call GetOrAdd first).
+        private static readonly Dictionary<string, List<KeyValuePair<string, Func<Piece, bool>>>> _subFilters =
+            new Dictionary<string, List<KeyValuePair<string, Func<Piece, bool>>>>(StringComparer.Ordinal);
+
+        public static bool AddSubFilter(string categoryLabel, string filterLabel, Func<Piece, bool> match)
+        {
+            if (string.IsNullOrEmpty(categoryLabel) || string.IsNullOrEmpty(filterLabel) || match == null) return false;
+            if (!_byName.ContainsKey(categoryLabel)) return false;
+            if (!_subFilters.TryGetValue(categoryLabel, out var list)) _subFilters[categoryLabel] = list = new List<KeyValuePair<string, Func<Piece, bool>>>();
+            int i = list.FindIndex(kv => string.Equals(kv.Key, filterLabel, StringComparison.Ordinal));
+            var entry = new KeyValuePair<string, Func<Piece, bool>>(filterLabel, match);
+            if (i >= 0) list[i] = entry; else list.Add(entry);
+            try { VABuildUiCategoryTags.RequestBuildMenuRefresh(); } catch { }
+            return true;
+        }
+
+        internal static List<KeyValuePair<string, Func<Piece, bool>>> SubFilters(string categoryLabel) =>
+            categoryLabel != null && _subFilters.TryGetValue(categoryLabel, out var list) ? list : null;
 
         // FAP's own categories, in tab order. Every one is ALLOCATED regardless of
         // config, because a category's enum value must never depend on the toggle state
@@ -326,6 +364,64 @@ namespace VerdantsAscent.Patches
 
     internal static class HammerCategoryUI
     {
+        // 1.1.203 (Fire 10-09, Arbby: Infinity Hammer's blueprint menu froze 5 s / 2 s on open with FAP): FAP asked the player
+        // to rebuild its piece list from many places (config change, tab edits, the menu-open view refresh...). With Infinity
+        // Hammer's own table equipped, every rebuild makes IH re-read EVERY PlanBuild blueprint from disk (Fire's: 218 files,
+        // 76 MB). FAP's rules are for the vanilla Hammer only, so FAP never triggers a rebuild of anyone else's table.
+        // 1.1.205 (Fire 10-09: "the same FAP menu under both hammers"): Infinity Hammer swaps in its own table. On its Builds page
+        // with a tool picked (CurrentMode Builds, a filter set) IH lets vanilla fill that table with the tool's pieces - FAP's
+        // pieces in FAP's categories - so FAP organizes it exactly as on the Hammer (the item-stand merge, hidden empty tabs, the
+        // order). Every other IH page (its blueprint list, binds, objects, its own menu) is IH's: FAP stays out, and never triggers
+        // a rebuild there (the blueprint page re-reads every PlanBuild file per rebuild).
+        private const string IhTableName = "_InfinityHammerPieceTable";
+        private static System.Reflection.PropertyInfo s_ihMode, s_ihFilter;
+        private static bool s_ihLooked;
+        internal static bool IsOrganizable(PieceTable table)
+        {
+            if (table == null) return false;
+            if (IsHammerTable(table)) return true;
+            if (table.name != IhTableName) return false;
+            if (!s_ihLooked)
+            {
+                s_ihLooked = true;
+                var t = global::VerdantsAscent.Utilities.QuietTypes.Find("InfinityHammer.HammerMenuCommand");
+                s_ihMode = t?.GetProperty("CurrentMode", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                s_ihFilter = t?.GetProperty("CurrentFilter", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                VaPieces.Log?.LogDebug($"[FAP] Infinity Hammer menu state: {(s_ihMode != null && s_ihFilter != null ? "found (HammerMenuCommand.CurrentMode / CurrentFilter)" : "NOT found - FAP leaves IH's table alone")}");
+            }
+            if (s_ihMode == null || s_ihFilter == null) return false;
+            try
+            {
+                return s_ihMode.GetValue(null)?.ToString() == "Builds" && !string.IsNullOrEmpty(s_ihFilter.GetValue(null) as string);
+            }
+            catch { return false; }
+        }
+
+        // 1.1.207: IH's menu state as text, for the build-menu evidence line.
+        internal static string IhStateText()
+        {
+            IsOrganizable(null);
+            if (!s_ihLooked) { var t = global::VerdantsAscent.Utilities.QuietTypes.Find("InfinityHammer.HammerMenuCommand"); s_ihLooked = true;
+                s_ihMode = t?.GetProperty("CurrentMode", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                s_ihFilter = t?.GetProperty("CurrentFilter", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static); }
+            if (s_ihMode == null) return "ih=(not loaded)";
+            try { return $"ih.mode={s_ihMode.GetValue(null)} ih.filter='{s_ihFilter?.GetValue(null)}'"; }
+            catch (System.Exception ex) { return $"ih=(unreadable: {ex.Message})"; }
+        }
+
+        private static int _skippedRebuilds;
+        internal static void RebuildPieceListIfHammer(Player player, string why)
+        {
+            if (player == null) return;
+            if (!IsOrganizable(player.m_buildPieces))
+            {
+                if (_skippedRebuilds++ == 0)
+                    VaPieces.Log?.LogDebug($"[FAP] piece-list rebuild skipped ({why}): the equipped table '{player.m_buildPieces?.name}' is not the Hammer (FAP leaves other tools' menus alone)");
+                return;
+            }
+            player.UpdateAvailablePiecesList();
+        }
+
         internal static bool IsHammerTable(PieceTable table)
         {
             if (table == null) return false;

@@ -67,7 +67,7 @@ namespace VerdantsAscent.Utilities
             _open = null;
         }
 
-        private static void BindLayout()
+        internal static void BindLayout()
         {
             if (s_opacity != null) return;
             var cfg = VaPieces.Instance.Config;

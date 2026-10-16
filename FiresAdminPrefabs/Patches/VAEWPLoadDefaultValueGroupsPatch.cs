@@ -33,14 +33,22 @@ namespace VerdantsAscent.Patches
                 _dataLoadingType = FindEwpDataLoadingType();
                 if (_dataLoadingType == null) return false;
 
-                _loadDefaultValueGroupsMethod = AccessTools.Method(_dataLoadingType, "LoadDefaultValueGroups");
-                if (_loadDefaultValueGroupsMethod == null) return false;
+                // 1.1.265 (Fire 10-15: a HarmonyX "Could not find method ... LoadDefaultValueGroups" warning on every start): quiet
+                // lookups, as in the EWD sibling. EWP 1.63 renamed it (LoadDefaults / DefaultGroups) and no longer NREs on FAP's
+                // missing-script prefabs, so absence is the normal case now; one Info line says so.
+                const BindingFlags Any = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+                _loadDefaultValueGroupsMethod = _dataLoadingType.GetMethod("LoadDefaultValueGroups", Any);
+                if (_loadDefaultValueGroupsMethod == null)
+                {
+                    Debug.Log($"{VaPieces.PluginName}: VAEWPLoadDefaultValueGroupsPatch: target absent (ExpandWorldPrefabs {_dataLoadingType.Assembly.GetName().Version} has no Data.DataLoading.LoadDefaultValueGroups; the NRE it guarded is gone upstream)");
+                    return false;
+                }
 
-                _defaultValueGroupsField = AccessTools.Field(_dataLoadingType, "DefaultValueGroups");
-                _wearNTearHashField      = AccessTools.Field(_dataLoadingType, "WearNTearHash");
-                _humanoidHashField       = AccessTools.Field(_dataLoadingType, "HumanoidHash");
-                _creatureHashField       = AccessTools.Field(_dataLoadingType, "CreatureHash");
-                _structureHashField      = AccessTools.Field(_dataLoadingType, "StructureHash");
+                _defaultValueGroupsField = _dataLoadingType.GetField("DefaultValueGroups", Any);
+                _wearNTearHashField      = _dataLoadingType.GetField("WearNTearHash", Any);
+                _humanoidHashField       = _dataLoadingType.GetField("HumanoidHash", Any);
+                _creatureHashField       = _dataLoadingType.GetField("CreatureHash", Any);
+                _structureHashField      = _dataLoadingType.GetField("StructureHash", Any);
 
                 if (_defaultValueGroupsField == null
                     || _wearNTearHashField == null
@@ -146,20 +154,18 @@ namespace VerdantsAscent.Patches
             defaultValueGroups[stableHashCode].Add(prefab);
         }
 
-        // The EWP layout is the Data.DataLoading that does NOT declare DefaultPrefabComponents
-        // (that field is ExpandWorldData-only) yet still has LoadDefaultValueGroups + DefaultValueGroups.
+        // 1.1.212: EWP's Data.DataLoading, picked by its assembly's name. ExpandWorldData declares a Data.DataLoading
+        // too, and EWD 1.76 dropped the DefaultPrefabComponents field the old field-based guess used to tell them apart.
+        // Applied from Ascend.Start (DeferredPatchTypes): EWP may load after FAP, so its assembly isn't there at Awake.
         private static Type FindEwpDataLoadingType()
         {
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
                 try
                 {
+                    if (asm.GetName().Name != "ExpandWorldPrefabs") continue;
                     var t = asm.GetType("Data.DataLoading", throwOnError: false);
-                    if (t == null) continue;
-                    if (AccessTools.Field(t, "DefaultPrefabComponents") != null) continue; // that's EWD
-                    if (AccessTools.Method(t, "LoadDefaultValueGroups") == null) continue;
-                    if (AccessTools.Field(t, "DefaultValueGroups") == null) continue;
-                    return t;
+                    if (t != null) return t;
                 }
                 catch { }
             }

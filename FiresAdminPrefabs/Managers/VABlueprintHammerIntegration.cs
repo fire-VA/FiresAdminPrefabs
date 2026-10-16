@@ -335,7 +335,7 @@ namespace VerdantsAscent.Managers
             // The scan is frame-budgeted, so with a large Blueprints folder it finishes long after the build
             // menu last rebuilt its available pieces; rebuild once so the new stubs show in the tab.
             if (Player.m_localPlayer != null)
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VABlueprintHammerIntegration");
 
             if ((UnityEngine.Object)VaPieces.Instance != (UnityEngine.Object)null)
             {
@@ -479,6 +479,79 @@ namespace VerdantsAscent.Managers
         // Spawns every piece of the blueprint at the placement transform, rotating each
         // piece's position and rotation by the player's yaw so the blueprint faces the way
         // they do. Returns how many pieces spawned.
+        // FDM dungeon blueprints: pieces at or above this relative height are the interior (FDM's box sits at +5000).
+        private const float DungeonInteriorY = 2500f;
+        private static readonly int FdmEnterViaHash = "fdm_enter_via".GetStableHashCode();   // [seasons]' contract key
+
+        // FDM's SectionZdoData blob: a base64 ZPackage that starts with int 0x46444D5A ('FDMZ'), bytes 5A 4D 44 46. Restored
+        // by FiresDungeonMaster.Sections.SectionZdoData.Restore(ZDO, string) ([seasons], public static) when FDM is loaded;
+        // without FDM the data is skipped (logged once).
+        private static System.Reflection.MethodInfo _fdmRestore;
+        private static bool _fdmRestoreLooked, _fdmMissingLogged;
+
+        private static bool IsFdmzBlob(string data)
+        {
+            if (string.IsNullOrEmpty(data) || data.Length < 8) return false;
+            try
+            {
+                var head = Convert.FromBase64String(data.Substring(0, 8));
+                return head.Length >= 4 && head[0] == 0x5A && head[1] == 0x4D && head[2] == 0x44 && head[3] == 0x46;
+            }
+            catch { return false; }
+        }
+
+        private static void RestoreFdmz(ZDO zdo, string data, string prefab)
+        {
+            if (!_fdmRestoreLooked)
+            {
+                _fdmRestoreLooked = true;
+                // 1.1.266: quiet (FDM is optional; AccessTools warns on a missing type AND on a null type)
+                var fdmType = global::VerdantsAscent.Utilities.QuietTypes.Find("FiresDungeonMaster.Sections.SectionZdoData");
+                _fdmRestore = fdmType?.GetMethod("Restore", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic, null, new[] { typeof(ZDO), typeof(string) }, null);
+            }
+            if (_fdmRestore == null)
+            {
+                if (!_fdmMissingLogged) Debug.LogWarning($"{VaPieces.PluginName}: blueprint piece data is FDM's (FDMZ) but FiresDungeonMaster isn't loaded; that data is skipped (first: '{prefab}').");
+                _fdmMissingLogged = true;
+                return;
+            }
+            try { _fdmRestore.Invoke(null, new object[] { zdo, data }); }
+            catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: FDM restore of '{prefab}' threw: {(ex.InnerException ?? ex).Message}"); }
+        }
+
+        // A zone already holds a dungeon interior when any of its ZDOs (loaded or not) sits above DungeonInteriorY.
+        private static bool ZoneHasDungeonInterior(Vector2s zone)
+        {
+            var found = new List<ZDO>();
+            ZDOMan.instance.FindSectorObjects(zone, new SimulationDistance(0, 0), found);
+            foreach (var z in found) if (z != null && z.GetPosition().y > DungeonInteriorY) return true;
+            return false;
+        }
+
+        // After a dungeon blueprint is placed: every surface entrance room points at the placed Entry Door (fdm_enter_via),
+        // skipped for vanilla-friendly files (they carry no FDM keys).
+        private static void FinishDungeon(VABlueprintLoader.Blueprint bp, List<GameObject> spawned, GameObject entrance)
+        {
+            int rewritten = 0;
+            if (!bp.VanillaFriendly && entrance != null)
+            {
+                Vector3 door = entrance.transform.position;
+                foreach (var go in spawned)
+                {
+                    var nv = go != null ? go.GetComponent<ZNetView>() : null;
+                    var zdo = nv != null && nv.IsValid() ? nv.GetZDO() : null;
+                    if (zdo == null) continue;
+                    var sentinel = new Vector3(float.NaN, 0f, 0f);
+                    var v = zdo.GetVec3(FdmEnterViaHash, sentinel);
+                    if (float.IsNaN(v.x)) continue;
+                    zdo.Set(FdmEnterViaHash, door);
+                    rewritten++;
+                }
+            }
+            Debug.Log($"{VaPieces.PluginName}: dungeon blueprint '{bp.Name}' placed: {spawned.Count} piece(s), entrance {(entrance != null ? entrance.transform.position.ToString("F0") : "NOT found (#role:entrance)")}, "
+                + $"{rewritten} entrance room(s) pointed at it{(bp.VanillaFriendly ? " (vanilla-friendly: no FDM keys)" : "")}");
+        }
+
         public static int SpawnBlueprintAt(VABlueprintLoader.Blueprint bp, Vector3 worldPos, Quaternion worldRot, Player ownerForPlace)
         {
             if (bp == null || bp.Objects.Count == 0) return 0;
@@ -525,6 +598,35 @@ namespace VerdantsAscent.Managers
             // wipe every other piece + the bake-parent visual via
             // ZNetScene.Destroy prefix. See VABlueprintGroupRegistry
             // for the full destroy-cascade model.
+            // 1.1.223, an FDM dungeon blueprint (Tools\FDM_DUNGEON_BLUEPRINT_DESIGN.md, stage 1; Fire 10-13: admins only).
+            // The surface pieces go at the ghost like any blueprint. The interior (relative y >= DungeonInteriorY, kept at its
+            // literal +5000 height) keeps its offset from the zone centre and moves to the NEW zone's centre, unrotated, as FDM
+            // anchors its box (AnchorInteriorToZoneCenter). One interior per zone.
+            Vector3 interiorShift = Vector3.zero;
+            if (bp.IsDungeon)
+            {
+                string refusal = null;
+                if (!FiresCore.Sync.AdminSyncing.IsLocalAdmin()) refusal = "Only an admin can place a dungeon blueprint.";
+                else if (!bp.HasOrigin) refusal = $"Dungeon blueprint '{bp.Name}' has no #origin line; re-save it from its entrance door.";
+                else
+                {
+                    Vector3 newC = ZoneSystem.GetZonePos(ZoneSystem.GetZone(worldPos));
+                    Vector3 oldC = ZoneSystem.GetZonePos(ZoneSystem.GetZone(bp.Origin));
+                    interiorShift = new Vector3(newC.x - oldC.x, 0f, newC.z - oldC.z);
+                    if (ZoneHasDungeonInterior(ZoneSystem.GetZone(worldPos)))
+                        refusal = "This zone already has a dungeon interior; place it in another zone.";
+                }
+                if (refusal != null)
+                {
+                    ownerForPlace?.Message(MessageHud.MessageType.Center, refusal, 0, null);
+                    Debug.Log($"{VaPieces.PluginName}: dungeon blueprint '{bp.Name}' not placed at {worldPos}: {refusal}");
+                    return 0;
+                }
+            }
+            GameObject dungeonEntrance = null;
+            var dungeonSpawned = bp.IsDungeon ? new List<GameObject>() : null;
+            int pieceIndex = -1;
+
             string groupId = Utilities.VABlueprintGroupRegistry.NewGroupId();
 
             // The Blueprints tab always spawns the full live blueprint: real prefabs,
@@ -552,6 +654,7 @@ namespace VerdantsAscent.Managers
 
             foreach (var piece in bp.Objects)
             {
+                pieceIndex++;
                 if (piece == null) continue;
                 if (piece.Chance < 1f && UnityEngine.Random.value > piece.Chance) continue;
 
@@ -560,6 +663,11 @@ namespace VerdantsAscent.Managers
 
                 Vector3 spawnPos = worldPos + (worldRot * piece.Pos);
                 Quaternion spawnRot = worldRot * piece.Rot;
+                if (bp.IsDungeon && piece.Pos.y >= DungeonInteriorY)
+                {
+                    spawnPos = bp.Origin + piece.Pos + interiorShift;
+                    spawnRot = piece.Rot;
+                }
 
                 try
                 {
@@ -572,13 +680,17 @@ namespace VerdantsAscent.Managers
                     // the first support update. Legacy PlanBuild ExtraInfo
                     // (sign text, item stands) rides the same path.
                     Utilities.VAZdoDataBlob blob = null;
-                    if (!string.IsNullOrEmpty(piece.Data))
+                    // 1.1.224: FDM's section/dungeon capture writes its own ZPackage ('FDMZ' tag); FDM restores it.
+                    bool fdmz = IsFdmzBlob(piece.Data);
+                    string fdmzData = fdmz ? piece.Data : null;
+                    if (!fdmz && !string.IsNullOrEmpty(piece.Data))
                         Utilities.VAZdoDataBlob.TryParse(piece.Data, out blob);
 
                     var go = Utilities.VAZdoFirstSpawner.Instantiate(
                         prefab, spawnPos, spawnRot, blob, piece.ExtraInfo,
                         zdo =>
                         {
+                            if (fdmzData != null) RestoreFdmz(zdo, fdmzData, piece.Prefab);
                             zdo.Set(VABlueprintGroupRegistry.ZdoKey, groupId);
                             if (healthOverride.HasValue)
                                 Utilities.VAInfinityHammerCompat.ApplyHealthOverride(zdo, prefab.GetComponent<WearNTear>() != null);
@@ -646,6 +758,11 @@ namespace VerdantsAscent.Managers
                     // blueprint).
                     if (!isVeggie)
                         spawnedGOs.Add(go);
+                    if (dungeonSpawned != null)
+                    {
+                        dungeonSpawned.Add(go);
+                        if (pieceIndex == bp.EntranceIndex) dungeonEntrance = go;
+                    }
 
                     spawned++;
                 }
@@ -654,6 +771,8 @@ namespace VerdantsAscent.Managers
                     Debug.LogWarning($"{VaPieces.PluginName}: VABlueprintHammerIntegration spawn failed for piece '{piece.Prefab}': {ex.Message}");
                 }
             }
+
+            if (dungeonSpawned != null) FinishDungeon(bp, dungeonSpawned, dungeonEntrance);
 
             // srcLabel was pre-computed early (srcLabelEarly) for the
             // banner. Re-declare locally with the same value.

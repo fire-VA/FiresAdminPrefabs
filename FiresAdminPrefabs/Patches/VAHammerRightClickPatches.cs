@@ -20,13 +20,15 @@ namespace VerdantsAscent.Patches
         {
             var prefabName = piece.gameObject != null ? piece.gameObject.name : null;
             if (string.IsNullOrEmpty(prefabName)) return;
+            // 1.1.203: never on another tool's menu entries (Infinity Hammer's "_IH_Menu_*" blueprint / command pieces).
+            if (prefabName.StartsWith("_IH_Menu_") || !HammerCategoryUI.IsOrganizable(Player.m_localPlayer?.m_buildPieces)) return;
 
             bool isFavorite = VAHammerTabOrganizer.IsFavorite(prefabName);
             var items = new List<VARightClickMenu.Item>
             {
                 new VARightClickMenu.Item(
-                    isFavorite ? $"★ Remove from Favorites  ({prefabName})"
-                               : $"★ Add to Favorites  ({prefabName})",
+                    isFavorite ? $"* Remove from Favorites  ({prefabName})"
+                               : $"* Add to Favorites  ({prefabName})",
                     () => ToggleFavoriteAction(prefabName)),
                 new VARightClickMenu.Item(
                     $"Hide  ({prefabName})",
@@ -67,13 +69,15 @@ namespace VerdantsAscent.Patches
 
             // FX/VFX-only "Place with Persistence" toggle. Default OFF; opting in
             // makes a specific FX piece persistent before placement.
-            if (IsFxOrVfxCategory(piece))
+            // 1.1.254: also on any piece that destroys itself (TTL), and the label says which persistence applies.
+            if (VAFapRespawner.IsEligible(piece, IsFxOrVfxCategory(piece)))
             {
                 bool optedIn = VerdantsAscent.Utilities.VAFapPersistentOptIn.IsOptedIn(prefabName);
-                string label = (optedIn ? "✓ " : "    ") + "Place with Persistence";
+                bool usable = VAFapRespawner.Mode(out _) != VAPersistMode.None;
                 items.Add(new VARightClickMenu.Item(
-                    label,
-                    () => VerdantsAscent.Utilities.VAFapPersistentOptIn.Toggle(prefabName)));
+                    VAFapRespawner.MenuLabel(optedIn),
+                    () => VerdantsAscent.Utilities.VAFapPersistentOptIn.Toggle(prefabName),
+                    disabled: !usable && !optedIn));
             }
 
             // Per-piece distance render override, picked from a preset list and
@@ -136,6 +140,13 @@ namespace VerdantsAscent.Patches
                     $"Presets for {prefabName}...",
                     () => OpenChestPresetSubmenu(prefabName)));
             }
+
+            // 1.1.215 (Fire 10-12): a piece with a Light gets the light preset editor (queued for the next placements; a placed one is
+            // edited live with Shift+RMB).
+            if (VerdantsAscent.Utilities.VALightApplier.HasLight(piece.gameObject))
+                items.Add(new VARightClickMenu.Item(
+                    $"Light preset ({prefabName})...",
+                    () => VerdantsAscent.Utilities.VALightConfigUI.OpenForPrefab(prefabName)));
 
             // 1.1.168: item stands get the same affordances (an item hung at placement, optionally decorative).
             if (piece.GetComponent<ItemStand>() != null)
@@ -235,6 +246,22 @@ namespace VerdantsAscent.Patches
                 () => OpenRestoreHiddenSubmenu(),
                 disabled: hiddenCount == 0));
 
+            // 1.1.200: other mods' entries (VerdantsAscent.Api.FapPieceMenu), e.g. FDM's presets.
+            var external = VerdantsAscent.Api.FapPieceMenu.Collect(piece);
+            if (external.Count > 0)
+            {
+                items.Add(new VARightClickMenu.Item("──────────", null, disabled: true));
+                foreach (var e in external)
+                {
+                    var click = e.Value;
+                    items.Add(new VARightClickMenu.Item(e.Key, click == null ? (Action)null : () =>
+                    {
+                        try { click(); }
+                        catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: right-click entry '{e.Key}' threw: {ex.Message}"); }
+                    }, disabled: click == null));
+                }
+            }
+
             VARightClickMenu.Show(items);
         }
 
@@ -278,7 +305,7 @@ namespace VerdantsAscent.Patches
             {
                 string capturedName = name;
                 subItems.Add(new VARightClickMenu.Item(
-                    "→ " + capturedName,
+                    "» " + capturedName,
                     () =>
                     {
                         if (VAHammerTabOrganizer.UnhidePrefab(capturedName))
@@ -327,7 +354,7 @@ namespace VerdantsAscent.Patches
                     bool isActive = string.Equals(captured, activeName, StringComparison.Ordinal);
                     string display = isActive
                         ? $"<color=#88ff88>● {captured}</color> <color=#888>(active)</color>"
-                        : "→ " + captured;
+                        : "» " + captured;
                     items.Add(new VARightClickMenu.Item(display, () =>
                     {
                         if (!VAClutterPresetStore.TryGet(captured, out var preset)) return;
@@ -372,7 +399,7 @@ namespace VerdantsAscent.Patches
             var items = new List<VARightClickMenu.Item>();
             string queued = VAExtraDataQueue.PresetFor(prefabName);
             if (VAExtraDataQueue.IsArmedFor(prefabName))
-                items.Add(new VARightClickMenu.Item("✕ No data preset (plain placements)", () =>
+                items.Add(new VARightClickMenu.Item("× No data preset (plain placements)", () =>
                 {
                     VAExtraDataQueue.Clear(prefabName);
                     ShowToast($"No data preset: the next {prefabName} placements are plain");
@@ -380,7 +407,7 @@ namespace VerdantsAscent.Patches
             foreach (var p in VADataPresetStore.For(prefabName))
             {
                 string captured = p.name;
-                string label = (p.name == queued ? "✔ " : "→ ") + p.name + $"   <color=#999>({p.Values.Count} field(s))</color>"
+                string label = (p.name == queued ? "✔ " : "» ") + p.name + $"   <color=#999>({p.Values.Count} field(s))</color>"
                                + (p.name == queued ? "   <color=#8f8>(queued)</color>" : "");
                 items.Add(new VARightClickMenu.Item(label, () =>
                 {
@@ -402,7 +429,7 @@ namespace VerdantsAscent.Patches
             var items = new List<VARightClickMenu.Item>();
             VAItemStandQueue.TryGetQueuedPresetName(standPrefabName, out string queued);
             if (!string.IsNullOrEmpty(queued))
-                items.Add(new VARightClickMenu.Item("✕ No preset (plain item stand)", () =>
+                items.Add(new VARightClickMenu.Item("× No preset (plain item stand)", () =>
                 {
                     VAItemStandQueue.Clear(standPrefabName);
                     ShowToast($"No preset: the next {standPrefabName} placements are plain");
@@ -410,7 +437,7 @@ namespace VerdantsAscent.Patches
             foreach (var p in matching)
             {
                 string captured = p.name;
-                string label = (p.name == queued ? "✔ " : "→ ") + p.name + $"   <color=#999>({p.Item}{(p.NoInteract ? ", decorative" : "")})</color>"
+                string label = (p.name == queued ? "✔ " : "» ") + p.name + $"   <color=#999>({p.Item}{(p.NoInteract ? ", decorative" : "")})</color>"
                                + (p.name == queued ? "   <color=#8f8>(queued)</color>" : "");
                 items.Add(new VARightClickMenu.Item(label, () =>
                 {
@@ -451,7 +478,7 @@ namespace VerdantsAscent.Patches
                 // 1.1.167: the queued preset stays on the hammer for every placement until changed here.
                 VAChestConfigQueue.TryGetQueuedPresetName(containerPrefabName, out string queuedChest);
                 if (!string.IsNullOrEmpty(queuedChest))
-                    items.Add(new VARightClickMenu.Item("✕ No preset (plain container)", () =>
+                    items.Add(new VARightClickMenu.Item("× No preset (plain container)", () =>
                     {
                         VAChestConfigQueue.Clear(containerPrefabName);
                         ShowToast($"No preset: the next {containerPrefabName} placements are plain");
@@ -459,7 +486,7 @@ namespace VerdantsAscent.Patches
                 foreach (var chestPreset in matching)
                 {
                     string captured = chestPreset.name;
-                    string display = (chestPreset.name == queuedChest ? "✔ " : "→ ") + chestPreset.name + (chestPreset.name == queuedChest ? "   <color=#8f8>(queued)</color>" : "");
+                    string display = (chestPreset.name == queuedChest ? "✔ " : "» ") + chestPreset.name + (chestPreset.name == queuedChest ? "   <color=#8f8>(queued)</color>" : "");
                     items.Add(new VARightClickMenu.Item(display, () =>
                     {
                         VAChestConfigQueue.EnqueueForNextPlacement(containerPrefabName, captured);
@@ -505,7 +532,7 @@ namespace VerdantsAscent.Patches
             // 1.1.167: the queued preset stays on the hammer for every placement until changed here.
             VAMonsterConfigQueue.TryGetQueuedPresetName(creatureName, out string queuedMonster);
             if (!string.IsNullOrEmpty(queuedMonster))
-                items.Add(new VARightClickMenu.Item("✕ No preset (plain creature)", () =>
+                items.Add(new VARightClickMenu.Item("× No preset (plain creature)", () =>
                 {
                     VAMonsterConfigQueue.Clear(creatureName);
                     ShowToast($"No preset: the next {creatureName} placements are plain");
@@ -530,10 +557,10 @@ namespace VerdantsAscent.Patches
         private static string BuildPresetMenuLabel(VAMonsterPreset preset)
         {
             var label = new System.Text.StringBuilder();
-            label.Append("→ ").Append(preset.name);
+            label.Append("» ").Append(preset.name);
             var hints = new List<string>();
             string level = preset.TryGetIntStr("level");
-            if (!string.IsNullOrEmpty(level) && level != "1") hints.Add($"★{level}");
+            if (!string.IsNullOrEmpty(level) && level != "1") hints.Add($"*{level}");
             string boss = preset.TryGetIntStr("override_boss");
             if (boss == "1") hints.Add("boss");
             string respawn = preset.TryGetFloatStr("va_respawn_seconds");
@@ -571,7 +598,7 @@ namespace VerdantsAscent.Patches
             {
                 float captured = presetDistance;
                 bool active = Mathf.Abs(captured - current) < DistanceMatchToleranceM;
-                string prefix = active ? "✓ " : "    ";
+                string prefix = active ? "» " : "    ";
                 string label = captured <= 0f
                     ? $"{prefix}Off (use vanilla streaming)"
                     : $"{prefix}{(int)captured}m";
@@ -602,14 +629,14 @@ namespace VerdantsAscent.Patches
 
             bool cleared = string.IsNullOrEmpty(current);
             items.Add(new VARightClickMenu.Item(
-                (cleared ? "✓ " : "    ") + "(no override — use prefab default)",
+                (cleared ? "» " : "    ") + "(no override — use prefab default)",
                 () => SetShaderAction(prefabName, null)));
 
             foreach (var shaderName in shaders)
             {
                 string captured = shaderName;
                 bool active = string.Equals(captured, current, StringComparison.Ordinal);
-                string prefix = active ? "✓ " : "    ";
+                string prefix = active ? "» " : "    ";
                 items.Add(new VARightClickMenu.Item(
                     prefix + captured,
                     () => SetShaderAction(prefabName, captured)));
@@ -624,7 +651,7 @@ namespace VerdantsAscent.Patches
             if (string.IsNullOrEmpty(shaderName))
                 ShowToast($"Cleared shader override for '{prefabName}'");
             else
-                ShowToast($"'{prefabName}' shader → {shaderName}");
+                ShowToast($"'{prefabName}' shader » {shaderName}");
         }
 
         // Favorite toggle — persists to HammerTabs/favorites.txt and refreshes
@@ -636,9 +663,9 @@ namespace VerdantsAscent.Patches
             // otherwise the star lands only in FAP's tab - which the 1.0 build menu never renders.
             VABuildUiFavorites.Mirror(prefabName, nowFavorite);
             ShowToast(nowFavorite
-                ? $"★ Added '{prefabName}' to Favorites"
+                ? $"* Added '{prefabName}' to Favorites"
                 : $"Removed '{prefabName}' from Favorites");
-            try { Player.m_localPlayer?.UpdateAvailablePiecesList(); } catch { }
+            try { VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAHammerRightClickPatches"); } catch { }
         }
 
         private static void OpenMoveSubmenu(string prefabName)
@@ -676,8 +703,8 @@ namespace VerdantsAscent.Patches
             bool isFavorite = VAHammerTabOrganizer.IsFavorite(prefabName);
             items.Add(new VARightClickMenu.Item(
                 isFavorite
-                    ? "★ Favorites  <color=#888>(already favorited — click to remove)</color>"
-                    : "★ Favorites  <color=#888>(bookmark — keeps its home tab)</color>",
+                    ? "* Favorites  <color=#888>(already favorited — click to remove)</color>"
+                    : "* Favorites  <color=#888>(bookmark — keeps its home tab)</color>",
                 () => ToggleFavoriteAction(prefabName)));
             items.Add(new VARightClickMenu.Item("──────────", null, disabled: true));
 
@@ -685,7 +712,7 @@ namespace VerdantsAscent.Patches
             {
                 string targetTab = tab;
                 items.Add(new VARightClickMenu.Item(
-                    "→ " + targetTab,
+                    "» " + targetTab,
                     () => MovePrefabAction(prefabName, targetTab)));
             }
             items.Add(new VARightClickMenu.Item(
@@ -737,9 +764,9 @@ namespace VerdantsAscent.Patches
             }
             int retagged = VAVanillaPieceManager.RetagPieceCategoryByName(prefabName, toTab);
             if (retagged > 0)
-                ShowToast($"Moved '{prefabName}' → {toTab}");
+                ShowToast($"Moved '{prefabName}' » {toTab}");
             else
-                ShowToast($"Moved '{prefabName}' → {toTab} (world reload to apply)");
+                ShowToast($"Moved '{prefabName}' » {toTab} (world reload to apply)");
         }
 
         // ──────────────────────────────────────────────────────────────
@@ -755,7 +782,7 @@ namespace VerdantsAscent.Patches
         internal static void ShowTagMenu(int tagId)
         {
             var player = Player.m_localPlayer;
-            if (player == null || !HammerCategoryUI.IsHammerTable(player.GetBuildTool())) return;
+            if (player == null || !HammerCategoryUI.IsOrganizable(player.GetBuildTool())) return;
 
             if (VABuildUiCategoryTags.TryGetTabName(tagId, out var tabName))
                 ShowUserTabMenu(tabName);
@@ -771,6 +798,7 @@ namespace VerdantsAscent.Patches
                 new VARightClickMenu.Item("(vanilla tab — rename / hide disabled)", null, disabled: true),
             };
             AddVanillaOnlyToggle(items);
+            AddHideDevToggle(items);
             VARightClickMenu.Show(items);
         }
 
@@ -789,8 +817,30 @@ namespace VerdantsAscent.Patches
                     OpenShowHiddenSubmenu),
             };
             AddVanillaOnlyToggle(items);
+            AddHideDevToggle(items);
             AddEwpPersistenceToggle(items, tabName);
+            AddStandOrientationChoice(items, tabName);
             VARightClickMenu.Show(items);
+        }
+
+        // 1.1.197 (Arbby via Fire): pick the item-stand orientation from the Item Stands tab, live.
+        private static void AddStandOrientationChoice(List<VARightClickMenu.Item> items, string tabName)
+        {
+            if (!string.Equals(tabName, VACategoryRegistry.CatItemStandsV, StringComparison.Ordinal)
+                && !string.Equals(tabName, VACategoryRegistry.CatItemStandsH, StringComparison.Ordinal)) return;
+            var entry = ConfigManager.Instance?.configItemStandOrientation;
+            if (entry == null) return;
+            items.Add(new VARightClickMenu.Item("──────────", null, disabled: true));
+            foreach (var mode in new[] { "Horizontal", "Vertical", "Both" })
+            {
+                string capture = mode;
+                bool on = string.Equals(entry.Value, mode, StringComparison.OrdinalIgnoreCase);
+                items.Add(new VARightClickMenu.Item((on ? "» " : "    ") + "Item stands: " + mode, () =>
+                {
+                    entry.Value = capture;   // SettingChanged swaps the stand-ins live
+                    ShowToast("Item stands: " + capture);
+                }));
+            }
         }
 
         // Vanilla-only is a server-synced setting, so it is offered to admins only — a player
@@ -807,7 +857,7 @@ namespace VerdantsAscent.Patches
 
             items.Add(new VARightClickMenu.Item("──────────", null, disabled: true));
             items.Add(new VARightClickMenu.Item(
-                (entry.Value ? "✓ " : "    ") + "Vanilla only",
+                (entry.Value ? "» " : "    ") + "Vanilla only",
                 ToggleVanillaOnlyAction));
         }
 
@@ -834,7 +884,7 @@ namespace VerdantsAscent.Patches
             }
 
             items.Add(new VARightClickMenu.Item(
-                (entry.Value ? "✓ " : "    ") + "EWP persistence",
+                (entry.Value ? "» " : "    ") + "EWP persistence",
                 ToggleEwpPersistenceAction));
         }
 
@@ -851,6 +901,17 @@ namespace VerdantsAscent.Patches
 
         // The config's SettingChanged handler re-buckets the FX tabs and refreshes the piece
         // lists, so the menu reflects the new state as soon as it reopens.
+        private static void AddHideDevToggle(List<VARightClickMenu.Item> items)
+        {
+            var entry = ConfigManager.Instance?.configHideDevPrefabs;
+            if (entry == null) return;
+            items.Add(new VARightClickMenu.Item((entry.Value ? "» " : "    ") + "Hide dev prefabs", () =>
+            {
+                entry.Value = !entry.Value;
+                ShowToast(entry.Value ? "Dev prefabs hidden - reopen the menu." : "Dev prefabs shown (badged) - reopen the menu.");
+            }));
+        }
+
         private static void ToggleVanillaOnlyAction()
         {
             var entry = ConfigManager.Instance?.configVanillaFriendly;
@@ -878,7 +939,7 @@ namespace VerdantsAscent.Patches
                     ? hiddenTab.Substring(VAHammerTabOrganizer.HiddenTabPrefix.Length)
                     : hiddenTab;
                 items.Add(new VARightClickMenu.Item(
-                    $"Un-hide → {displayName}",
+                    $"Un-hide » {displayName}",
                     () => UnhideTabAction(capture)));
             }
             VARightClickMenu.Show(items);
@@ -898,7 +959,7 @@ namespace VerdantsAscent.Patches
 
                 ShowToast(string.IsNullOrEmpty(newName) || string.Equals(newName, tabName, StringComparison.Ordinal)
                     ? $"Tab '{tabName}' label reset to its folder name."
-                    : $"Renamed '{tabName}' → '{newName}'.");
+                    : $"Renamed '{tabName}' » '{newName}'.");
             });
         }
 

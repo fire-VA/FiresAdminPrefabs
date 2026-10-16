@@ -28,12 +28,54 @@ namespace VerdantsAscent.Utilities
         }
 
         // True when the item has something drawable outside its "attach" child (what this fallback copies).
-        public static bool HasWorldModel(GameObject itemPrefab)
+        public static bool HasWorldModel(GameObject itemPrefab) => WorldModelSources(itemPrefab).Count > 0;
+
+        // 1.1.204 (Fire 10-09: Fallen Warrior gear - FW_KnifeSkollAndHati, FW_Armor*, capes - placed EMPTY stands): NPC equipment
+        // keeps its "attach" model NESTED in the wearer's skinned rig (attach_skin / Armature / … / attach), so vanilla (a direct
+        // child only) draws nothing, and the old fallback copied the root's other children - a skinned mesh and an inactive rig,
+        // which render nothing once copied off the NPC. What draws on a stand, in order:
+        //   1. a nested "attach" with a plain (not skinned) renderer: its children, as vanilla would draw a direct one;
+        //   2. else the root's ACTIVE children (not "attach") that hold a plain renderer.
+        // Nothing found = the item is not offered as a stand-in at all (VAItemStandRegistry skips it).
+        private static readonly List<Transform> _sources = new List<Transform>();
+        internal static List<Transform> WorldModelSources(GameObject itemPrefab)
         {
-            if (itemPrefab == null) return false;
+            _sources.Clear();
+            if (itemPrefab == null) return _sources;
+            Transform nested = FindNestedAttach(itemPrefab.transform);
+            if (nested != null && HasPlainRenderer(nested))
+            {
+                foreach (Transform c in nested) if (HasPlainRenderer(c)) _sources.Add(c);
+                if (_sources.Count > 0) return _sources;
+            }
             foreach (Transform child in itemPrefab.transform)
-                if (child.name != "attach" && child.GetComponentInChildren<Renderer>(true) != null) return true;
-            return itemPrefab.GetComponent<Renderer>() != null;
+                if (child.name != "attach" && child.gameObject.activeSelf && HasPlainRenderer(child)) _sources.Add(child);
+            return _sources;
+        }
+
+        private static Transform FindNestedAttach(Transform root)
+        {
+            foreach (Transform c in root)
+            {
+                if (c.name == "attach") continue;   // a direct one is vanilla's own (drawn there, or empty on purpose)
+                var hit = FindDeep(c, "attach");
+                if (hit != null) return hit;
+            }
+            return null;
+        }
+
+        private static Transform FindDeep(Transform t, string name)
+        {
+            if (t.name == name) return t;
+            foreach (Transform c in t) { var hit = FindDeep(c, name); if (hit != null) return hit; }
+            return null;
+        }
+
+        private static bool HasPlainRenderer(Transform t)
+        {
+            foreach (var r in t.GetComponentsInChildren<Renderer>(true))
+                if (!(r is SkinnedMeshRenderer) && !(r is ParticleSystemRenderer)) return true;
+            return false;
         }
 
         [HarmonyPatch(typeof(ItemStand), "SetVisualItem"), HarmonyPostfix]
@@ -57,10 +99,9 @@ namespace VerdantsAscent.Utilities
 
                 var model = new GameObject(ModelName);
                 model.transform.SetParent(attach, false);
-                foreach (Transform child in itemPrefab.transform)
+                foreach (Transform source in WorldModelSources(itemPrefab).ToArray())
                 {
-                    if (child.name == "attach" || child.GetComponentInChildren<Renderer>(true) == null) continue;
-                    var copy = Object.Instantiate(child.gameObject, model.transform, false);
+                    var copy = Object.Instantiate(source.gameObject, model.transform, false);
                     StripToRender(copy);
                 }
                 PlaceOnStand(__instance, model);
@@ -85,11 +126,13 @@ namespace VerdantsAscent.Utilities
         {
             _strip.Clear();
             copy.GetComponentsInChildren(true, _strip);
+            var doomed = new List<Component>();
             foreach (var c in _strip)
             {
                 if (c == null || c is Transform || c is Renderer || c is MeshFilter || c is LODGroup || c is ParticleSystem) continue;
-                if (c is Collider || c is Rigidbody || c is Joint || c is MonoBehaviour) Object.DestroyImmediate(c);
+                if (c is Collider || c is Rigidbody || c is Joint || c is MonoBehaviour) doomed.Add(c);
             }
+            VAPieceIconRenderer.DestroyDependentsFirst(doomed, "item-stand fallback " + copy.name);   // 1.1.268: dependents first
             foreach (var r in copy.GetComponentsInChildren<Renderer>(true)) r.enabled = true;
             copy.SetActive(true);
         }

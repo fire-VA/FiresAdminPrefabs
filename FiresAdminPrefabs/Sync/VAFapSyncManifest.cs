@@ -40,6 +40,41 @@ namespace VerdantsAscent.Sync
         public static string CacheFilePath =>
             Path.Combine(RootDir, CacheFileName);
 
+        // 1.1.254: a synced folder can live outside RootDir. Wire paths stay "<Folder>/..." on every side; only the local
+        // directory behind a folder changes. Manifests now sits in FAP's cache root (out of config, Fire 10-14).
+        public static string FolderPath(string folder) =>
+            string.Equals(folder, VerdantsAscent.Utilities.VAFapCachePaths.ManifestsFolderName, StringComparison.Ordinal)
+                ? VerdantsAscent.Utilities.VAFapCachePaths.ManifestsDir
+                : Path.Combine(RootDir, folder);
+
+        // "<Folder>/rest" -> absolute path, through FolderPath.
+        public static string AbsolutePath(string relPath)
+        {
+            string rel = relPath.Replace('\\', '/');
+            int slash = rel.IndexOf('/');
+            if (slash > 0)
+            {
+                string folder = rel.Substring(0, slash);
+                foreach (var f in SyncedFolders)
+                    if (string.Equals(f, folder, StringComparison.Ordinal))
+                        return Path.Combine(FolderPath(f), rel.Substring(slash + 1).Replace('/', Path.DirectorySeparatorChar));
+            }
+            return Path.Combine(RootDir, rel.Replace('/', Path.DirectorySeparatorChar));
+        }
+
+        // Absolute path -> "<Folder>/rest" when it sits inside a synced folder, else null.
+        public static string RelativePath(string absPath)
+        {
+            string full = Path.GetFullPath(absPath);
+            foreach (var f in SyncedFolders)
+            {
+                string prefix = Path.GetFullPath(FolderPath(f)).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                if (full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return f + "/" + full.Substring(prefix.Length).Replace('\\', '/');
+            }
+            return null;
+        }
+
         private static Dictionary<string, ManifestEntry> _cache;
         private static bool _cacheLoaded;
         private static bool _cacheDirty;
@@ -115,7 +150,7 @@ namespace VerdantsAscent.Sync
             int rehashed = 0;
             foreach (var folder in SyncedFolders)
             {
-                string folderPath = Path.Combine(root, folder);
+                string folderPath = FolderPath(folder);
                 if (!Directory.Exists(folderPath)) continue;
 
                 foreach (var path in Directory.EnumerateFiles(folderPath, "*", SearchOption.AllDirectories))
@@ -127,7 +162,7 @@ namespace VerdantsAscent.Sync
                         var fileInfo = new FileInfo(path);
                         long size = fileInfo.Length;
                         long mtime = fileInfo.LastWriteTimeUtc.Ticks;
-                        string relPath = path.Substring(root.Length + 1).Replace('\\', '/');
+                        string relPath = folder + "/" + path.Substring(folderPath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Replace('\\', '/');
 
                         string sha;
                         if (TryGetCachedHash(relPath, size, mtime, out sha))
@@ -240,11 +275,10 @@ namespace VerdantsAscent.Sync
         private static string CachedOrComputedSha256(string absPath)
         {
             string fullPath = Path.GetFullPath(absPath);
-            string rootPrefix = Path.GetFullPath(RootDir) + Path.DirectorySeparatorChar;
-            if (fullPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+            string relPath = RelativePath(fullPath);   // 1.1.254: per-folder roots
+            if (relPath != null)
             {
                 var fileInfo = new FileInfo(fullPath);
-                string relPath = fullPath.Substring(rootPrefix.Length).Replace('\\', '/');
                 lock (_buildLock)
                 {
                     LoadCacheIfNeeded();

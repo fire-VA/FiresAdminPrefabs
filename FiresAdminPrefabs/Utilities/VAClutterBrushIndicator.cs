@@ -68,7 +68,8 @@ namespace VerdantsAscent.Utilities
             if (piece == null) { Hide(); return; }
             string ghostName = piece.gameObject.name;
             bool isClutterStandin = VAClutterStandinFactory.IsStandinName(ghostName);
-            bool isFxClearStandin = VAFapEwpClearTool.IsStandinName(ghostName);
+            // 1.1.260: the Make Persistent Brush uses the FX brush radius, so it shows the same ring
+            bool isFxClearStandin = VAFapEwpClearTool.IsStandinName(ghostName) || VAFapPersistBrushTool.IsStandinName(ghostName);
             bool isClutterClearStandin = VAClutterClearTool.IsStandinName(ghostName);
             bool isMonsterClearStandin = VAFapMonsterClearTool.IsStandinName(ghostName);
             bool isContainerClearStandin = VAFapContainerClearTool.IsStandinName(ghostName);

@@ -62,8 +62,7 @@ namespace VerdantsAscent.Utilities
 
         public static string AssetsDir =>
             Path.Combine(Paths.ConfigPath, "FiresAdminPrefabs", "Assets");
-        public static string ManifestsDir =>
-            Path.Combine(Paths.ConfigPath, "FiresAdminPrefabs", "Manifests");
+        public static string ManifestsDir => VAFapCachePaths.ManifestsDir;   // 1.1.254: out of config
 
         // False while RegisterAllAsync runs. On a host, the respawn hold patch keeps the player
         // on the loading screen until registration finishes.

@@ -29,12 +29,18 @@ namespace VerdantsAscent
     [BepInDependency(FiresCore.FiresUnifiedCore.PluginGUID, MinimumCoreVersion)]
     [BepInDependency(YamlDotNetDetectorGUID)]
     [BepInDependency("expand_world_data", BepInDependency.DependencyFlags.SoftDependency)]
+    // 1.1.269 (Fire's tester, 289x Jotunn RefreshCategories IndexOutOfRange): FAP loaded BEFORE Jotunn, so VAJotunnTabGuard.Prepare
+    // found no Jotunn assembly and never patched. Soft-depend so Jotunn (when installed) always loads first.
+    [BepInDependency("com.jotunn.jotunn", BepInDependency.DependencyFlags.SoftDependency)]
     public class VaPieces : BaseUnityPlugin
     {
         public static VaPieces Instance;
         public const string PluginGUID = "com.Fire.adminprefabs";
         public const string PluginName = "FiresAdminPrefabs";
-        public const string PluginVersion = "1.1.189";
+        public const string PluginVersion = "1.1.274";
+        // ConfigSync's minimum for connecting clients: a FIXED constant, raised only when a synced key's name, type or meaning changes
+        // (1.1.218 moved synced keys to new sections). Not PluginVersion, which forced every update in lockstep.
+        private const string MinimumSyncVersion = "1.1.218";
         private const string YamlDotNetDetectorGUID = "com.ValheimModding.YamlDotNetDetector";
         private const string MinimumCoreVersion = "0.2.126";
 
@@ -71,6 +77,7 @@ namespace VerdantsAscent
         {
             Instance = this;
             Log = Logger;
+            PreBindConfigMoves();   // 1.1.218: moved settings re-keyed before any bind
             FiresCore.Input.FiresInputBlock.LogTag = "FAP";
 
             TryRun("VAFapBanner.PrintBig", VAFapBanner.PrintBig);
@@ -106,11 +113,13 @@ namespace VerdantsAscent
             {
                 DisplayName = PluginName,
                 CurrentVersion = PluginVersion,
-                MinimumRequiredVersion = PluginVersion
+                MinimumRequiredVersion = MinimumSyncVersion   // 1.1.218: a fixed constant, raised only when a synced key changes
             };
             configSync.lockedConfigChanged += ConfigManager.Instance.OnConfigLockChanged;
             VAFapServerPresence.Hook(configSync);
             ConfigManager.Instance.Initialize(Config);
+            try { global::VerdantsAscent.Utilities.VALightPresetStore.EnsureLoaded(); } catch (System.Exception ex) { Logger.LogWarning("light presets at load: " + ex.Message); }   // 1.1.264: built-ins seeded at load
+            CleanUpConfigFile();
             BindConfigsToSync();
 
             TryRun("VAFapAssetSync.Init", VerdantsAscent.Sync.VAFapAssetSync.Init);
@@ -162,6 +171,7 @@ namespace VerdantsAscent
             foreach (var type in AccessTools.GetTypesFromAssembly(Assembly.GetExecutingAssembly()))
             {
                 if (skipClientOnly && IsClientOnlyPatch(type)) { skipped++; continue; }
+                if (DeferredPatchTypes.Contains(type)) continue;
                 try
                 {
                     harmony.CreateClassProcessor(type).Patch();
@@ -182,6 +192,31 @@ namespace VerdantsAscent
             Debug.Log($"[{PluginName}] {(skipClientOnly ? "Dedicated server" : "Client")}: patched {patched} types, skipped {skipped} client-only types, {failed} failed.");
         }
 
+        // 1.1.212 (Fire's server: EWP's LoadDefaultValueGroups NRE'd on FAP's missing-script prefabs, so EWP never
+        // initialised): these patch another mod's code, and that mod may load after FAP, so at Awake its assembly isn't
+        // there yet and Prepare() silently skipped the patch. They are applied from Start, once every plugin has loaded.
+        private static readonly HashSet<Type> DeferredPatchTypes = new HashSet<Type>
+        {
+            typeof(Patches.VAEWPLoadDefaultValueGroupsPatch),
+            typeof(Patches.VAEWDLoadDefaultValueGroupsPatch),
+        };
+
+        private void Start()
+        {
+            foreach (var type in DeferredPatchTypes)
+            {
+                try
+                {
+                    var patched = harmony.CreateClassProcessor(type).Patch();
+                    Debug.Log($"[{PluginName}] Deferred patch {type.Name}: {(patched != null && patched.Count > 0 ? "applied" : "not needed (target mod or method absent)")}.");
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[{PluginName}] Failed to apply deferred Harmony patch {type.FullName}: {ex.Message}");
+                }
+            }
+        }
+
         // Nested Harmony patch classes inherit their outer class's gating.
         private static bool IsClientOnlyPatch(Type type)
         {
@@ -193,6 +228,89 @@ namespace VerdantsAscent
 
         // configServerEnforced is the one locking entry a ConfigSync accepts; it
         // gates every other entry below, which sync server->client under that lock.
+        // 1.1.217 (Fire 10-13, Tools\CONFIG_AUDIT_20261013.md): the .cfg reads as it works.
+        //   - the preset editors' window layout (opacity / size / position) is bound now, not on first open, so it has descriptions;
+        //   - [Item stands] UseEwpForRefill moved into [ItemStands]: the old value is copied over once (logged), then the old entry goes;
+        //   - [Performance] PrewarmScriptTypes is bound by nothing any more: removed.
+        // 1.1.218 (the lead: no first-load defaults): every moved entry is re-keyed in the ConfigFile's orphan table at the TOP of Awake,
+        // before any bind, so the bind reads the moved value. Logged by name only; CleanUpConfigFile saves the file once afterwards.
+        private static bool s_preMoved;
+        private void PreBindConfigMoves()
+        {
+            try
+            {
+                var orphans = AccessTools.Property(typeof(BepInEx.Configuration.ConfigFile), "OrphanedEntries")?.GetValue(Config, null)
+                    as Dictionary<BepInEx.Configuration.ConfigDefinition, string>;
+                if (orphans == null || orphans.Count == 0) return;
+                var moved = new List<string>();
+                foreach (var (os, ok, ns, nk) in new[]
+                {
+                    ("Item stands", "UseEwpForRefill", "ItemStands", "UseEwpForRefill"),
+                    ("HammerTabs", "TabDisplayNames", "BuildMenu", "TabDisplayNames"),
+                    ("UI", "ConfigWindowScale", "General", "ConfigWindowScale"),
+                    ("Sync", "AutoPushOnPlace", "General", "AutoPushOnPlace"),
+                    ("InfinityHammer", "KeepAreaGrabScale", "Compatibility", "InfinityHammerKeepAreaGrabScale"),
+                })
+                {
+                    var oldDef = new BepInEx.Configuration.ConfigDefinition(os, ok);
+                    var newDef = new BepInEx.Configuration.ConfigDefinition(ns, nk);
+                    if (!orphans.TryGetValue(oldDef, out string raw)) continue;
+                    if (!orphans.ContainsKey(newDef)) orphans[newDef] = raw;   // a value already under the new key wins
+                    orphans.Remove(oldDef);
+                    moved.Add($"[{os}] {ok} -> [{ns}] {nk}");
+                }
+                if (moved.Count == 0) return;
+                s_preMoved = true;
+                Debug.Log($"{PluginName}: config: moved {moved.Count} setting(s) before binding, values kept: {string.Join("; ", moved.ToArray())}");
+            }
+            catch (Exception ex) { Debug.LogWarning($"{PluginName}: config moves skipped: {ex.Message}"); }
+        }
+
+        private void CleanUpConfigFile()
+        {
+            TryRun("config layout binds", () =>
+            {
+                VAChestConfigUI.BindLayout(); VAClutterConfigUI.BindLayout(); VAExtraDataUI.BindLayout();
+                VAItemStandConfigUI.BindLayout(); VAMonsterConfigUI.BindLayout(); VALightConfigUI.BindLayout();
+            });
+            try
+            {
+                var orphans = AccessTools.Property(typeof(BepInEx.Configuration.ConfigFile), "OrphanedEntries")?.GetValue(Config, null)
+                    as Dictionary<BepInEx.Configuration.ConfigDefinition, string>;
+                if (orphans == null) return;
+                bool changed = false;
+                var oldEwp = new BepInEx.Configuration.ConfigDefinition("Item stands", "UseEwpForRefill");
+                if (orphans.TryGetValue(oldEwp, out string raw))
+                {
+                    if (bool.TryParse((raw ?? "").Trim(), out bool v)) ConfigManager.Instance.configItemStandUseEwp.Value = v;
+                    orphans.Remove(oldEwp); changed = true;
+                    Debug.Log($"{PluginName}: config: [Item stands] UseEwpForRefill = {raw} moved to [ItemStands] UseEwpForRefill");
+                }
+                // 1.1.218 (Fire 10-13: merge the one-entry sections): the value saved under the old section / key is copied once into
+                // the new one (logged by name), then the old entry goes. [Internal] AppliedMigrations stays where it is (migration state).
+                foreach (var (os, ok, ns, nk) in new[]
+                {
+                    ("HammerTabs", "TabDisplayNames", "BuildMenu", "TabDisplayNames"),
+                    ("UI", "ConfigWindowScale", "General", "ConfigWindowScale"),
+                    ("Sync", "AutoPushOnPlace", "General", "AutoPushOnPlace"),
+                    ("InfinityHammer", "KeepAreaGrabScale", "Compatibility", "InfinityHammerKeepAreaGrabScale"),
+                })
+                {
+                    var oldDef = new BepInEx.Configuration.ConfigDefinition(os, ok);
+                    var newDef = new BepInEx.Configuration.ConfigDefinition(ns, nk);
+                    if (!orphans.TryGetValue(oldDef, out string was) || !Config.ContainsKey(newDef)) continue;
+                    Config[newDef].SetSerializedValue(was);
+                    orphans.Remove(oldDef); changed = true;
+                    Debug.Log($"{PluginName}: config: [{os}] {ok} moved to [{ns}] {nk} (value kept)");
+                }
+                var dead = new BepInEx.Configuration.ConfigDefinition("Performance", "PrewarmScriptTypes");
+                if (orphans.Remove(dead)) { changed = true; Debug.Log($"{PluginName}: config: removed the retired [Performance] PrewarmScriptTypes"); }
+                if (changed || s_preMoved) Config.Save();
+                s_preMoved = false;
+            }
+            catch (Exception ex) { Debug.LogWarning($"{PluginName}: config cleanup skipped: {ex.Message}"); }
+        }
+
         private void BindConfigsToSync()
         {
             ConfigManager config = ConfigManager.Instance;
@@ -209,6 +327,7 @@ namespace VerdantsAscent
             configSync.AddConfigEntry(config.configHammerSwapFracOnPlace);
             configSync.AddConfigEntry(config.configHammerEffectsOverrideTTL);
             configSync.AddConfigEntry(config.configItemStandHideStandVisual);
+            configSync.AddConfigEntry(config.configIHKeepAreaGrabScale);
 
             configSync.AddConfigEntry(config.configAdminOnlyMode);
             configSync.AddConfigEntry(config.configRegisterPiecesForNonAdmins);
@@ -373,7 +492,7 @@ namespace VerdantsAscent
         private static void RefreshHammerTabsAndPieces()
         {
             if (Player.m_localPlayer != null)
-                Player.m_localPlayer.UpdateAvailablePiecesList();
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "Ascend");
         }
 
         private static void TryRun(string description, Action action)

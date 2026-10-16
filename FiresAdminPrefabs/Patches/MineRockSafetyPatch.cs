@@ -58,12 +58,23 @@ namespace VerdantsAscent.Patches
     {
         // Never flags an Infinity Hammer placement, so the strip below can't gut an
         // IH-relocated fractured prefab.
+        // 1.1.206 (Fire 10-09: "make the mods work together properly"): only an IH COPY (a selection clone) is IH's to protect;
+        // a FAP piece picked from IH's Builds page is the registered prefab itself and gets FAP's normal placement.
         [HarmonyPrefix]
-        public static void Prefix() => VAPlayerPlacementContext.IsPlacing =
-            !VerdantsAscent.Utilities.VAInfinityHammerCompat.IsInfinityHammerActive();
+        [HarmonyPriority(Priority.First)]
+        public static void Prefix(Piece piece)
+        {
+            VerdantsAscent.Utilities.VAInfinityHammerCompat.IsIhCopyPlacing =
+                VerdantsAscent.Utilities.VAInfinityHammerCompat.IsInfinityHammerActive() && !VerdantsAscent.Utilities.VAInfinityHammerCompat.IsRegisteredPrefab(piece);
+            VAPlayerPlacementContext.IsPlacing = !VerdantsAscent.Utilities.VAInfinityHammerCompat.IsIhCopyPlacing;
+        }
 
         [HarmonyFinalizer]
-        public static void Finalizer() => VAPlayerPlacementContext.IsPlacing = false;
+        public static void Finalizer()
+        {
+            VAPlayerPlacementContext.IsPlacing = false;
+            VerdantsAscent.Utilities.VAInfinityHammerCompat.IsIhCopyPlacing = false;
+        }
     }
 
     // Strips MineRock5 from player-placed fractured prefabs (Ashlands walls,
@@ -115,7 +126,7 @@ namespace VerdantsAscent.Patches
 
         private static MethodInfo ResolveMethod()
         {
-            var logSourceType = AccessTools.TypeByName("BepInEx.Logging.UnityLogSource");
+            var logSourceType = global::VerdantsAscent.Utilities.QuietTypes.Find("BepInEx.Logging.UnityLogSource");
             if (logSourceType == null) return null;
             return AccessTools.Method(logSourceType, "OnUnityLogMessageReceived",
                 new Type[] { typeof(string), typeof(string), typeof(LogType) });

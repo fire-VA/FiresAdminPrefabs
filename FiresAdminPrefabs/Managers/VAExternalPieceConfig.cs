@@ -97,7 +97,13 @@ namespace VerdantsAscent.Managers
                       $"{files.Length} file(s) ({unregistered.Count} prefab(s) not registered, {missingItem} with an unresolved requirement item). " +
                       "A prefab that is registered but unconfigured still loads from the save; it just is not buildable.");
 
-            foreach (var name in unregistered) ReportWhereItWent(name);
+            // 1.1.268 (LOG_AUDIT 10-15 B14): one summary Warning instead of a Warning per piece; the per-piece diagnosis is Debug.
+            if (unregistered.Count > 0)
+            {
+                Debug.LogWarning($"{VaPieces.PluginName}: VAExternalPieceConfig: {unregistered.Count} configured piece(s) have no prefab (not in any loaded bundle): " +
+                                 string.Join(", ", unregistered) + ". Per-piece detail at Debug.");
+                foreach (var name in unregistered) ReportWhereItWent(name);
+            }
         }
 
         // GetPrefab is a hash lookup into m_namedPrefabs, so a null tells us the
@@ -119,7 +125,7 @@ namespace VerdantsAscent.Managers
                 ? "nothing"
                 : $"'{byHash.name}' (hash {byHash.name.GetStableHashCode()})";
 
-            Debug.LogWarning($"{VaPieces.PluginName}: VAExternalPieceConfig '{prefabName}' (hash {hash}) is unresolved. " +
+            VaPieces.Log?.LogDebug($"VAExternalPieceConfig '{prefabName}' (hash {hash}) is unresolved. " +
                              $"In ExternalPrefabs: {inExternals}. In ZNetScene.m_prefabs: {inScenePrefabs != null}. " +
                              $"m_namedPrefabs[{hash}] holds {owner}. " +
                              (inScenePrefabs != null

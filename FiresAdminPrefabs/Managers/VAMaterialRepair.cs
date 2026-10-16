@@ -567,6 +567,8 @@ namespace VerdantsAscent.Managers
                 }
             }
 
+            try { DedupeLodGroupRenderers(prefab); }
+            catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: LODGroup dedupe threw on '{prefab.name}': {ex.Message}"); }
             try { EnsureCullLodGroup(prefab); }
             catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: cull LODGroup threw on '{prefab.name}': {ex.Message}"); }
         }
@@ -577,6 +579,49 @@ namespace VerdantsAscent.Managers
         // prefab with no LODGroup of its own now gets one level holding all its mesh renderers, culled past
         // BundleCullDistance m (sized from its own bounds). Prefabs with their own LODGroup, items and characters are left alone.
         // There are no lower-detail meshes to switch to: this removes the distant copies, not the cost of a near one.
+        // 1.1.211 (Fire's Gale log 10-10: "Renderer 'stonewall (1)' is registered with more than one LODGroup ('stone' and
+        // 'new')", Balrond's clay_slab_wall4x4_bal): a renderer listed by two nested LODGroups stays only in the group nearest
+        // to it in the hierarchy, so Unity has one owner to drive and nothing to warn about.
+        private static void DedupeLodGroupRenderers(GameObject prefab)
+        {
+            var groups = prefab.GetComponentsInChildren<LODGroup>(true);
+            if (groups.Length < 2) return;
+            var owner = new Dictionary<Renderer, LODGroup>();
+            foreach (var group in groups)
+                foreach (var lod in group.GetLODs())
+                    foreach (var r in lod.renderers)
+                    {
+                        if (r == null) continue;
+                        if (!owner.TryGetValue(r, out var current) || Depth(group.transform, r.transform) < Depth(current.transform, r.transform))
+                            owner[r] = group;
+                    }
+            int dropped = 0;
+            foreach (var group in groups)
+            {
+                var lods = group.GetLODs();
+                bool changed = false;
+                for (int i = 0; i < lods.Length; i++)
+                {
+                    var kept = new List<Renderer>();
+                    foreach (var r in lods[i].renderers)
+                        if (r == null || owner[r] == group) kept.Add(r); else { changed = true; dropped++; }
+                    lods[i].renderers = kept.ToArray();
+                }
+                if (changed) group.SetLODs(lods);
+            }
+            if (dropped > 0)
+                VaPieces.Log?.LogDebug($"[VAMaterialRepair] {prefab.name}: {dropped} renderer entr{(dropped == 1 ? "y" : "ies")} listed by a second LODGroup dropped (kept in the nearest group)");
+        }
+
+        // Steps from the renderer up to the group; a group that is not an ancestor counts as farthest.
+        private static int Depth(Transform group, Transform renderer)
+        {
+            int depth = 0;
+            for (var t = renderer; t != null; t = t.parent, depth++)
+                if (t == group) return depth;
+            return int.MaxValue;
+        }
+
         internal static int LodGroupsAuthored, LodGroupsAdded, LodGroupsSkipped;
 
         private static void EnsureCullLodGroup(GameObject prefab)

@@ -42,8 +42,8 @@ namespace VerdantsAscent.Network
                 isCheat: true);
 
             new Terminal.ConsoleCommand("fap_dump_categories",
-                "Print every build category the hammer resolves, its piece count and whether FAP owns it, plus the runtime vs compiled PieceCategory.Max. Answers 'are the FAP tabs empty' without opening the menu.",
-                (Terminal.ConsoleEventArgs args) => DumpCategories(args.Context),
+                "Print every build category the hammer resolves, its piece count and whether FAP owns it, plus the runtime vs compiled PieceCategory.Max. Answers 'are the FAP tabs empty' without opening the menu. 'fap_dump_categories <Tab>' (e.g. CreatorShop) also lists that tab's pieces and where each came from.",
+                (Terminal.ConsoleEventArgs args) => DumpCategories(args.Context, args.Length >= 2 ? args[1] : null),
                 // Read-only, so not a cheat: 1.0's console never enables cheats on a client of a dedicated server
                 // (Terminal.IsCheatsEnabled wants IsServer), so as a cheat it was unusable on a vanilla server - the
                 // client-only test's own automation could not run it.
@@ -910,7 +910,7 @@ namespace VerdantsAscent.Network
             }
             catch (Exception ex) { return "precondition check threw: " + ex.Message; }
         }
-        private static void DumpCategories(Terminal context)
+        private static void DumpCategories(Terminal context, string listTab = null)
         {
             void Line(string text)
             {
@@ -1065,6 +1065,32 @@ namespace VerdantsAscent.Network
                  + (fapPublished > 0 && fapPublishedEmpty == fapPublished ? "  ** ALL PUBLISHED FAP TABS EMPTY **" : string.Empty));
             if (orphanedPieces > 0)
                 Line($"[FAP] {orphanedPieces} piece(s) sit in a category with no tab and cannot be reached from the menu.");
+
+            // 1.1.193 (Fire 10-08, "a couple of extra buttons in the creator shop"): one tab's pieces by name and source,
+            // so a stray piece can be traced to whoever put it there.
+            if (!string.IsNullOrEmpty(listTab))
+            {
+                if (!VACategoryRegistry.TryGet(listTab, out var listCat))
+                    Line($"[FAP] no FAP tab named '{listTab}'.");
+                else
+                {
+                    int idx = (int)listCat;
+                    var pieces = idx < byCategory.Count ? byCategory[idx] : null;
+                    var injected = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var kv in VAVanillaPieceManager.EligiblePieces) injected.Add(kv.Key);
+                    Line($"[FAP] tab '{listTab}' [{idx}]: {pieces?.Count ?? 0} piece(s)");
+                    if (pieces != null)
+                        foreach (var p in pieces)
+                        {
+                            if (p == null) continue;
+                            string n = p.gameObject.name;
+                            string src = VAExternalBundleLoader.TryGetSourceBundle(n, out var bundle) && !string.IsNullOrEmpty(bundle) ? $"bundle '{bundle}'"
+                                       : injected.Contains(n) ? "FAP-injected vanilla prefab"
+                                       : "not FAP-injected (another mod or a vanilla piece)";
+                            Line($"[FAP]   {n}  name='{p.m_name}'  {src}");
+                        }
+                }
+            }
 
             // The other half of the inlined-constant bug: a pre-patch build hides pieces by stamping
             // the OLD Max, which the patched game reads as a real category.

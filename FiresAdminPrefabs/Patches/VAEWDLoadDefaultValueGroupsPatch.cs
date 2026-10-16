@@ -38,15 +38,18 @@ namespace VerdantsAscent.Patches
                 _dataLoadingType = FindTypeQuietly("Data.DataLoading");
                 if (_dataLoadingType == null) return false;
 
-                _loadDefaultValueGroupsMethod = AccessTools.Method(_dataLoadingType, "LoadDefaultValueGroups");
+                // Quiet lookups (1.1.212): EWD 1.76 no longer has this method or DefaultPrefabComponents, and
+                // AccessTools logs a HarmonyX warning for every miss.
+                const BindingFlags Any = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+                _loadDefaultValueGroupsMethod = _dataLoadingType.GetMethod("LoadDefaultValueGroups", Any);
                 if (_loadDefaultValueGroupsMethod == null) return false;
 
-                _defaultValueGroupsField      = AccessTools.Field(_dataLoadingType, "DefaultValueGroups");
-                _defaultPrefabComponentsField = AccessTools.Field(_dataLoadingType, "DefaultPrefabComponents");
-                _wearNTearHashField           = AccessTools.Field(_dataLoadingType, "WearNTearHash");
-                _humanoidHashField            = AccessTools.Field(_dataLoadingType, "HumanoidHash");
-                _creatureHashField            = AccessTools.Field(_dataLoadingType, "CreatureHash");
-                _structureHashField           = AccessTools.Field(_dataLoadingType, "StructureHash");
+                _defaultValueGroupsField      = _dataLoadingType.GetField("DefaultValueGroups", Any);
+                _defaultPrefabComponentsField = _dataLoadingType.GetField("DefaultPrefabComponents", Any);
+                _wearNTearHashField           = _dataLoadingType.GetField("WearNTearHash", Any);
+                _humanoidHashField            = _dataLoadingType.GetField("HumanoidHash", Any);
+                _creatureHashField            = _dataLoadingType.GetField("CreatureHash", Any);
+                _structureHashField           = _dataLoadingType.GetField("StructureHash", Any);
 
                 if (_defaultValueGroupsField == null
                     || _defaultPrefabComponentsField == null
@@ -158,21 +161,19 @@ namespace VerdantsAscent.Patches
         {
             if (string.IsNullOrEmpty(fullName)) return null;
             // Both ExpandWorldData and ExpandWorldPrefabs declare a Data.DataLoading. This patch
-            // rebuilds the EWD layout, so return the one that declares DefaultPrefabComponents
-            // (EWD). EWP's field-less type is handled by VAEWPLoadDefaultValueGroupsPatch.
-            Type firstMatch = null;
+            // rebuilds the EWD layout, so it takes ExpandWorldData's, picked by assembly name (1.1.212).
+            // EWP's is handled by VAEWPLoadDefaultValueGroupsPatch.
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
                 try
                 {
+                    if (asm.GetName().Name != "ExpandWorldData") continue;
                     var t = asm.GetType(fullName, throwOnError: false);
-                    if (t == null) continue;
-                    if (firstMatch == null) firstMatch = t;
-                    if (AccessTools.Field(t, "DefaultPrefabComponents") != null) return t;
+                    if (t != null) return t;
                 }
                 catch { }
             }
-            return firstMatch;
+            return null;
         }
     }
 }

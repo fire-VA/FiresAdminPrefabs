@@ -77,6 +77,8 @@ namespace VerdantsAscent.Utilities
             var verticalStand = ResolveVanillaStand(VAItemStandStandinFactory.VanillaVerticalPrefabName);
             var horizontalStand = ResolveVanillaStand(VAItemStandStandinFactory.VanillaHorizontalPrefabName);
 
+            var seenLooks = new HashSet<string>(System.StringComparer.Ordinal);
+            int duplicates = 0;
             foreach (var itemPrefab in odb.m_items)
             {
                 if (itemPrefab == null) continue;
@@ -92,6 +94,11 @@ namespace VerdantsAscent.Utilities
 
                 // 1.1.183 (Fire 10-07): any item that can be drawn - its own stand model, or its world model (FAP draws that,
                 // VAItemStandFallbackModel). VanillaFriendly only offers what a vanilla client can draw (VanillaAccepts* below).
+                // 1.1.207 (Fire 10-10: feasts / DragonEgg / DvergrKey on a stand were invisible, and taking one off made a
+                // real placed feast plus a vanilla NRE in ItemStand.DropItem): vanilla's take-off instantiates the item prefab and
+                // sets its Rigidbody's velocity. An "item" whose prefab is a placeable piece, or has no Rigidbody, can't come off a
+                // stand, so it's never offered (either VanillaFriendly setting).
+                if (itemPrefab.GetComponent<Piece>() != null || itemPrefab.GetComponent<Rigidbody>() == null) continue;
                 bool standModel = HasStandModel(itemPrefab);
                 if (!standModel && !VAItemStandFallbackModel.HasWorldModel(itemPrefab)) continue;
 
@@ -100,6 +107,20 @@ namespace VerdantsAscent.Utilities
                 // icon to show and no business on a stand, and they rendered as a bare stand.
                 Sprite icon = ResolveIcon(drop.m_itemData.m_shared);
                 if (icon == null) continue;
+
+                // 1.1.196 (Fire's hand test 10-09, Arbby: "a TON of duplicates"): mods ship copies of the same item (same name
+                // token, same icon) under other prefab names; one stand entry per look, the first (vanilla loads first) wins.
+                string lookKey = (drop.m_itemData.m_shared.m_name ?? "") + "|" + icon.name;
+                if (!seenLooks.Add(lookKey))
+                {
+                    duplicates++;
+                    // 1.1.204 (Fire 10-09: "Skoll and Hati" stands placed EMPTY): the copy that won was the Fallen Warrior's
+                    // FW_KnifeSkollAndHati (NPC gear: same name + icon, no stand model), and the player's KnifeSkollAndHati was the one
+                    // dropped. The copy vanilla can draw on a stand wins the tie now.
+                    int at = _entries.FindIndex(x => x.ItemDrop.m_itemData.m_shared.m_name == drop.m_itemData.m_shared.m_name && x.Icon == icon);
+                    if (at < 0 || !standModel || HasStandModel(_entries[at].Prefab)) continue;
+                    _entries.RemoveAt(at);
+                }
 
                 _entries.Add(new Entry
                 {
@@ -111,6 +132,7 @@ namespace VerdantsAscent.Utilities
                     VanillaAcceptsHorizontal = standModel && StandAccepts(horizontalStand, drop.m_itemData),
                 });
             }
+            if (duplicates > 0) VaPieces.Log?.LogDebug($"[FAP] item stands: {duplicates} duplicate item(s) left out (same name + icon as an earlier one), {_entries.Count} kept");
         }
 
         // Variant items (capes, shields, armour) keep one sprite per variant and can leave the

@@ -46,7 +46,7 @@ namespace VerdantsAscent.Patches
 
             // WasInjectedByUs is name-based and also matches an Infinity Hammer placement
             // of a FAP-injected prefab; IH owns those.
-            if (VAInfinityHammerCompat.IsInfinityHammerActive()) return;
+            if (VAInfinityHammerCompat.IsIhCopyPlacing) return;   // 1.1.206: only an IH copy, not an IH-held hammer
             if (!VAVanillaPieceManager.WasInjectedByUs(__instance.gameObject)) return;
 
             var config = ConfigManager.Instance;
@@ -127,9 +127,15 @@ namespace VerdantsAscent.Patches
         private static bool TryApplyEffectTtlOverride(Piece piece, ZNetView netView, ConfigManager config)
         {
             if (config.configVanillaFriendly.Value) return false;
-            if (!config.configHammerEffectsOverrideTTL.Value) return false;
             if (VAEwpSoftDep.IsActive) return false;
-            if (!IsInFxOrVfxCategory(piece)) return false;
+            // 1.1.254: a non-FX piece opted into the FAP respawner (lavabomb_rock1) keeps running too.
+            bool fapPersistent = VAFapRespawner.Mode(out _) == VAPersistMode.Fap
+                                 && VerdantsAscent.Utilities.VAFapPersistentOptIn.IsOptedIn(Utils.GetPrefabName(piece.gameObject));
+            if (!fapPersistent)
+            {
+                if (!config.configHammerEffectsOverrideTTL.Value) return false;
+                if (!IsInFxOrVfxCategory(piece)) return false;
+            }
             if (!VAEffectTtlOverride.HasTimedComponents(piece.gameObject)) return false;
 
             var zdo = netView.GetZDO();

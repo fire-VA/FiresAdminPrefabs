@@ -96,6 +96,7 @@ namespace VerdantsAscent.Utilities
                 var grip = new GameObject("ScaleGrip");
                 grip.transform.SetParent(panel, false);
                 var img = grip.AddComponent<Image>();
+                img.sprite = VAGripSprite.Get(corner);   // 1.1.201: a drawn grip per corner, not a solid square
                 img.color = color;
                 img.raycastTarget = true;
                 var rt = img.rectTransform;

@@ -303,7 +303,7 @@ namespace VerdantsAscent.Patches
                 bool ewpHandlesRespawn = VAEwpSoftDep.IsActive;
 
                 // One line per death answers "why did/didn't this respawn?" from a single grep.
-                Debug.Log(
+                VaPieces.Log?.LogDebug(   // 1.1.207: per death = Debug (Fire: Message-level defaults)
                     $"[FAP-RespawnGate] OnDeath prefab='{prefabName}' " +
                     $"ewpInstalled={VAEwpDetector.IsEwpInstalled} useEwpCfg={ewpHandlesRespawn} ewpHandles={ewpHandlesRespawn} " +
                     $"nviewValid={netViewValid} isOwner={isOwner} " +
@@ -318,7 +318,7 @@ namespace VerdantsAscent.Patches
                 Vector3 position = __instance.transform.position;
                 Quaternion rotation = __instance.transform.rotation;
 
-                Debug.Log(
+                VaPieces.Log?.LogDebug(
                     $"[FAP-RespawnGate] OnDeath SCHEDULING respawn prefab='{prefabName}' " +
                     $"delay={delay:F2}s preset='{presetName}' pos={position}");
 

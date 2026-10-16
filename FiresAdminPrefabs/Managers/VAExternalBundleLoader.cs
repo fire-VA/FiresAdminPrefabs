@@ -161,10 +161,13 @@ namespace VerdantsAscent.Managers
         public static string AssetsDir =>
             Path.Combine(Paths.ConfigPath, SubfolderName, AssetsFolderName);
 
-        public static string ManifestsDir =>
-            Path.Combine(Paths.ConfigPath, SubfolderName, ManifestsFolderName);
+        public static string ManifestsDir => VerdantsAscent.Utilities.VAFapCachePaths.ManifestsDir;   // 1.1.254: out of config
 
         public static IReadOnlyCollection<string> LoadedBundleNames => _loadedBundleNames;
+
+        // 1.1.227: the Assets file each loaded bundle came from (VALazyBundleManifest).
+        private static readonly Dictionary<string, string> _bundlePathByLabel = new Dictionary<string, string>(StringComparer.Ordinal);
+        public static bool TryGetBundlePath(string bundleLabel, out string path) => _bundlePathByLabel.TryGetValue(bundleLabel ?? string.Empty, out path);
 
         public static bool TryGetSourceBundle(string prefabName, out string bundleName)
             => _sourceBundleByPrefab.TryGetValue(prefabName ?? string.Empty, out bundleName);
@@ -286,6 +289,8 @@ namespace VerdantsAscent.Managers
                         {
                             if (inFlight >= MaxBundleLoadsInFlight) continue;
                             if (!OpenPendingBundle(pending)) { HarvestPending(pending); harvested++; continue; }
+                            // 1.1.228: a lazy bundle loads nothing whole; its harvest reads the non-pieces by name.
+                            if (VALazyBundles.ShouldLoadLazy(BundleLabel(pending.Path), pending.Path, out _)) { HarvestPending(pending); harvested++; continue; }
                             try { pending.AssetRequest = pending.Bundle.LoadAllAssetsAsync<GameObject>(); }
                             catch (Exception ex)
                             {
@@ -440,7 +445,16 @@ namespace VerdantsAscent.Managers
             if (!OpenPendingBundle(pending)) return;
 
             GameObject[] prefabs;
-            try { prefabs = LoadBundlePrefabs(pending); }
+            // 1.1.228 (Fire 10-13, option A): a bundle with a current lazy manifest gives its pieces as stubs; the real prefab
+            // loads from the open bundle when the Hammer, a placement or a nearby ZDO first needs it (VALazyBundles).
+            string lazyLabel = BundleLabel(pending.Path);
+            _openBundleByLabel[lazyLabel] = pending.Bundle;
+            try
+            {
+                prefabs = VALazyBundles.ShouldLoadLazy(lazyLabel, pending.Path, out var lazyManifest)
+                    ? VALazyBundles.Harvest(pending.Bundle, lazyLabel, lazyManifest)
+                    : LoadBundlePrefabs(pending);
+            }
             catch (Exception ex)
             {
                 Debug.LogWarning($"{VaPieces.PluginName}: LoadAllAssets<GameObject> threw on '{Path.GetFileName(pending.Path)}': {ex.Message}");
@@ -466,10 +480,11 @@ namespace VerdantsAscent.Managers
             if (VAFapLoadSummary.VerboseEnabled)
                 Debug.Log($"{VaPieces.PluginName}:     bundle '{Path.GetFileName(pending.Path)}' → extracted {extracted}/{prefabs.Length} GameObject prefabs (queued for ZNetScene injection).");
             if (extracted == 0) return;
-            if (VaPieces.IsDedicatedServer) DropDediRenderMeshes(prefabs, bundleLabel);
-            else DeferClientRenderMeshes(prefabs, bundleLabel);
+            if (VaPieces.IsDedicatedServer) { DropDediRenderMeshes(prefabs, bundleLabel); UnloadDediTextures(prefabs, bundleLabel); }
+            else { DeferClientRenderMeshes(prefabs, bundleLabel); MakeRenderMeshesNonReadable(prefabs, bundleLabel); }
 
             if (_loadedBundleNamesSet.Add(bundleLabel)) _loadedBundleNames.Add(bundleLabel);
+            _bundlePathByLabel[bundleLabel] = pending.Path;   // 1.1.227: VALazyBundleManifest keys its sidecar on the file
             _loadedBundleCount++;
             LoadBundleManifest(bundleLabel, pending.ManifestTask);
         }
@@ -506,7 +521,7 @@ namespace VerdantsAscent.Managers
             var matched = new List<string>();
             foreach (var prefab in prefabs)
             {
-                if (prefab == null || !names.Contains(prefab.name)) continue;
+                if (prefab == null || (!DediDropsAll && !names.Contains(prefab.name))) continue;
                 matched.Add(prefab.name);
                 foreach (var mf in prefab.GetComponentsInChildren<MeshFilter>(true))
                 {
@@ -526,8 +541,58 @@ namespace VerdantsAscent.Managers
                 vertices += mesh.vertexCount;
                 Resources.UnloadAsset(mesh);
             }
-            Debug.Log($"{VaPieces.PluginName}: dedicated server: dropped the render mesh of {string.Join(", ", matched)} from '{bundleLabel}' " +
+            string which = matched.Count <= 8 ? string.Join(", ", matched) : $"{matched.Count} prefabs ({string.Join(", ", matched.GetRange(0, 8))}, ...)";
+            Debug.Log($"{VaPieces.PluginName}: dedicated server: dropped the render mesh of {which} from '{bundleLabel}' " +
                       $"({meshes.Count} mesh(es), {vertices:N0} vertices); colliders kept (Performance > DediSkipRenderMeshes)");
+        }
+
+        /// <summary>1.1.222: DediSkipRenderMeshes contains "*": every bundle prefab's render mesh goes on the dedicated server.</summary>
+        internal static bool DediDropsAll
+        {
+            get
+            {
+                string v = Managers.ConfigManager.Instance?.configDediSkipRenderMeshes?.Value;
+                if (string.IsNullOrEmpty(v)) return false;
+                foreach (string n in v.Split(',')) if (n.Trim() == "*") return true;
+                return false;
+            }
+        }
+
+        // 1.1.222 (the lead 10-13, dedi memory: 11,308 textures resident at the dedi's main menu): a dedicated server draws
+        // nothing, so the texture DATA of every bundle prefab's renderer materials is unloaded right after the harvest. The
+        // references stay (materials, the bundle stays loaded), so anything that does read one gets it back from the bundle.
+        private static long _dediTexturesUnloaded, _dediTextureBytes;
+
+        private static void UnloadDediTextures(GameObject[] prefabs, string bundleLabel)
+        {
+            var cfg = Managers.ConfigManager.Instance?.configDediUnloadTextures;
+            if (cfg == null || !cfg.Value) return;
+            var textures = new HashSet<Texture>();
+            foreach (var prefab in prefabs)
+            {
+                if (prefab == null) continue;
+                foreach (var r in prefab.GetComponentsInChildren<Renderer>(true))
+                    foreach (var m in r.sharedMaterials)
+                    {
+                        if (m == null) continue;
+                        foreach (int id in m.GetTexturePropertyNameIDs())
+                        {
+                            var t = m.GetTexture(id);
+                            if (t != null) textures.Add(t);
+                        }
+                    }
+            }
+            if (textures.Count == 0) return;
+            long bytes = 0;
+            foreach (var t in textures)
+            {
+                try { bytes += UnityEngine.Profiling.Profiler.GetRuntimeMemorySizeLong(t); Resources.UnloadAsset(t); }
+                catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: dedicated server: could not unload texture '{t.name}' of '{bundleLabel}': {ex.Message}"); }
+            }
+            _dediTexturesUnloaded += textures.Count;
+            _dediTextureBytes += bytes;
+            Debug.Log($"{VaPieces.PluginName}: dedicated server: unloaded {textures.Count} renderer texture(s), {bytes / 1048576.0:0} MB, of '{bundleLabel}'; "
+                + $"all bundles so far {_dediTexturesUnloaded} texture(s), {_dediTextureBytes / 1048576.0:0} MB (Performance > DediUnloadTextures)");
         }
 
         // Clients (Fire 2026-09-29, the interim before the decimated mesh): the castle tower's 12.2M-vertex render mesh cost
@@ -574,6 +639,54 @@ namespace VerdantsAscent.Managers
                       "(Performance > ClientLazyRenderMeshes)");
         }
 
+        // Clients (the lead 10-13, [generator]'s MemProbe run A: 1,477 MB of meshes at the main menu, the biggest FAP's building
+        // rips, all CPU-readable): a readable mesh keeps a CPU copy next to the GPU one. Render-only meshes give it up once
+        // uploaded (UploadMeshData(true)). Kept readable: collision meshes (runtime collider cooking reads them), skinned meshes
+        // (the blueprint bake skips non-readable skinned ones) and the meshes DeferClientRenderMeshes just unloaded (they must
+        // come back from the bundle as they were). FAP's other mesh readers are fine with it: snap points, the InfinityHammer
+        // measure guard and stand-ins read bounds only, icons draw on the GPU, and the bake reads non-readable static meshes back
+        // through VAFapReadableMeshProvider. The bundles stay loaded (VATextureLibrary and the deferred meshes load from them).
+        private static long _nonReadableMeshes, _nonReadableVertices;
+
+        private static void MakeRenderMeshesNonReadable(GameObject[] prefabs, string bundleLabel)
+        {
+            var cfg = Managers.ConfigManager.Instance?.configClientNonReadableRenderMeshes;
+            if (cfg == null || !cfg.Value) return;
+
+            var keep = new HashSet<Mesh>();
+            var deferred = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string lazy = Managers.ConfigManager.Instance?.configClientLazyRenderMeshes?.Value;
+            if (!string.IsNullOrWhiteSpace(lazy)) foreach (string n in lazy.Split(',')) if (n.Trim().Length > 0) deferred.Add(n.Trim());
+            foreach (var prefab in prefabs)
+            {
+                if (prefab == null) continue;
+                foreach (var mc in prefab.GetComponentsInChildren<MeshCollider>(true)) if (mc.sharedMesh != null) keep.Add(mc.sharedMesh);
+                foreach (var smr in prefab.GetComponentsInChildren<SkinnedMeshRenderer>(true)) if (smr.sharedMesh != null) keep.Add(smr.sharedMesh);
+                if (deferred.Contains(prefab.name))
+                    foreach (var mf in prefab.GetComponentsInChildren<MeshFilter>(true)) if (mf.sharedMesh != null) keep.Add(mf.sharedMesh);
+            }
+
+            var done = new HashSet<Mesh>();
+            long vertices = 0;
+            foreach (var prefab in prefabs)
+            {
+                if (prefab == null) continue;
+                foreach (var mf in prefab.GetComponentsInChildren<MeshFilter>(true))
+                {
+                    var mesh = mf.sharedMesh;
+                    if (mesh == null || !mesh.isReadable || keep.Contains(mesh) || !done.Add(mesh)) continue;
+                    try { vertices += mesh.vertexCount; mesh.UploadMeshData(markNoLongerReadable: true); }
+                    catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: could not drop the CPU copy of mesh '{mesh.name}' in '{bundleLabel}': {ex.Message}"); }
+                }
+            }
+            if (done.Count == 0) return;
+            _nonReadableMeshes += done.Count;
+            _nonReadableVertices += vertices;
+            Debug.Log($"{VaPieces.PluginName}: '{bundleLabel}': {done.Count} render mesh(es), {vertices:N0} vertices, dropped their CPU copy; "
+                + $"{keep.Count} kept readable (collision, skinned, deferred). All bundles so far: {_nonReadableMeshes} mesh(es), {_nonReadableVertices:N0} vertices "
+                + "(Performance > ClientNonReadableRenderMeshes)");
+        }
+
         private static string BundleLabel(string path)
         {
             string label = Path.GetFileNameWithoutExtension(path);
@@ -601,6 +714,40 @@ namespace VerdantsAscent.Managers
                 Debug.LogWarning($"{VaPieces.PluginName}: couldn't start reading the manifest of '{bundleName}' in the background ({ex.Message}); it is read at harvest.");
                 return null;
             }
+        }
+
+        private static readonly Dictionary<string, AssetBundle> _openBundleByLabel = new Dictionary<string, AssetBundle>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>1.1.228: the open AssetBundle a label came from (lazy realization), or null.</summary>
+        internal static AssetBundle GetOpenBundle(string bundleLabel) =>
+            bundleLabel != null && _openBundleByLabel.TryGetValue(bundleLabel, out var b) && b != null ? b : null;
+
+        /// <summary>1.1.228: the per-prefab part of InjectPrefabsIntoZNetScene for a prefab loaded after ZNetScene.Awake
+        /// (a realized lazy piece). The caller puts it into ZNetScene. False = rejected (dead script slots, no manifest fix).</summary>
+        internal static bool PrepareLatePrefab(GameObject prefab, string bundleLabel)
+        {
+            if (prefab == null) return false;
+            _sourceBundleByPrefab[prefab.name] = bundleLabel;
+            _bundlePrefabInstanceIds.Add(prefab.GetInstanceID());
+            int missingScripts = CountMissingScripts(prefab);
+            if (missingScripts > 0 && !_prefabScriptAttachments.ContainsKey(prefab.name) && !KeepsDeadScriptSlots(bundleLabel))
+            {
+                RecordMissingScriptReject(prefab, missingScripts);
+                Debug.LogWarning($"{VaPieces.PluginName}: [LazyBundles] '{prefab.name}' has {missingScripts} dead script slot(s) and no manifest fix; left out");
+                return false;
+            }
+            StripDangerousSingletonComponents(prefab, null);
+            HealColliderlessEffectAreas(prefab, null);
+            HealPickablesWithMissingItem(prefab, null);
+            HealPiecesWithMissingRequirementItem(prefab);
+            HealArmorMaterialWithoutBodyTextures(prefab);
+            VABundleAssetRouter.Apply(prefab, null);
+            VAReadableNames.Apply(prefab);
+            ApplyScriptAttachments(prefab);
+            VerdantsAscent.Api.FapExternalPrefabs.Raise(prefab);
+            if (!VaPieces.IsDedicatedServer) MakeRenderMeshesNonReadable(new[] { prefab }, bundleLabel);
+            VAMaterialRepair.RepairPrefab(prefab);
+            return true;
         }
 
         private static GameObject[] LoadBundlePrefabs(PendingBundle pending)
@@ -647,9 +794,9 @@ namespace VerdantsAscent.Managers
                 if (manifest.version > SupportedManifestSchemaVersion)
                     Debug.LogWarning($"{VaPieces.PluginName}: Manifest '{bundleName}{ManifestFileSuffix}' schema version {manifest.version} is newer than supported ({SupportedManifestSchemaVersion}) — reading best-effort.");
 
-                bool treatAllAsClutter =
-                    bundleName.IndexOf(ClutterCategory, StringComparison.OrdinalIgnoreCase) >= 0
-                    || (ConfigManager.Instance?.IsBundleInClutterAllOf(bundleName) ?? false);
+                // 1.1.199 (Fire 10-09): no whole-bundle clutter any more (bundle name / BundleClutterAllOf); only entries the
+                // manifest marks "clutter", and TryRegisterClutter still requires an InstanceRenderer.
+                bool treatAllAsClutter = false;
 
                 var clutterNames = new List<string>();
                 int prefabsWithAttachments = 0, totalAttachments = 0;
@@ -853,6 +1000,9 @@ namespace VerdantsAscent.Managers
 
         private static bool TryRegisterClutter(ClutterSystem clutterSystem, string prefabName, GameObject prefab)
         {
+            // 1.1.199: only instanced vegetation goes into ClutterSystem; benches, rugs and paintings from a "clutter" bundle
+            // stay ordinary objects (CreatorShop) instead of being scattered over the world as grass.
+            if (prefab == null || prefab.GetComponentInChildren<InstanceRenderer>(true) == null) return false;
             if (!TryAddClutterEntry(clutterSystem, prefab)) return false;
             _registeredClutterPrefabs[prefabName] = prefab;
             return true;
@@ -956,6 +1106,37 @@ namespace VerdantsAscent.Managers
         private static readonly Dictionary<string, GameObject> _placeholders = new Dictionary<string, GameObject>(StringComparer.Ordinal);
         private static readonly Vector3 PlaceholderPark = new Vector3(100000f, 100000f, 100000f);
 
+        // 1.1.194 (Fire 10-08, "a couple of extra buttons in the creator shop"): the stubs are save-data keepers, never
+        // hammer pieces; without this the hammer scan made each one an invisible CreatorShop button.
+        internal static bool IsRemovedPrefabPlaceholder(GameObject prefab)
+            => prefab != null && _placeholders.TryGetValue(prefab.name, out var stub) && stub == prefab;
+
+        internal static GameObject GetOrMakePlaceholder(string name)
+        {
+            if (_placeholders.TryGetValue(name, out var stub) && stub != null) return stub;
+            stub = new GameObject(name);
+            VABakeTemplateRegistry.RegisterTemplate(stub);
+            stub.transform.position = PlaceholderPark;
+            UnityEngine.Object.DontDestroyOnLoad(stub);
+            var view = stub.AddComponent<ZNetView>();
+            view.m_persistent = true;
+            view.m_type = ZDO.ObjectType.Default;
+            _placeholders[name] = stub;
+            return stub;
+        }
+
+        // 1.1.267 (LOG_AUDIT 10-15 B13: 21,084 'Missing prefab hash' in 3 min): a placed object whose prefab is gone but whose
+        // NAME FAP knows (a hammer-tab list or piece config names it) gets the same invisible placeholder, registered by hash
+        // so vanilla finds it. Returns false when the scene already has it.
+        internal static bool AddLatePlaceholder(ZNetScene scene, string name, int hash)
+        {
+            if (scene == null || scene.m_namedPrefabs.ContainsKey(hash)) return false;
+            var stub = GetOrMakePlaceholder(name);
+            if (!scene.m_prefabs.Contains(stub)) scene.m_prefabs.Add(stub);
+            scene.m_namedPrefabs[hash] = stub;
+            return true;
+        }
+
         private static void AddRemovedPrefabPlaceholders(ZNetScene scene)
         {
             string list = Managers.ConfigManager.Instance?.configRemovedPrefabPlaceholders?.Value;
@@ -968,18 +1149,7 @@ namespace VerdantsAscent.Managers
             {
                 string name = raw.Trim();
                 if (name.Length == 0 || provided.Contains(name)) continue;
-                if (!_placeholders.TryGetValue(name, out var stub) || stub == null)
-                {
-                    stub = new GameObject(name);
-                    VABakeTemplateRegistry.RegisterTemplate(stub);
-                    stub.transform.position = PlaceholderPark;
-                    UnityEngine.Object.DontDestroyOnLoad(stub);
-                    var view = stub.AddComponent<ZNetView>();
-                    view.m_persistent = true;
-                    view.m_type = ZDO.ObjectType.Default;
-                    _placeholders[name] = stub;
-                }
-                scene.m_prefabs.Add(stub);
+                scene.m_prefabs.Add(GetOrMakePlaceholder(name));
                 added.Add(name);
             }
             if (added.Count > 0)
@@ -1647,7 +1817,7 @@ namespace VerdantsAscent.Managers
                 Directory.CreateDirectory(AssetsDir);
                 Directory.CreateDirectory(ManifestsDir);
                 WriteReadmeIfMissing(ManifestsDir, ManifestsReadme);
-                WriteReadmeIfMissing(AssetsDir, AssetsReadme);
+                // 1.1.247 (Fire 10-14: "the Assets folder is EMPTY on every target, period"): no README is written into Assets.
             }
             catch (Exception ex)
             {

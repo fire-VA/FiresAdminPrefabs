@@ -87,6 +87,7 @@ namespace VerdantsAscent.Utilities
 
             _shadersInitialized = true;
             Debug.Log($"{VaPieces.PluginName}: Cached {_valheimShaders.Count} Valheim shaders.");
+            FlushPendingNatureShaders();
         }
 
         private static void CacheShaders(GameObject prefab)
@@ -145,7 +146,10 @@ namespace VerdantsAscent.Utilities
             var targetShader = ResolveShaderForKind(kind, mode);
             if (targetShader == null)
             {
-                Debug.LogWarning($"{VaPieces.PluginName}: ApplyBundleNatureShader could not resolve target shader for kind {kind} (mode {mode}) on '{prefab.name}'.");
+                // 1.1.211 (Fire 10-10: ~67 Balrond rocks warned one line each): Custom/Piece is not reachable through
+                // Shader.Find on 1.0 and only a vanilla piece's material carries it, so a prefab met before ZNetScene waits
+                // for FlushPendingNatureShaders instead of warning.
+                _pendingNature.Add(prefab);
                 return;
             }
             bool isStandardShader = targetShader.name == StandardShaderName;
@@ -225,9 +229,60 @@ namespace VerdantsAscent.Utilities
         {
             if (_valheimShaders.TryGetValue(shaderName, out var cached) && cached != null) return cached;
             var found = Shader.Find(shaderName);
-            if (found == null || found.name.Contains(InternalErrorShaderMarker)) return null;
+            if (found == null || found.name.Contains(InternalErrorShaderMarker)) found = FindOnScenePrefabs(shaderName);
+            if (found == null) return null;
             _valheimShaders[shaderName] = found;
             return found;
+        }
+
+        // Vanilla pieces carry Custom/Piece; the walls and floors come first so the scan normally stops at once.
+        private static readonly string[] PieceShaderSourcePrefabs = { "wood_wall_1x1", "stone_wall_1x1", "woodwall", "stone_floor_2x2" };
+
+        private static Shader FindOnScenePrefabs(string shaderName)
+        {
+            var scene = ZNetScene.instance;
+            if (scene == null || scene.m_prefabs == null) return null;
+            foreach (var name in PieceShaderSourcePrefabs)
+            {
+                var hit = FindShaderOn(scene.GetPrefab(name), shaderName);
+                if (hit != null) return hit;
+            }
+            foreach (var prefab in scene.m_prefabs)
+            {
+                var hit = FindShaderOn(prefab, shaderName);
+                if (hit != null) return hit;
+            }
+            return null;
+        }
+
+        private static Shader FindShaderOn(GameObject prefab, string shaderName)
+        {
+            if (prefab == null) return null;
+            foreach (var renderer in prefab.GetComponentsInChildren<Renderer>(includeInactive: true))
+                foreach (var material in renderer.sharedMaterials)
+                    if (material != null && material.shader != null && material.shader.name == shaderName && material.shader.isSupported)
+                        return material.shader;
+            return null;
+        }
+
+        private static readonly HashSet<GameObject> _pendingNature = new HashSet<GameObject>();
+
+        // Re-runs the prefabs whose target shader could not be resolved yet, once ZNetScene's prefabs exist; whatever
+        // still fails is ONE warning line, not one per prefab.
+        public static void FlushPendingNatureShaders()
+        {
+            if (_pendingNature.Count == 0 || ZNetScene.instance == null) return;
+            var mode = ConfigManager.Instance.configBundleNatureShader.Value;
+            var batch = new List<GameObject>(_pendingNature);
+            _pendingNature.Clear();
+            foreach (var prefab in batch) if (prefab != null) ApplyBundleNatureShaderInternal(prefab, mode);
+            int applied = batch.Count - _pendingNature.Count;
+            VaPieces.Log?.LogDebug($"[FAP] nature shader: {applied} of {batch.Count} deferred bundle prefab(s) swapped once ZNetScene was ready.");
+            if (_pendingNature.Count == 0) return;
+            var names = new List<string>();
+            foreach (var prefab in _pendingNature) { if (names.Count == 5) break; if (prefab != null) names.Add(prefab.name); }
+            Debug.LogWarning($"{VaPieces.PluginName}: nature shader: no target shader for {_pendingNature.Count} bundle prefab(s) (e.g. {string.Join(", ", names)}); they keep their own shader.");
+            _pendingNature.Clear();
         }
 
         // Alpha-cutout pipeline: the TransparentCutout queue and _ALPHATEST_ON, plus _Mode and cleared

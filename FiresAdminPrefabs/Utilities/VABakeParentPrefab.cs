@@ -137,8 +137,19 @@ namespace VerdantsAscent.Utilities
             VABakeBundle.BuildLiveChildrenForTemplate(gameObject, cached.LiveChildren, blueprintName);
         }
 
+        private static bool _dediRebakeSkipLogged;
+
         private void QueueRebake(string cacheKey)
         {
+            // 1.1.222: with DediSkipRenderMeshes "*" the server has no render meshes to bake from; a bake made there would come
+            // out empty and could reach clients through the cache. Clients bake for themselves.
+            if (VaPieces.IsDedicatedServer && Managers.VAExternalBundleLoader.DediDropsAll)
+            {
+                if (!_dediRebakeSkipLogged)
+                    Debug.Log($"{VaPieces.PluginName}: dedicated server: bake parent '{cacheKey}' has no bake cache here; not re-baking (DediSkipRenderMeshes = *, no render meshes on the server). Further ones are not logged.");
+                _dediRebakeSkipLogged = true;
+                return;
+            }
             if (!VABlueprintHammerIntegration.TryGetBlueprintBySourceFileName(cacheKey, out var blueprint) || blueprint == null)
             {
                 Debug.LogWarning($"{VaPieces.PluginName}: VABakeParentLoader — cache key '{cacheKey}' not registered as a blueprint; bake parent will be invisible until removed.");

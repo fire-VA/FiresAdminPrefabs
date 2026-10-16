@@ -21,10 +21,39 @@ namespace VerdantsAscent.Managers
         private static int _scannedBundles;
         private static int _cachedTextures;
 
+        // 1.1.249 ([Diagnostics] "Texture library at spawn", default OFF; A/B): before the local player spawns the scan is
+        // deferred (lookups find nothing), then Player.OnSpawned builds it. Keeps the scan out of Unity's scene-switch sweep.
+        private static int _deferredLookups;
+        private static bool AtSpawn => VerdantsAscent.Managers.ConfigManager.Instance?.configTextureLibraryAtSpawn?.Value ?? false;
+
+        [HarmonyPatch(typeof(Player), nameof(Player.OnSpawned))]
+        private static class BuildAtSpawn
+        {
+            private static void Postfix(Player __instance)
+            {
+                if (__instance != Player.m_localPlayer || _built || !AtSpawn) return;
+                VaPieces.Log?.LogDebug($"[TextureLibrary] at spawn: building now ({_deferredLookups} lookup(s) before the spawn found nothing)");
+                Build();
+            }
+        }
+
         public static void Build()
         {
             if (_built) return;
+            if (AtSpawn && Player.m_localPlayer == null && !VaPieces.IsDedicatedServer)
+            {
+                if (_deferredLookups++ == 0) VaPieces.Log?.LogDebug("[TextureLibrary] deferred to the player's spawn ([Diagnostics] Texture library at spawn = true)");
+                return;
+            }
             _built = true;
+            // 1.1.222 ([worldgen] / the lead 10-13, dedi memory): the scan loads every Texture2D of every loaded bundle, and a
+            // dedicated server draws nothing. Its only users (VAMaterialRepair, the injected shaders) set material textures
+            // for rendering; on a dedi their lookups simply find nothing and leave the material as it is.
+            if (VaPieces.IsDedicatedServer)
+            {
+                Debug.Log($"{VaPieces.PluginName}: VATextureLibrary skipped on the dedicated server (it only feeds rendering); no bundle textures loaded for it.");
+                return;
+            }
 
             try
             {
@@ -55,7 +84,7 @@ namespace VerdantsAscent.Managers
 
                 _scannedBundles = bundles;
                 _cachedTextures = textures;
-                Debug.Log($"{VaPieces.PluginName}: VATextureLibrary built — {textures} unique texture(s) cached across {bundles} bundle(s).");
+                Debug.Log($"{VaPieces.PluginName}: VATextureLibrary built — {textures} unique texture(s) cached across {bundles} bundle(s) (at spawn: {AtSpawn}, frame {Time.frameCount}).");
             }
             catch (Exception ex)
             {

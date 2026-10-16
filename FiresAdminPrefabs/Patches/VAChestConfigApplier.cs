@@ -206,8 +206,57 @@ namespace VerdantsAscent.Patches
             }
 
             VAChestConfigApplier.PopulateInventory(preset, container);
-            // 1.1.171: Core respawns it when Core has the API (va_chest = 2: the EWP rule leaves it alone)
-            VerdantsAscent.Utilities.VACoreLoot.TrackChest(preset, zdo);
+            // 1.1.214 (Fire 10-12): with UseEwpForPersistence on (server-synced; EWP runs on the server) EWP owns the respawn: the chest
+            // keeps the preset's va_chest = 1 and is NOT handed to Core. Otherwise Core respawns it when Core has the API (va_chest = 2).
+            bool ewpRoute = VAChestRespawnRoute.UseEwp();
+            bool coreTracked = !ewpRoute && VerdantsAscent.Utilities.VACoreLoot.TrackChest(preset, zdo);
+            VaPieces.Log?.LogDebug($"[FAP] chest preset '{preset.name}' placed ({zdo.m_uid}): respawn by {(ewpRoute ? "EWP" : coreTracked ? "Core" : "nobody (no respawn time or no Core)")}, "
+                + $"va_chest={zdo.GetInt(VAChestConfigApplier.KeyChestMarker)} va_respawn_seconds={zdo.GetFloat("va_respawn_seconds"):0.##} va_chest_preset='{zdo.GetString(VAChestConfigApplier.KeyAppliedPresetName)}' "
+                + $"autoDestroyEmpty={container.m_autoDestroyEmpty}");
+        }
+    }
+}
+
+namespace VerdantsAscent.Patches
+{
+    // 1.1.214: who respawns a preset chest. UseEwpForPersistence is server-synced and EWP runs on the server, so a client
+    // (where the placing admin stamps the chest) follows the toggle; a server or host also needs EWP loaded.
+    public static class VAChestRespawnRoute
+    {
+        public static bool UseEwp()
+        {
+            var cfg = VerdantsAscent.Managers.ConfigManager.Instance;
+            if (cfg == null || cfg.configUseEwpForPersistence == null || !cfg.configUseEwpForPersistence.Value) return false;
+            bool server = ZNet.instance != null && ZNet.instance.IsServer();
+            return !server || VAEwpDetector.IsEwpInstalled;
+        }
+    }
+}
+
+namespace VerdantsAscent.Patches
+{
+    // 1.1.214 evidence (server): an EWP-route preset chest (va_chest = 1) was destroyed. EWP's destroy rule spawns
+    // <prefab> after <float_va_respawn_seconds> with data <string_va_chest_preset>, a data entry that must exist in THIS
+    // server's config/data/data_FAP_chests.yaml, so the line says whether it does and whether the rule file is there.
+    [HarmonyPatch(typeof(ZDOMan), "HandleDestroyedZDO")]
+    public static class ZDOMan_HandleDestroyedZDO_VAChestEvidence_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(ZDOID uid)
+        {
+            try
+            {
+                if (ZNet.instance == null || !ZNet.instance.IsServer() || ZDOMan.instance == null) return;
+                var zdo = ZDOMan.instance.GetZDO(uid);
+                if (zdo == null || zdo.GetInt(VAChestConfigApplier.KeyChestMarker) != 1) return;
+                string preset = zdo.GetString(VAChestConfigApplier.KeyAppliedPresetName);
+                bool dataEntry = !string.IsNullOrEmpty(preset) && VerdantsAscent.Utilities.VAChestPresetStore.TryGet(preset, out _);
+                bool rule = System.IO.File.Exists(VerdantsAscent.Utilities.VAChestEwpRuleWriter.RuleFilePath);
+                var prefab = ZNetScene.instance != null ? ZNetScene.instance.GetPrefab(zdo.GetPrefab()) : null;
+                VaPieces.Log?.LogDebug($"[FAP] EWP chest destroyed ({uid}): prefab '{(prefab != null ? prefab.name : zdo.GetPrefab().ToString())}' preset '{preset}' "
+                    + $"va_respawn_seconds={zdo.GetFloat("va_respawn_seconds"):0.##}; this server has data entry: {dataEntry}, rule file: {rule}, EWP loaded: {VAEwpDetector.IsEwpInstalled}");
+            }
+            catch (System.Exception ex) { VaPieces.Log?.LogDebug($"[FAP] EWP chest evidence: {ex.Message}"); }
         }
     }
 }

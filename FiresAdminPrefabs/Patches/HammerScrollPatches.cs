@@ -24,7 +24,7 @@ namespace VerdantsAscent.Patches
         [HarmonyPriority(Priority.HigherThanNormal)]
         public static void Prefix(PieceTable __instance)
         {
-            if (__instance != null && HammerCategoryUI.IsHammerTable(__instance))
+            if (__instance != null && HammerCategoryUI.IsOrganizable(__instance))
                 VAHammerTabOrganizer.ApplyCategoryOverrides(__instance);
         }
 
@@ -32,7 +32,7 @@ namespace VerdantsAscent.Patches
         public static void Postfix(PieceTable __instance)
         {
             if (__instance == null || PieceTableAccess.ByCategory(__instance) == null) return;
-            if (!HammerCategoryUI.IsHammerTable(__instance)) return;
+            if (!HammerCategoryUI.IsOrganizable(__instance)) return;
 
             ApplyOrdering(__instance);
             InjectFavorites(__instance);

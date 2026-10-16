@@ -59,8 +59,8 @@ namespace VerdantsAscent.Utilities
             w.Bullet("Equip the hammer. Every tab beyond the vanilla ones is FAP.");
             w.Bullet("Type in the search bar at the top to filter across ALL tabs at once.");
             w.Bullet("Drag the bottom-right corner ( // ) to resize the menu. Your size is saved.");
-            w.Bullet("Right-click any piece icon for per-piece actions (favorite, hide, move, configure).");
-            w.Bullet("Right-click any tab to rename or hide it.");
+            w.Bullet("Shift + right-click any piece icon for per-piece actions (favorite, hide, move, configure).");
+            w.Bullet("Shift + right-click any tab to rename or hide it. (The key is [BuildMenu] ContextMenuKey.)");
             w.Divider();
 
             w.SubHeader("Who Can Use It");
@@ -82,7 +82,7 @@ namespace VerdantsAscent.Utilities
         {
             w.Header("Build Menu Overview");
             w.Paragraph("FAP makes the build menu movable and resizable, so the grid can show far more icons, and adds " +
-                "right-click menus on pieces and tabs. Scrolling, search and keyboard/gamepad navigation are vanilla's. " +
+                "Shift + right-click menus on pieces and tabs. Scrolling, search and keyboard/gamepad navigation are vanilla's. " +
                 "This applies to EVERY build tool — the hammer, the hoe/cultivator, and Infinity Hammer's own menus.");
             w.Divider();
 
@@ -109,15 +109,14 @@ namespace VerdantsAscent.Utilities
             w.Header("Resizing & Moving the Menu");
             w.SubHeader("Resize");
             w.Bullet("Grab the ' // ' grip in the bottom-right corner of the build panel and drag.");
-            w.Bullet("Dragging right/left changes COLUMNS. Dragging down/up changes visible ROWS.");
-            w.Bullet("Release to apply. The panel snaps to whole icon cells — you can't end up half a column wide.");
-            w.Bullet("Limits: 6-30 columns, 4-20 rows. Vanilla is 15x6.");
+            w.Bullet("A plain drag grows or shrinks the grid: more or fewer icons across and down.");
+            w.Bullet("Shift + drag zooms instead: the same icons, bigger or smaller (0.7x to 2.5x).");
             w.Divider();
 
             w.SubHeader("It Remembers");
-            w.Paragraph("Your chosen size is written to [BuildMenu] Columns and [BuildMenu] Rows in FAP's config " +
-                "and restored on every login. These are per-player local settings — the server never overwrites " +
-                "them, and each player picks their own.");
+            w.Paragraph("Your size is written to [BuildMenu] WindowWidth and WindowHeight, and the zoom to [BuildMenu] " +
+                "WindowScale, in FAP's config, and restored on every login. Empty width/height (NaN) means vanilla's " +
+                "size. These are per-player local settings — the server never overwrites them, and each player picks their own.");
             w.Divider();
 
             w.SubHeader("Move");
@@ -135,14 +134,6 @@ namespace VerdantsAscent.Utilities
             w.Bullet("Underscores and spaces are interchangeable: 'stone floor' finds 'stone_floor'.");
             w.Bullet("Clear the box to restore the full list.");
             w.Bullet("While the box is focused, your keystrokes do NOT leak into the game as movement or hotkeys.");
-            w.Divider();
-
-            w.SubHeader("The Falling Search Bar");
-            w.Paragraph("The bar physically stands on top of the build menu. Squeeze the menu against the top of " +
-                "the screen, or drag it out from under the bar, and the bar loses its footing and tumbles off — " +
-                "you can catch it by sliding the menu back under it as it falls. It returns whenever you reopen " +
-                "the menu. If you'd rather it just behave, set [BuildMenu] SearchBarLockTopLeft = true and it " +
-                "bolts itself to the menu's top-left corner instead. Flipping that on mid-fall rescues it instantly.");
             w.Divider();
 
             w.SubHeader("Navigation");
@@ -173,11 +164,11 @@ namespace VerdantsAscent.Utilities
             w.Divider();
 
             w.SubHeader("Reorganizing");
-            w.Bullet("Right-click a piece → 'Move to tab...' to send it somewhere else, or 'New tab...' to " +
+            w.Bullet("Shift + right-click a piece » 'Move to tab...' to send it somewhere else, or 'New tab...' to " +
                 "create one. Vanilla tabs are valid destinations, and ANY piece can move — vanilla " +
                 "builtins and other mods' pieces included, not just FAP's.");
-            w.Bullet("Right-click a tab → 'Rename' to give it a friendly label (the folder keeps its real name).");
-            w.Bullet("Right-click a tab → 'Hide' to remove it, and 'Show hidden tabs...' to bring it back.");
+            w.Bullet("Shift + right-click a tab » 'Rename' to give it a friendly label (the folder keeps its real name).");
+            w.Bullet("Shift + right-click a tab » 'Hide' to remove it, and 'Show hidden tabs...' to bring it back.");
             w.Divider();
 
             w.SubHeader("Editing On Disk");
@@ -216,9 +207,9 @@ namespace VerdantsAscent.Utilities
             w.Divider();
 
             w.SubHeader("How To Use It");
-            w.Bullet("Right-click any piece icon → '★ Add to Favorites'.");
+            w.Bullet("Shift + right-click any piece icon » '* Add to Favorites'.");
             w.Bullet("The piece appears in the Favorites tab immediately — no reload needed.");
-            w.Bullet("Right-click it again (from either tab) to remove it.");
+            w.Bullet("Shift + right-click it again (from either tab) to remove it.");
             w.Divider();
 
             w.SubHeader("A Bookmark, Not A Move");
@@ -239,14 +230,14 @@ namespace VerdantsAscent.Utilities
 
         private static void BuildRightClickMenu(HelpContentWriter w)
         {
-            w.Header("Right-Click Piece Menu");
-            w.Paragraph("Right-clicking any piece icon in the hammer opens a context menu. Which entries appear " +
+            w.Header("Right-Click Piece Menu (Shift + right-click)");
+            w.Paragraph("Shift + right-clicking any piece icon in the hammer opens a context menu. Which entries appear " +
                 "depends on what the piece is — a monster stand-in gets creature options, a chest gets container " +
                 "options, and so on.");
             w.Divider();
 
             w.SubHeader("Always Available");
-            w.Bullet("★ Add / Remove Favorites — bookmark the piece into the Favorites tab.");
+            w.Bullet("* Add / Remove Favorites — bookmark the piece into the Favorites tab.");
             w.Bullet("Hide (<piece>) — remove it from the hammer entirely.");
             w.Bullet("Move to tab... — send it to another tab (vanilla tabs included) or create a new " +
                 "one. Works on every piece: vanilla, modded, or FAP-injected.");
@@ -278,14 +269,14 @@ namespace VerdantsAscent.Utilities
             w.Divider();
 
             w.SubHeader("Hiding");
-            w.Bullet("Right-click a piece → 'Hide'. It disappears from the hammer immediately where possible.");
+            w.Bullet("Shift + right-click a piece » 'Hide'. It disappears from the hammer immediately where possible.");
             w.Bullet("The prefab is still fully registered — spawn commands, existing placements, and ZDO sync " +
                 "all keep working. It's only removed from the build menu.");
             w.Bullet("The name is appended to HammerTabs/Ignore/prefabs.txt.");
             w.Divider();
 
             w.SubHeader("Restoring");
-            w.Bullet("Right-click any piece → 'Restore hidden piece...' and pick from the list.");
+            w.Bullet("Shift + right-click any piece » 'Restore hidden piece...' and pick from the list.");
             w.Bullet("Restored pieces reappear after a world reload.");
             w.Bullet("You can also delete the line from Ignore/prefabs.txt by hand.");
         }
@@ -297,7 +288,7 @@ namespace VerdantsAscent.Utilities
             w.Paragraph("Vanilla unloads distant objects aggressively. This forces a specific piece to keep " +
                 "rendering out to a chosen distance — useful for landmarks, towers, and skyline props that " +
                 "shouldn't pop out of existence.");
-            w.Bullet("Right-click the piece → 'Distance render override...' and pick a preset.");
+            w.Bullet("Shift + right-click the piece » 'Distance render override...' and pick a preset.");
             w.Bullet("Options: Off (vanilla streaming), 250m, 500m, 750m, 1000m, 1500m.");
             w.Bullet("Applies to the prefab, so every instance of it is affected.");
             w.Bullet("Set it back to 'Off' to clear the override.");
@@ -306,7 +297,7 @@ namespace VerdantsAscent.Utilities
             w.SubHeader("Shader Override");
             w.Paragraph("Swaps the shader a piece renders with, applied immediately to the prefab and every live " +
                 "instance. Useful when a bundle prefab ships with a shader that doesn't fit Valheim's lighting.");
-            w.Bullet("Right-click → 'Shader override...' and pick from the available shader list.");
+            w.Bullet("Shift + right-click » 'Shader override...' and pick from the available shader list.");
             w.Bullet("'(no override — use prefab default)' clears it.");
             w.Divider();
 
@@ -324,13 +315,13 @@ namespace VerdantsAscent.Utilities
             w.Divider();
 
             w.SubHeader("Configuring");
-            w.Bullet("Right-click a monster tile → 'Configure monster (<creature>)...' to open the editor.");
+            w.Bullet("Shift + right-click a monster tile » 'Configure monster (<creature>)...' to open the editor.");
             w.Bullet("Set level/stars, boss flag, respawn timer, and other per-creature values.");
             w.Bullet("Save it as a named preset to reuse.");
             w.Divider();
 
             w.SubHeader("Presets");
-            w.Bullet("Right-click → 'Presets for <creature>...' lists every preset saved for that creature.");
+            w.Bullet("Shift + right-click » 'Presets for <creature>...' lists every preset saved for that creature.");
             w.Bullet("Picking one QUEUES it for every placement of that creature until you pick another or 'No preset' — place the stand-in and the " +
                 "spawned creature uses those settings.");
             w.Bullet("Presets are stored in config/data/data_FAP_presets.yaml.");
@@ -346,7 +337,7 @@ namespace VerdantsAscent.Utilities
         {
             w.Header("Containers & Chests");
             w.Paragraph("Any piece with a Container component — chests, drawers, barrels, and modded storage — " +
-                "gets container options on right-click.");
+                "gets container options on Shift + right-click.");
             w.Divider();
 
             w.Bullet("'Configure container (<prefab>)...' opens the loot/content editor.");
@@ -372,7 +363,7 @@ namespace VerdantsAscent.Utilities
             w.Divider();
 
             w.SubHeader("Configuring");
-            w.Bullet("Right-click a clutter piece → 'Configure clutter (<prefab>)...' to edit its appearance/density.");
+            w.Bullet("Shift + right-click a clutter piece » 'Configure clutter (<prefab>)...' to edit its appearance/density.");
             w.Bullet("'Presets for <prefab>...' applies a saved preset globally for that clutter type — clutter is " +
                 "configured world-wide, not per-placement.");
             w.Bullet("The active preset is shown in the menu label; 'Clear active' reverts to vanilla.");
@@ -405,7 +396,7 @@ namespace VerdantsAscent.Utilities
 
             w.SubHeader("Persistence");
             w.Paragraph("Most effects are designed to play once and destroy themselves. To make one stay:");
-            w.Bullet("Right-click the FX piece → 'Place with Persistence' to opt that specific effect in.");
+            w.Bullet("Shift + right-click the FX piece » 'Place with Persistence' to opt that specific effect in.");
             w.Bullet("[HammerToggles] EffectsOverrideTTL overrides the self-destruct timer more broadly.");
             w.Bullet("With VanillaFriendly ON, looping overrides are disabled — players without FAP wouldn't see " +
                 "them loop anyway.");
@@ -432,7 +423,7 @@ namespace VerdantsAscent.Utilities
             w.Paragraph("A large blueprint placed as hundreds of individual pieces is expensive to render. Baking " +
                 "combines it into a single optimized mesh ahead of time, so placement is near-instant and the " +
                 "result is far cheaper to draw.");
-            w.Bullet("Right-click a blueprint tile → 'Bake to prefab...' to bake it.");
+            w.Bullet("Shift + right-click a blueprint tile » 'Bake to prefab...' to bake it.");
             w.Bullet("Already baked? The entry reads 'Re-bake to prefab...' — use it after changing the source file.");
             w.Bullet("Baking runs in the background; the game stays responsive. Large blueprints take minutes.");
             w.Bullet("Requires [Performance] EnableBlueprintMeshBake.");
@@ -556,7 +547,7 @@ namespace VerdantsAscent.Utilities
             w.Bullet("fap_import_yoink — pulls bundles/manifests from FiresSteamyDumps' scan output.");
             w.AdminDivider();
 
-            w.SubHeader("Server → Client Sync");
+            w.SubHeader("Server » Client Sync");
             w.Paragraph("When a player connects, their client compares a SHA-256 manifest of its asset folders " +
                 "against the server's and downloads only what differs. Synced folders: Assets, Manifests, Shaders " +
                 "and Textures — baked blueprints travel with them as .bakebundle and .bakemanifest files.");
@@ -680,6 +671,17 @@ namespace VerdantsAscent.Utilities
             w.Bullet("fap_fx_dump — list every renderer-bearing object near you with its lineage.");
             w.Bullet("fap_recategorize_clutter — fix clutter prefabs parked in the wrong tab.");
             w.Bullet("fap_clean_stale_clutter — remove stale persistent clutter-effect ZDOs.");
+            w.Bullet("fap_orphan_zdo — list ZDOs whose prefab no longer exists (the 'Missing prefab hash' spam), per prefab.");
+            w.Bullet("fap_purge_prefab <prefab|hash> [radius|all] [confirm] — delete one prefab's ZDOs near you; without 'confirm' it only reports.");
+            w.Bullet("fap_dump_categories [tab] — list every hammer tab with its piece count; with a tab name, that tab's pieces and their source.");
+            w.Bullet("fap_selftest_place — check every item-stand, monster and clutter stand-in would place, without placing anything.");
+            w.Bullet("fap_snapdump [prefab] — report the snap points on a build piece (no arg = the selected piece).");
+            w.Bullet("fap_snaplive — while the ghost is up, log which snap pair vanilla picks.");
+            w.Bullet("hammer_measure — Infinity Hammer's measure-all, in FAP's safe batched version.");
+            w.AdminDivider();
+
+            w.SubHeader("Sync");
+            w.Bullet("fap_push_bundle [name] — push your locally baked blueprint pieces (bakebundle + manifest) up to the server.");
         }
 
         private static void BuildConfigPush(HelpContentWriter w)

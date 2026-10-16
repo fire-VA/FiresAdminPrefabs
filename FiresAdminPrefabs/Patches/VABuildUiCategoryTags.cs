@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using FiresCore.Bridge;
 using FiresCore.Pieces;
 using HarmonyLib;
@@ -60,7 +61,7 @@ namespace VerdantsAscent.Patches
 
         internal static void RequestBuildMenuRefresh() => BuildMenuTabs.RequestRefresh();
 
-        public bool Owns(PieceTable table) => HammerCategoryUI.IsHammerTable(table);
+        public bool Owns(PieceTable table) => HammerCategoryUI.IsOrganizable(table);
 
         public void CollectTabs(PieceTable table, List<BuildMenuTabs.Tab> into)
         {
@@ -78,11 +79,17 @@ namespace VerdantsAscent.Patches
                 if (string.Equals(name, VAHammerTabOrganizer.FavoritesTabName, StringComparison.OrdinalIgnoreCase)) continue;
                 if (VAHammerTabOrganizer.IsTabHidden(name)) continue;
                 if (!VACategoryRegistry.TryGet(name, out var category)) continue;
+                // 1.1.210 (Fire 10-10: devcommands ON under Infinity Hammer's tool listed every raw bundle tab, "clutter"
+                // beside "Clutter"): a per-bundle tab is a row only when SortHammerByMod files pieces into it, in any mode.
+                if (IsRawBundleTab(name)) continue;
 
                 int index = (int)category;
                 if (index < 0 || index >= byCategory.Count) continue;
                 var pieces = byCategory[index];
                 if (pieces == null || pieces.Count == 0) continue;          // empty tab = no row, same as vanilla
+                // 1.1.208 (Fire 10-10: under Infinity Hammer's tool the hidden / dev-only tabs and both item-stand halves showed):
+                // the same view rules the menu pass prunes with, applied to the row itself.
+                if (!VABuildMenuVisibility.RowVisible(category, pieces)) continue;
 
                 // A row whose list holds only tool actions (Core lifts repair/remove into the menu's own buttons) or
                 // destroyed pieces would open empty, so it is no row either: listed exactly when Fill has a piece.
@@ -97,19 +104,87 @@ namespace VerdantsAscent.Patches
                 string label = VAHammerTabOrganizer.TryGetDisplayName(name, out var displayName) ? displayName : name;
                 if (alreadyListed.Contains(BuildMenuTabs.Localize(label))) continue;
                 rows.Add(new BuildMenuTabs.Tab(label, index));
+                rowNames[index] = name;
             }
             rows.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Label, b.Label));
-            into.AddRange(rows);
+            // 1.1.234: a category's sub-filters (VACategoryRegistry.AddSubFilter) follow its row, indented, each only when
+            // it matches a showable piece.
+            s_subKeys.Clear();
+            foreach (var row in rows)
+            {
+                into.Add(row);
+                if (!rowNames.TryGetValue(row.Key, out var rowName)) continue;
+                var filters = VACategoryRegistry.SubFilters(rowName);
+                // 1.1.271 (Fire 10-15: "the left list shows only Dungeons; the top-right sort tab brings up the sub-sections"): sub-filter
+                // rows are never drawn on the left list; the rig cfg had the old [Diagnostics] BuildMenuSubFilterRows key on (15 rows).
+                if (filters == null || !LeftListSubRows) continue;
+                for (int i = 0; i < filters.Count && s_subKeys.Count < MaxSubRows; i++)
+                {
+                    if (!AnyMatch(byCategory[row.Key], filters[i].Value)) continue;
+                    s_subKeys.Add(new KeyValuePair<int, int>(row.Key, i));
+                    into.Add(new BuildMenuTabs.Tab("    » " + filters[i].Key, SubKeyBase + s_subKeys.Count - 1));
+                }
+            }
+            rowNames.Clear();
+            // 1.1.237 (the lead, build-menu crash): what FAP hands the menu at each tag rebuild.
+            try { VaPieces.Log?.LogDebug($"[FAP] tag rows for '{table?.name}': {into.Count} row(s), {s_subKeys.Count} sub-filter row(s), tag ids " + string.Join(",", into.Select(t => BuildMenuTabs.TagIdFor(t.Key).ToString()).ToArray())); } catch { }
+        }
+
+        // 1.1.237 (the build-menu crash bisect): sub-filter rows get small dense keys right after the category keys (tag ids
+        // 101000+, not 150000+), at most MaxSubRows, and only with [Diagnostics] BuildMenuSubFilterRows on (default off until proven).
+        private const int SubKeyBase = 1000, MaxSubRows = 64;
+        private const bool LeftListSubRows = false;   // 1.1.271: retired with the BuildMenuSubFilterRows key
+        private static readonly List<KeyValuePair<int, int>> s_subKeys = new List<KeyValuePair<int, int>>();
+        private static readonly Dictionary<int, string> rowNames = new Dictionary<int, string>();
+
+        private static bool Matches(Func<Piece, bool> match, Piece piece)
+        {
+            try { return match(piece); } catch { return false; }
+        }
+
+        private static bool AnyMatch(List<Piece> pieces, Func<Piece, bool> match)
+        {
+            if (pieces == null) return false;
+            foreach (var p in pieces) if (IsShowable(p) && VABuildMenuVisibility.PieceVisible(p) && Matches(match, p)) return true;
+            return false;
         }
 
         public void Fill(PieceTable table, int key, IList<Piece> into)
         {
             var byCategory = PieceTableAccess.ByCategory(table);
-            if (byCategory == null || key < 0 || key >= byCategory.Count) return;
+            if (byCategory == null) return;
+            Func<Piece, bool> filter = null;
+            if (key >= SubKeyBase)
+            {
+                int n = key - SubKeyBase;
+                if (n < 0 || n >= s_subKeys.Count) return;
+                int category = s_subKeys[n].Key, f = s_subKeys[n].Value;
+                if (!VACategoryRegistry.TryGetName((Piece.PieceCategory)category, out var catName)) return;
+                var filters = VACategoryRegistry.SubFilters(catName);
+                if (filters == null || f >= filters.Count) return;
+                filter = filters[f].Value;
+                key = category;
+            }
+            if (key < 0 || key >= byCategory.Count) return;
             var pieces = byCategory[key];
             if (pieces == null) return;
+            if (filter != null)
+            {
+                foreach (var piece in pieces)
+                    if (IsShowable(piece) && VABuildMenuVisibility.PieceVisible(piece) && Matches(filter, piece)) into.Add(piece);
+                return;
+            }
+            // 1.1.208: the same view rules per piece, so a visible tab never shows a hidden piece (Infinity Hammer's tool).
             foreach (var piece in pieces)
-                if (IsShowable(piece)) into.Add(piece);
+                if (IsShowable(piece) && VABuildMenuVisibility.PieceVisible(piece)) into.Add(piece);
+        }
+
+        private static bool IsRawBundleTab(string name)
+        {
+            if (ConfigManager.Instance != null && ConfigManager.Instance.configSortHammerByMod.Value) return false;
+            foreach (var bundleName in VAExternalBundleLoader.LoadedBundleNames)
+                if (string.Equals(bundleName, name, StringComparison.Ordinal)) return true;
+            return false;
         }
 
         private static bool IsShowable(Piece piece) => piece != null && !piece.m_repairPiece && !piece.m_removePiece;

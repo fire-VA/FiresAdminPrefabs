@@ -40,6 +40,13 @@ namespace VerdantsAscent.Utilities
 
         public static string IconCacheDir => Path.Combine(Root, IconCacheFolderName);
 
+        // 1.1.254 (Fire 10-14: config profiles stay under 20 MB): the synced Manifests folder (bake manifests + bundle
+        // manifests, 37 MB on the rig) moves from config to <Root>Manifests. The sync maps the "Manifests/" wire paths
+        // here (VAFapSyncManifest.FolderPath), so server and clients keep comparing the same relative paths.
+        public const string ManifestsFolderName = "Manifests";
+        private static string _manifestsOverride;   // the old config path, when this session's move failed
+        public static string ManifestsDir => _manifestsOverride ?? Path.Combine(Root, ManifestsFolderName);
+
         // Mirrors FiresDiscordIntegration's BotTokenFile.IsExportedLocation. Config and plugins are the
         // two folders an export sweeps, so a cache root resolving under either defeats the whole point
         // of moving out of config.
@@ -112,6 +119,59 @@ namespace VerdantsAscent.Utilities
             _migrated = true;
             MigrateFolder(GhostMeshCacheFolderName, GhostMeshCacheDir);
             MigrateFolder(IconCacheFolderName, IconCacheDir);
+            MigrateManifests();
+        }
+
+        // Copy to <new>.partial, verify count + bytes, rename into place, then MOVE the old folder to
+        // <Root>_migrated_from_config_<yyyyMMdd>Manifests as the backup. Nothing is deleted. Any failure: this session keeps
+        // reading the old config folder.
+        private static void MigrateManifests()
+        {
+            string oldDir = Path.Combine(Paths.ConfigPath, RootFolderName, ManifestsFolderName);
+            string newDir = Path.Combine(Root, ManifestsFolderName);
+            try
+            {
+                if (!Directory.Exists(oldDir)) return;
+                if (Directory.Exists(newDir) && Directory.GetFileSystemEntries(newDir).Length > 0)
+                {
+                    Debug.LogWarning($"{VaPieces.PluginName}: [FAP Cache] both '{oldDir}' and '{newDir}' exist; using the new one. Move the old folder out of config by hand.");
+                    return;
+                }
+                string tmp = newDir + ".partial";
+                if (Directory.Exists(tmp)) Directory.Delete(tmp, true);   // our own leftover from a failed run
+                long bytes = 0; int files = 0;
+                foreach (var f in Directory.GetFiles(oldDir, "*", SearchOption.AllDirectories))
+                {
+                    string rel = f.Substring(oldDir.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    string dst = Path.Combine(tmp, rel);
+                    Directory.CreateDirectory(Path.GetDirectoryName(dst));
+                    File.Copy(f, dst, true);
+                    File.SetLastWriteTimeUtc(dst, File.GetLastWriteTimeUtc(f));   // keeps the sync hash cache's size+mtime reuse valid
+                    long len = new FileInfo(f).Length;
+                    if (new FileInfo(dst).Length != len) throw new IOException($"copy size mismatch on {rel}");
+                    bytes += len; files++;
+                }
+                Directory.CreateDirectory(tmp);
+                int got = Directory.GetFiles(tmp, "*", SearchOption.AllDirectories).Length;
+                if (got != files) throw new IOException($"copied {got} of {files} file(s)");
+                if (Directory.Exists(newDir)) Directory.Delete(newDir);   // empty, checked above
+                Directory.Move(tmp, newDir);
+                string backup = Path.Combine(Root, "_migrated_from_config_" + DateTime.Now.ToString("yyyyMMdd"), ManifestsFolderName);
+                if (Directory.Exists(backup)) backup += "_" + DateTime.Now.ToString("HHmmss");
+                Directory.CreateDirectory(Path.GetDirectoryName(backup));
+                try { Directory.Move(oldDir, backup); }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"{VaPieces.PluginName}: [FAP Cache] copied {files} file(s) to '{newDir}' but couldn't move '{oldDir}' out of config ({ex.Message}); using the new folder.");
+                    return;
+                }
+                Debug.Log($"{VaPieces.PluginName}: [FAP Cache] moved Manifests: {files} file(s), {bytes / 1048576.0:0.0} MB, from '{oldDir}' to '{newDir}'; the old folder is backed up at '{backup}'.");
+            }
+            catch (Exception ex)
+            {
+                _manifestsOverride = oldDir;
+                Debug.LogWarning($"{VaPieces.PluginName}: [FAP Cache] moving Manifests failed ({ex.Message}); this session keeps '{oldDir}', nothing moved.");
+            }
         }
 
         private static void MigrateFolder(string folderName, string destination)

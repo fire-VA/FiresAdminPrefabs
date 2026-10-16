@@ -503,7 +503,7 @@ namespace VerdantsAscent.Utilities
         {
             if (VaPieces.IsDedicatedServer) return;
             var player = Player.m_localPlayer;
-            if (player != null) player.UpdateAvailablePiecesList();
+            if (player != null) VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(player, "VAFapPlayerPieces");
             Patches.VABuildUiCategoryTags.RequestBuildMenuRefresh();
         }
 

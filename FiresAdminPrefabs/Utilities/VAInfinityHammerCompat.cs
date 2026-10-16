@@ -146,6 +146,20 @@ namespace VerdantsAscent.Utilities
         // early-return on this so they NEVER touch an IH freeze/select/place
         // operation. Inert (returns false) during normal FAP use, so adding
         // the guard cannot change non-IH behaviour.
+        // 1.1.206: true only INSIDE a PlacePiece where Infinity Hammer places a COPY - its selection clone (a "Multiple (N)" or a
+        // copied object, not a registered ZNetScene prefab). Set by MineRockSafetyPatch's first-priority PlacePiece prefix,
+        // cleared in its finalizer. The guards that keep FAP off IH's copies (its creator flags, blueprint groups, baked-mesh
+        // loaders, the MineRock strip) read THIS, so a FAP piece picked fresh from IH's Builds page still gets FAP's handling,
+        // and a FAP piece LOADED while IH's hammer is held is no longer skipped.
+        public static bool IsIhCopyPlacing;
+
+        internal static bool IsRegisteredPrefab(Piece piece)
+        {
+            if (piece == null || ZNetScene.instance == null) return false;
+            var prefab = ZNetScene.instance.GetPrefab(piece.gameObject.name);
+            return prefab != null && ReferenceEquals(prefab, piece.gameObject);
+        }
+
         public static bool IsInfinityHammerActive()
         {
             try

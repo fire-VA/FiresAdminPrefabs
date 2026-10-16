@@ -73,6 +73,13 @@ namespace VerdantsAscent.Managers
             public List<Vector3> SnapPoints = new List<Vector3>();
             public string SourcePath = "";
             public float Radius;
+            // 1.1.223, FDM dungeon blueprints (Tools\FDM_DUNGEON_BLUEPRINT_DESIGN.md): "#dungeon:1", "#role:entrance:<idx>",
+            // "#origin:x,y,z" (the Entry Door's world position at capture), "#vanillafriendly:1".
+            public bool IsDungeon;
+            public int EntranceIndex = -1;
+            public bool HasOrigin;
+            public Vector3 Origin;
+            public bool VanillaFriendly;
 
             // Re-center every object and snap point so the blueprint's
             // origin is either the named center piece (rotated so its
@@ -356,6 +363,20 @@ namespace VerdantsAscent.Managers
                     else if (HeaderEquals(row, "#center:", out var c))             bp.CenterPiece = c;
                     else if (HeaderEquals(row, "#coordinates:", out var coord))    bp.Coordinates = ParseVectorXZY(coord);
                     else if (HeaderEquals(row, "#rotation:", out var rotS))        bp.Rotation = ParseVectorXZY(rotS);
+                    else if (HeaderEquals(row, "#dungeon:", out var dng))          bp.IsDungeon = dng.Trim() == "1";
+                    else if (HeaderEquals(row, "#vanillafriendly:", out var vf))   bp.VanillaFriendly = vf.Trim() == "1";
+                    else if (HeaderEquals(row, "#role:entrance:", out var ent))
+                    { ent = row.Substring(row.LastIndexOf(':') + 1);   // HeaderEquals cuts at the FIRST colon ("entrance:3")
+                      if (int.TryParse(ent.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int ei)) bp.EntranceIndex = ei; }
+                    else if (HeaderEquals(row, "#origin:", out var org))
+                    {
+                        var p = org.Split(',');
+                        if (p.Length == 3
+                            && float.TryParse(p[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ox)
+                            && float.TryParse(p[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float oy)
+                            && float.TryParse(p[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float oz))
+                        { bp.Origin = new Vector3(ox, oy, oz); bp.HasOrigin = true; }
+                    }
                     else if (row.StartsWith("#height:", StringComparison.OrdinalIgnoreCase))
                         section = Section.TerrainHeight;
                     else if (row.StartsWith("#paint", StringComparison.OrdinalIgnoreCase))
