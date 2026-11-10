@@ -1,4 +1,4 @@
-using BepInEx;
+﻿using BepInEx;
 using HarmonyLib;
 using System;
 using System.Collections;
@@ -37,7 +37,7 @@ namespace VerdantsAscent
         public static VaPieces Instance;
         public const string PluginGUID = "com.Fire.adminprefabs";
         public const string PluginName = "FiresAdminPrefabs";
-        public const string PluginVersion = "1.1.274";
+        public const string PluginVersion = "1.1.411";   // 1.1.411 ([generator] M22 / [lead]): Core-far lookups quiet (GetType(name, false) in Core's assembly; Core's Far\ moves to EBM 1.2.210); VA distant prefabs pushed to EbmApi.SetDistantDrawn (EBM 1.2.210+); one Info line when the FgnApi auto-tune bind is used. 1.1.410: FgnApi.IsAutoTuneSettled.
         // ConfigSync's minimum for connecting clients: a FIXED constant, raised only when a synced key's name, type or meaning changes
         // (1.1.218 moved synced keys to new sections). Not PluginVersion, which forced every update in lockstep.
         private const string MinimumSyncVersion = "1.1.218";
@@ -63,6 +63,7 @@ namespace VerdantsAscent
         private static readonly HashSet<string> _clientOnlyPatchTypes = new HashSet<string>
         {
             "VerdantsAscent.Patches.Player_UpdatePlacementGhost_HammerToggle_Patch",
+            "VerdantsAscent.Patches.VAOffsetCentre",
         };
 
         private const float AdminPollFastIntervalSec = 2f;
@@ -77,6 +78,7 @@ namespace VerdantsAscent
         {
             Instance = this;
             Log = Logger;
+            VerdantsAscent.Utilities.VAImguiGuard.RegisterWithCore();   // 1.1.306: FAP windows count as an open screen for Core's input gate
             PreBindConfigMoves();   // 1.1.218: moved settings re-keyed before any bind
             FiresCore.Input.FiresInputBlock.LogTag = "FAP";
 
@@ -93,6 +95,11 @@ namespace VerdantsAscent
             // Thunderstore sweep into profile and modpack exports. Runs before anything
             // reads either cache; a same-volume move is a rename whatever it weighs.
             TryRun("VAFapCachePaths.MigrateFromConfig", VAFapCachePaths.MigrateFromConfig);
+            // 1.1.276 (Fire 10-19): "Make hopper" / "Remove hopper" on any container in the hold-Alt right-click menu (Core's hopper)
+            if (!IsDedicatedServer) TryRun("VAHopperContextProvider", () => FiresCore.UI.ContextMenu.FiresContextMenu.Register(new Patches.VAHopperContextProvider()));
+            if (!IsDedicatedServer) TryRun("VALootModeContextProvider", () => FiresCore.UI.ContextMenu.FiresContextMenu.Register(new Patches.VALootModeContextProvider()));   // 1.1.394 loot chests + debris: Vanilla function / Decor
+            if (!IsDedicatedServer) TryRun("VALootModeBuildMenu", () => Api.FapPieceMenu.RegisterProvider("fap_loot_mode", Patches.VALootPieceMode.BuildMenuRows));   // 1.1.395: Place as storage / vanilla on the build-menu right-click
+            if (!IsDedicatedServer) TryRun("VASoundContextProvider", () => FiresCore.UI.ContextMenu.FiresContextMenu.Register(new Utilities.VASoundContextProvider()));   // 1.1.297 (Sound: per placed piece)
 
             // Stand-in MonoBehaviour types must exist before bundle prefabs try to
             // resolve their captured script attachments.
@@ -108,6 +115,9 @@ namespace VerdantsAscent
             VAFapPieceOverrides.Load();
             VAFapPieceShaderOverrider.Initialize();
             DistantPieceRenderer.Initialize();
+            TryRun("FapCoreFar.InitIfFatAbsent", () => VerdantsAscent.Utilities.FapCoreFar.InitIfFatAbsent(Config));   // 1.1.405: Core far systems when FAT is absent
+            TryRun("FapHorizonCull.Bind", () => VerdantsAscent.Utilities.FapHorizonCull.Bind(Config));                  // 1.1.405: terrain-horizon cull (default off)
+            TryRun("FapVegLod.Bind", () => VerdantsAscent.Utilities.FapVegLod.Bind(Config));                            // 1.1.405: vegetation LOD switch sooner (1.0 = vanilla)
 
             configSync = new ConfigSync(PluginGUID)
             {
@@ -118,6 +128,7 @@ namespace VerdantsAscent
             configSync.lockedConfigChanged += ConfigManager.Instance.OnConfigLockChanged;
             VAFapServerPresence.Hook(configSync);
             ConfigManager.Instance.Initialize(Config);
+            Managers.FapCoreSettingsOwned.Bind(Config);   // 1.1.345: Core's "New piece faces away from you", owned here
             try { global::VerdantsAscent.Utilities.VALightPresetStore.EnsureLoaded(); } catch (System.Exception ex) { Logger.LogWarning("light presets at load: " + ex.Message); }   // 1.1.264: built-ins seeded at load
             CleanUpConfigFile();
             BindConfigsToSync();
@@ -159,6 +170,7 @@ namespace VerdantsAscent
             {
                 TryRun("Help content registration", VAFapHelpContent.Register);
                 TryRun("Build menu tabs", Patches.VABuildUiCategoryTags.Register);
+                TryRun("Infinity Tools tab", Patches.VAInfinityToolsTab.Register);   // 1.1.317: after FAP's source, so FAP keeps its tables
             }
 
             Debug.Log($"{PluginName}: Init complete (dedicated: {IsDedicatedServer}, headless: {IsHeadless})");
@@ -336,8 +348,16 @@ namespace VerdantsAscent
 
             configSync.AddConfigEntry(config.configVanillaFriendly);
             configSync.AddConfigEntry(config.configUseEwpForPersistence);
+            // 1.1.281 (lead, FAP how-to audit): the whole Persistence panel follows the server, like its two master switches
+            configSync.AddConfigEntry(config.configEwpEffects);
+            configSync.AddConfigEntry(config.configEwpChests);
+            configSync.AddConfigEntry(config.configEwpMonsters);
+            configSync.AddConfigEntry(config.configItemStandUseEwp);
+            configSync.AddConfigEntry(config.configFapRespawner);
 
             VAFapPlayerPieces.AddToConfigSync(configSync);
+            VASoundPresets.AddToConfigSync(configSync);   // 1.1.295 (Sound Presets: the server's set for everyone)
+            VerdantsAscent.Managers.FapConfigUi.Apply(Config);   // 1.1.279: settings UI tags (after ConfigSync added its lock tags)
         }
 
         private void OnDestroy()
@@ -402,6 +422,7 @@ namespace VerdantsAscent
 
             VerdantsAscent.Network.VAFapConsoleCommands.Register();
             VAClutterBrushIndicator.EnsureCreated();
+            VASwapFlow.EnsureCreated();   // 1.1.291 (Radius Swapper picking flow + kit popups)
 
             HookAdminPromotionWatchers();
 
@@ -431,7 +452,39 @@ namespace VerdantsAscent
             }
 
             if (ConfigManager.Instance.configAdminOnlyMode.Value && !VAVanillaPieceManager.IsAdminGateOpen())
-                StartCoroutine(PollForAdminPromotion());
+                StartAdminWatcher("plugin start");
+        }
+
+        // 1.1.350 (Fire 10-31: "the admin only toggle ... blocks pieces from showing when the mod is installed on just the client even
+        // if the client is in debug mode"): the watcher started above runs at the main menu, where ZNet is null, so its first tick
+        // ended it before any world loaded and it never came back. Started again on every local spawn (a world join) instead.
+        private static bool s_adminWatcherRunning;
+
+        private void StartAdminWatcher(string why)
+        {
+            if (s_adminWatcherRunning) return;
+            s_adminWatcherRunning = true;
+            Log?.LogDebug($"[FAP] admin watcher started ({why})");
+            StartCoroutine(PollForAdminPromotion());
+        }
+
+        internal static void OnLocalPlayerSpawned()
+        {
+            if (Instance == null || IsDedicatedServer || ConfigManager.Instance == null) return;
+            if (!ConfigManager.Instance.configAdminOnlyMode.Value || VAVanillaPieceManager.IsInitialized) return;
+            Instance.StartAdminWatcher("world join");
+        }
+
+        // 1.1.350: the vanilla `debugmode` command only flips Player.m_debugMode (no event), and on a server without FAP that is the
+        // admin answer. Opening the build menu is the moment it has to count, so the gate is asked there (an event, not a poll).
+        internal static void OnBuildMenuOpening()
+        {
+            if (Instance == null || IsDedicatedServer || ConfigManager.Instance == null) return;
+            if (VAVanillaPieceManager.IsInitialized || VAVanillaPieceManager.IsInitializing) return;
+            if (!VAVanillaPieceManager.IsAdminGateOpen()) return;
+            Debug.Log($"{PluginName}: admin gate opened at build-menu open ({VAVanillaPieceManager.DescribeOpenGate()}) - building the hammer.");
+            VAVanillaPieceManager.InitializeOnce();
+            RefreshHammerTabsAndPieces();
         }
 
         private static void OnCoreAdminStatusChanged(bool isAdmin)
@@ -447,6 +500,12 @@ namespace VerdantsAscent
 
         // Never times out: a promotion that lands an hour in still has to apply.
         private IEnumerator PollForAdminPromotion()
+        {
+            try { foreach (var step in PollForAdminPromotionBody()) yield return step; }
+            finally { s_adminWatcherRunning = false; }
+        }
+
+        private IEnumerable PollForAdminPromotionBody()
         {
             float elapsed = 0f;
             bool loggedStillClosed = false;
@@ -501,13 +560,14 @@ namespace VerdantsAscent
             catch (Exception ex) { Debug.LogWarning($"[{PluginName}] {description} failed: {ex.Message}"); }
         }
 
-        [HarmonyPatch(typeof(Piece), "Awake")]
+        // 1.1.407: run by FapAwakeDispatch (FAP's ONE ZNetView.Awake / Piece.Awake postfix; [generator] audit row 4)
         public static class Piece_Awake_Patch
         {
-            public static void Postfix(Piece __instance)
+            public static void Run(Piece __instance)
             {
                 if (__instance == null) return;
                 DistantPieceRenderer.RegisterPiece(__instance);
+                VATowerNearChunks.OnPieceAwake(__instance); VAPrefabChildren.OnPieceAwake(__instance);
             }
         }
 
@@ -537,6 +597,8 @@ namespace VerdantsAscent
             public static void Postfix()
             {
                 TryRun("VAFapPieceShaderOverrider.ApplyAllAtInit", VAFapPieceShaderOverrider.ApplyAllAtInit);
+                if (!IsDedicatedServer) TryRun("VATowerNearChunks.WarmNearIndex", VATowerNearChunks.WarmNearIndex);   // 1.1.402: on the loading screen, not inside a create
+                TryRun("DistantPieceRenderer.PushToEbm", () => DistantPieceRenderer.PushToEbm("world loading"));   // 1.1.411: EBM is loaded by now
             }
         }
 

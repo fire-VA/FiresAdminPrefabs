@@ -89,17 +89,26 @@ namespace VerdantsAscent.Utilities
         /// <summary>Parses a preset against the prefab's fields and arms it. null on success, else what is wrong.</summary>
         public static string Arm(VADataPreset preset)
         {
+            string err = Parse(preset, out var values);
+            if (err != null) return err;
+            VAExtraDataQueue.Arm(preset.Prefab, values, preset.name);
+            return null;
+        }
+
+        /// <summary>1.1.337: the preset parsed against the prefab's settable fields (Arm's own parse, shared with FapPresets.ApplyDataTo).
+        /// null on success, else what is wrong.</summary>
+        internal static string Parse(VADataPreset preset, out List<VAExtraValue> values)
+        {
+            values = new List<VAExtraValue>();
             var prefab = ZNetScene.instance != null ? ZNetScene.instance.GetPrefab(preset.Prefab) : null;
             if (prefab == null) return $"no prefab '{preset.Prefab}'";
             var fields = VAExtraFieldCatalogue.Build(prefab).Where(f => f.Settable).ToDictionary(f => f.Key);
-            var values = new List<VAExtraValue>();
             foreach (var v in preset.Values)
             {
                 if (!fields.TryGetValue(v.Key, out var field)) return $"{v.Key}: {preset.Prefab} has no such settable field now";
                 if (!VAExtraFieldCatalogue.TryParse(field.Kind, v.Text, out object parsed, out string problem)) return $"{v.Key}: {problem}";
                 values.Add(new VAExtraValue { Key = field.Key, Kind = field.Kind, Value = parsed });
             }
-            VAExtraDataQueue.Arm(preset.Prefab, values, preset.name);
             return null;
         }
     }

@@ -143,6 +143,47 @@ namespace VerdantsAscent.Managers
         public static IEnumerable<string> RegisteredBlueprintPrefabNames => _stubPrefabsByName.Keys;
         public static int RegisteredCount => _stubPrefabsByName.Count;
 
+        // 1.1.284 (fap_live_test blueprint fixture): registers ONE blueprint file the way ScanAndRegisterCoroutine does
+        // (ParseAllBlueprintFiles' ParseFile + Center(""), MakeStubName, BuildBlueprintStubBare, ZNetScene.m_prefabs +
+        // hammer m_pieces + the three name maps). No deferred icon (the fixture is removed in the same run).
+        internal static bool RegisterBlueprintFile(string path, ZNetScene scene, PieceTable pieceTable, out string stubName, out VABlueprintLoader.Blueprint bp)
+        {
+            stubName = null; bp = null;
+            if (string.IsNullOrEmpty(path) || scene == null || pieceTable == null) return false;
+            if (!VACategoryRegistry.TryGet(VACategoryRegistry.CatBlueprints, out var bpCat)) return false;
+            bp = VABlueprintLoader.ParseFile(path);
+            if (bp == null || bp.Objects.Count == 0) return false;
+            bp.Center("");
+            stubName = MakeStubName(path);
+            if (_stubPrefabsByName.ContainsKey(stubName)) return false;
+            var stub = BuildBlueprintStubBare(stubName, bp, bpCat);
+            if (stub == null) return false;
+            scene.m_prefabs.Add(stub);
+            pieceTable.m_pieces.Add(stub);
+            _stubPrefabsByName[stubName] = stub;
+            _blueprintsByPrefabName[stubName] = bp;
+            _sourcePathByName[stubName] = path;
+            _stubNamesByHash = null;
+            return true;
+        }
+
+        // 1.1.284: the reverse of RegisterBlueprintFile (fixture cleanup only).
+        internal static bool UnregisterBlueprint(string stubName, ZNetScene scene, PieceTable pieceTable)
+        {
+            if (string.IsNullOrEmpty(stubName) || !_stubPrefabsByName.TryGetValue(stubName, out var stub)) return false;
+            _stubPrefabsByName.Remove(stubName);
+            _blueprintsByPrefabName.Remove(stubName);
+            _sourcePathByName.Remove(stubName);
+            _stubNamesByHash = null;
+            if (stub != null)
+            {
+                scene?.m_prefabs.Remove(stub);
+                pieceTable?.m_pieces.Remove(stub);
+                UnityEngine.Object.Destroy(stub);
+            }
+            return true;
+        }
+
         // Phase-1 counts stashed so phase-2 can emit a unified
         // 📐 BLUEPRINTS summary banner with parsed/failed/baked all
         // in one visual unit. See the EmitBlueprints call at the end
@@ -329,8 +370,16 @@ namespace VerdantsAscent.Managers
 
             // Phase-1 plain log is verbose-only. The Blueprints/ folder
             // path is useful for diagnostics but not for normal loads.
-            if (VerdantsAscent.Utilities.VAFapLoadSummary.VerboseEnabled)
-                Debug.Log($"{VaPieces.PluginName}: VABlueprintHammerIntegration phase-1 registered {registered} blueprint(s) ({parsed} parsed, {failed} failed). Blueprints/ folder: {BlueprintsDir}");
+            // 1.1.304 (a player: "my blueprints aren't baking", and his log had no blueprint line at all - this one was Verbose-only): the
+            // scan result is ALWAYS logged, and an empty result says exactly where FAP reads from and which files it takes
+            if (registered > 0)
+                Debug.Log($"{VaPieces.PluginName}: Blueprints: {registered} blueprint(s) on the hammer ({parsed} parsed, {failed} failed) from {BlueprintsDir}");
+            else if (failed > 0)
+                Debug.LogWarning($"{VaPieces.PluginName}: Blueprints: none loaded ({parsed} parsed, {failed} failed). FAP reads blueprints ONLY from {BlueprintsDir} " +
+                                 "(.blueprint from PlanBuild, .vbuild from BuildShare); copy the files you want on the hammer into that folder and reload the world. " +
+                                 "PlanBuild's own folder is not scanned.");
+            else   // 1.1.322 (log sweep N17): an empty folder is normal (most players have no blueprints): still said where, as Info
+                Debug.Log($"{VaPieces.PluginName}: Blueprints: none in {BlueprintsDir} (.blueprint from PlanBuild, .vbuild from BuildShare go there; PlanBuild's own folder is not scanned)");
 
             // The scan is frame-budgeted, so with a large Blueprints folder it finishes long after the build
             // menu last rebuilt its available pieces; rebuild once so the new stubs show in the tab.
@@ -584,7 +633,7 @@ namespace VerdantsAscent.Managers
                     ownerForPlace.Message(MessageHud.MessageType.Center,
                         "Can't place blueprint — move out of the way first.", 0, null);
                 }
-                Debug.Log($"{VaPieces.PluginName}: VABlueprintHammerIntegration — placement of '{bp.Name}' blocked: player inside blueprint bounds at {worldPos}.");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: VABlueprintHammerIntegration — placement of '{bp.Name}' blocked: player inside blueprint bounds at {worldPos}.");
                 return 0;
             }
 
@@ -606,7 +655,7 @@ namespace VerdantsAscent.Managers
             if (bp.IsDungeon)
             {
                 string refusal = null;
-                if (!FiresCore.Sync.AdminSyncing.IsLocalAdmin()) refusal = "Only an admin can place a dungeon blueprint.";
+                if (!VerdantsAscent.Managers.VAFapServerPresence.LocalMayUseAdminFeatures()) refusal = "Only an admin can place a dungeon blueprint.";
                 else if (!bp.HasOrigin) refusal = $"Dungeon blueprint '{bp.Name}' has no #origin line; re-save it from its entrance door.";
                 else
                 {

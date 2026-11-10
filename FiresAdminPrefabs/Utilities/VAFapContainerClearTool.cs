@@ -61,7 +61,7 @@ namespace VerdantsAscent.Utilities
                  + "in a radius AND disarms their preset marker so EWP's respawn rule won't "
                  + "refire. Vanilla chests in the area are untouched. After clearing, the "
                  + "area will stay quiet unless you explicitly place a new preset chest "
-                 + $"there. Radius {radius:F0}m. Shift+Scroll resizes.";
+                 + $"there. Radius {radius:F0}m. Scroll = radius, Shift+Scroll = height.";
         }
 
         private static int ClearOnce(Vector3 center, float radius)

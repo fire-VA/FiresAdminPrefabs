@@ -13,11 +13,11 @@ namespace VerdantsAscent.Patches
     // zone unload preserves ZDOs, and picking a berry shouldn't take the building.
     public static class VABlueprintGroupPatches
     {
-        [HarmonyPatch(typeof(ZNetView), "Awake")]
+        // 1.1.407: run by FapAwakeDispatch (FAP's ONE ZNetView.Awake / Piece.Awake postfix; [generator] audit row 4)
         public static class ZNetView_Awake_VABlueprintGroupRegister_Patch
         {
-            [HarmonyPostfix]
-            public static void Postfix(ZNetView __instance)
+            private static readonly int s_groupKey = VABlueprintGroupRegistry.ZdoKey.GetStableHashCode();   // 1.1.402: hashed once, not per ZNetView.Awake
+            public static void Run(ZNetView __instance)
             {
                 try
                 {
@@ -25,7 +25,7 @@ namespace VerdantsAscent.Patches
                     var zdo = __instance.GetZDO();
                     if (zdo == null) return;
 
-                    string groupId = zdo.GetString(VABlueprintGroupRegistry.ZdoKey, string.Empty);
+                    string groupId = zdo.GetString(s_groupKey, string.Empty);
                     if (string.IsNullOrEmpty(groupId)) return;
 
                     // Infinity Hammer's ZDO snapshot copies the group id verbatim when
@@ -46,11 +46,10 @@ namespace VerdantsAscent.Patches
         // back when the prefab sets m_syncInitialScale — which most building pieces
         // don't — so scaled pieces snapped to 1.0 on zone reload. Mirrors vanilla's
         // own scale block for the prefabs it skips.
-        [HarmonyPatch(typeof(ZNetView), "Awake")]
+        // 1.1.407: run by FapAwakeDispatch (FAP's ONE ZNetView.Awake / Piece.Awake postfix; [generator] audit row 4)
         public static class ZNetView_Awake_VAScaleReadback_Patch
         {
-            [HarmonyPostfix]
-            public static void Postfix(ZNetView __instance)
+            public static void Run(ZNetView __instance)
             {
                 try
                 {
@@ -130,6 +129,7 @@ namespace VerdantsAscent.Patches
                 try
                 {
                     if (__instance == null) return true;
+                    if (VABlueprintPieceMarker.LiveCount == 0) return true;   // 1.1.404: no blueprint pieces alive, no GetComponent per call
                     return __instance.GetComponent<VABlueprintPieceMarker>() == null;
                 }
                 catch { return true; }
@@ -147,6 +147,7 @@ namespace VerdantsAscent.Patches
                 try
                 {
                     if (__instance == null) return true;
+                    if (VABakeBatchMarker.LiveCount == 0) return true;   // 1.1.404: no baked batches alive, no GetComponent per call
                     return __instance.GetComponent<VABakeBatchMarker>() == null;
                 }
                 catch { return true; }

@@ -136,22 +136,51 @@ namespace VerdantsAscent.Utilities
             return (from + segment * along - point).sqrMagnitude <= halfThickness * halfThickness;
         }
 
+        // 1.1.307: one line per action - a brush sweeps every frame, so the count is gathered and said at most every 2 s
+        private static int s_skipped;
+        private static float s_skipSaidAt = -999f;
+        private static void NoteSkipped(int n)
+        {
+            s_skipped += n;
+            if (Time.unscaledTime - s_skipSaidAt < 2f) return;
+            s_skipSaidAt = Time.unscaledTime;
+            string text = $"skipped {s_skipped} piece(s): admins only - the server has no FAP, so turn debugmode on";
+            s_skipped = 0;
+            VerdantsAscent.VaPieces.Log?.LogDebug($"[FAP] radius tool: {text}");
+            Player.m_localPlayer?.Message(MessageHud.MessageType.TopLeft, "Radius tool: " + text);
+        }
+
         // Valid networked objects within radius of center on the XZ plane.
+        // 1.1.291 (Fire, TEAM RULE: every radius tool honours the Shift+wheel height): the scan is a cylinder centred on the aim,
+        // center.y - Height/2 .. center.y + Height/2 (VARadiusWheel.Height), for every brush that calls this.
         public static List<ZNetView> FindNetViewsInRadius(Vector3 center, float radius)
+        {
+            VARadiusWheel.Bounds(center.y, out float yMin, out float yMax);
+            return FindNetViewsInCylinder(center, radius, yMin, yMax);
+        }
+
+        // 1.1.291: the radius scan with an explicit height band (the Radius Swapper and every brush via the overload above).
+        public static List<ZNetView> FindNetViewsInCylinder(Vector3 center, float radius, float yMin, float yMax)
         {
             var found = new List<ZNetView>();
             var scene = ZNetScene.instance;
             if (scene == null) return found;
 
             float radiusSqr = radius * radius;
+            int notYours = 0;
             foreach (var netView in scene.m_instances.Values)
             {
                 if (netView == null || !netView.IsValid()) continue;
                 Vector3 position = netView.transform.position;
+                if (position.y < yMin || position.y > yMax) continue;
                 float dx = position.x - center.x;
                 float dz = position.z - center.z;
-                if (dx * dx + dz * dz <= radiusSqr) found.Add(netView);
+                if (dx * dx + dz * dz > radiusSqr) continue;
+                // 1.1.307 (Fire 10-21): on a server without FAP a non-admin's radius tools touch only pieces they built
+                if (!VerdantsAscent.Managers.VAFapServerPresence.ToolMayAffect(netView.gameObject)) { notYours++; continue; }
+                found.Add(netView);
             }
+            if (notYours > 0) NoteSkipped(notYours);
             return found;
         }
 

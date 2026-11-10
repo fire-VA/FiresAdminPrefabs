@@ -18,7 +18,7 @@ namespace VerdantsAscent.Utilities
     /// </summary>
     public static class VALazyBundleManifest
     {
-        public const int FormatVersion = 2;   // 1.1.229: v1 files were written by JsonUtility, which dropped the prefabs list (R-1013AK)
+        public const int FormatVersion = 4;   // 4 (1.1.390): Entry.lazyNonPiece; 3 (1.1.378): Entry.leads;   // 1.1.229: v1 files were written by JsonUtility, which dropped the prefabs list (R-1013AK)
         public static string Dir => Path.Combine(VAFapCachePaths.Root, "LazyManifests");
 
         [Serializable]
@@ -37,6 +37,8 @@ namespace VerdantsAscent.Utilities
             public List<Requirement> requirements = new List<Requirement>();
             public bool wearNTear, container, door, fireplace, crafting, interactable, light, animator, collider;
             public int renderers;
+            public bool lazyNonPiece;   // 1.1.390: no gameplay component a mod could read off the ZNetScene list (effects, projectiles, props): LazyNonPieces may stub it
+            public List<string> leads;     // 1.1.378: prefabs this piece grows or spawns (vanilla Plant / CreatureSpawner fields); some have no container path, so only this piece reaches them
         }
 
         [Serializable]
@@ -105,6 +107,11 @@ namespace VerdantsAscent.Utilities
             if (piece != null)
             {
                 e.hasPiece = true;
+                var plant = prefab.GetComponent<Plant>();
+                if (plant != null && plant.m_grownPrefabs != null)
+                    foreach (var grown in plant.m_grownPrefabs) if (grown != null) (e.leads ?? (e.leads = new List<string>())).Add(grown.name);
+                var spawner = prefab.GetComponent<CreatureSpawner>();
+                if (spawner != null && spawner.m_creaturePrefab != null) (e.leads ?? (e.leads = new List<string>())).Add(spawner.m_creaturePrefab.name);
                 e.name = piece.m_name;
                 e.description = piece.m_description;
                 e.category = (int)piece.m_category;
@@ -124,6 +131,13 @@ namespace VerdantsAscent.Utilities
             e.animator = prefab.GetComponentInChildren<Animator>(true) != null;
             e.collider = prefab.GetComponentInChildren<Collider>(true) != null;
             e.renderers = prefab.GetComponentsInChildren<Renderer>(true).Length;
+            e.lazyNonPiece = !e.hasPiece && !e.container && !e.door && !e.fireplace && !e.crafting && !e.interactable
+                && prefab.GetComponentInChildren<ItemDrop>(true) == null && prefab.GetComponentInChildren<Character>(true) == null
+                && prefab.GetComponentInChildren<Pickable>(true) == null && prefab.GetComponentInChildren<TreeBase>(true) == null
+                && prefab.GetComponentInChildren<TreeLog>(true) == null && prefab.GetComponentInChildren<MineRock>(true) == null
+                && prefab.GetComponentInChildren<MineRock5>(true) == null && prefab.GetComponentInChildren<Destructible>(true) == null
+                && prefab.GetComponentInChildren<Location>(true) == null && prefab.GetComponentInChildren<CreatureSpawner>(true) == null
+                && prefab.GetComponentInChildren<SpawnArea>(true) == null;
             return e;
         }
     }

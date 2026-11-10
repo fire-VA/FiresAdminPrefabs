@@ -66,13 +66,14 @@ namespace VerdantsAscent.Utilities
             Look();
             if (s_live == null || panel == null || header == null) return false;
             EnsureRaycast(header);
-            try { s_live.Invoke(null, new object[] { screenKey, id, panel, header, label, owner }); Debug.Log($"[FiresAdminPrefabs] [CoreUi] live panel {screenKey}/{id} '{label}' (header '{header.name}')"); return true; }
+            try { s_live.Invoke(null, new object[] { screenKey, id, panel, header, label, owner }); VerdantsAscent.VaPieces.Log?.LogDebug($"[FiresAdminPrefabs] [CoreUi] live panel {screenKey}/{id} '{label}' (header '{header.name}')"); return true; }
             catch (Exception ex) { Debug.LogWarning($"[FiresAdminPrefabs] [CoreUi] live panel {id}: " + (ex.InnerException ?? ex).Message); return false; }
         }
 
         /// <summary>DockService.Register on a layer ("hud" | "inventory" | a screen layer), optionally docked to another element.</summary>
         internal static bool RegisterDock(string id, string owner, string layer, RectTransform rect, RectTransform dragHandle, string label,
-            string defaultDockTo = null, string defaultEdge = null, Func<bool> visible = null, bool liveEdit = true, bool showGrip = true)
+            string defaultDockTo = null, string defaultEdge = null, Func<bool> visible = null, bool liveEdit = true, bool showGrip = true,
+            Action<Vector2> sizeChanged = null, Vector2 minSize = default, Action sizeReset = null)
         {
             Look();
             if (s_dockReg == null || rect == null) return false;
@@ -84,9 +85,11 @@ namespace VerdantsAscent.Utilities
                 Set(o, "Label", label); Set(o, "LiveEdit", liveEdit); Set(o, "ShowGrip", showGrip);
                 if (!string.IsNullOrEmpty(defaultDockTo)) Set(o, "DefaultDockTo", defaultDockTo);
                 var e = Edge(defaultEdge); if (e != null) Set(o, "DefaultEdge", e);
+                if (sizeChanged != null) { Set(o, "SizeChanged", sizeChanged); Set(o, "MinSize", minSize); }   // Core 0.2.574+: size resize
+                if (sizeReset != null) Set(o, "SizeReset", sizeReset);   // Core 0.2.579+
                 if (visible != null) Set(o, "Visible", visible);
                 s_dockReg.Invoke(null, new[] { o });
-                Debug.Log($"[FiresAdminPrefabs] [CoreUi] dock element {layer}/{id} '{label}'{(string.IsNullOrEmpty(defaultDockTo) ? "" : $" docked to {defaultDockTo} ({defaultEdge})")}");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"[FiresAdminPrefabs] [CoreUi] dock element {layer}/{id} '{label}'{(string.IsNullOrEmpty(defaultDockTo) ? "" : $" docked to {defaultDockTo} ({defaultEdge})")}");
                 return true;
             }
             catch (Exception ex) { Debug.LogWarning($"[FiresAdminPrefabs] [CoreUi] dock {id}: " + (ex.InnerException ?? ex).Message); return false; }
@@ -111,7 +114,7 @@ namespace VerdantsAscent.Utilities
                 if (sizeChanged != null) { Set(o, "SizeChanged", sizeChanged); Set(o, "MinSize", minSize); }
                 if (sizeReset != null) Set(o, "SizeReset", sizeReset);   // Core 0.2.579: the layout Reset resets the size too
                 s_hud.Invoke(null, new[] { id, rect, o });
-                Debug.Log($"[FiresAdminPrefabs] [CoreUi] HUD element {id} '{label}'");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"[FiresAdminPrefabs] [CoreUi] HUD element {id} '{label}'");
                 return true;
             }
             catch (Exception ex) { Debug.LogWarning($"[FiresAdminPrefabs] [CoreUi] HUD {id}: " + (ex.InnerException ?? ex).Message); return false; }

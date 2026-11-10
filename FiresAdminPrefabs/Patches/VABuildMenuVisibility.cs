@@ -204,6 +204,31 @@ namespace VerdantsAscent.Patches
             if (VerdantsAscent.Utilities.VAPieceCategoryRuntime.IsHidden(piece.m_category)) return true;
             if (_hiddenTabCategories.Contains(piece.m_category)) return true;
 
+            // 1.1.325 (perf, spike report 10-28: this postfix took +1,563 ms of stall frames): vanilla re-runs UpdateAvailable on
+            // EVERY inventory change, so the per-piece rules below ran over ~5k hammer pieces each time. Their answer depends only
+            // on the piece and the view rules, so it is cached until the rules change (and at most 10 s, for a published-pieces
+            // list or config reload).
+            int sig = (_hideInjectedPieces ? 1 : 0) | (_hideAdminGatedPieces ? 2 : 0) | (_vanillaFriendly ? 4 : 0);
+            float now = UnityEngine.Time.realtimeSinceStartup;
+            if (sig != _pieceRuleSig || now - _pieceRuleAt > 10f)
+            {
+                if (_pieceRuleSig != -1 && sig != _pieceRuleSig)
+                    VaPieces.Log?.LogDebug($"[FAP] build-menu visibility: piece rules changed (injected {_hideInjectedPieces}, admin-gated {_hideAdminGatedPieces}, vanilla-friendly {_vanillaFriendly}); {_pieceRuleCache.Count} cached answer(s) dropped");
+                _pieceRuleCache.Clear(); _pieceRuleSig = sig; _pieceRuleAt = now;
+            }
+            int id = piece.GetInstanceID();
+            if (_pieceRuleCache.TryGetValue(id, out bool cached)) return cached;
+            bool hidden = PieceRulesHide(piece);
+            _pieceRuleCache[id] = hidden;
+            return hidden;
+        }
+
+        private static readonly Dictionary<int, bool> _pieceRuleCache = new Dictionary<int, bool>();
+        private static int _pieceRuleSig = -1;
+        private static float _pieceRuleAt;
+
+        private static bool PieceRulesHide(Piece piece)
+        {
             // A WackysDatabase clone carries the user's own name, so the rules below would read it
             // as foreign content and leave it on the menu after its source was hidden. Ask them
             // about the prefab it was cloned from instead.
@@ -218,6 +243,9 @@ namespace VerdantsAscent.Patches
             if (_hideAdminGatedPieces && FiresCore.Items.AdminRecipeGate.IsGated(piece.m_resources)) return true;
 
             if (_vanillaFriendly && IsModdedOnlyContent(identity)) return true;
+
+            // 1.1.361 (Fire 11-02): admins only, whatever the cfg says.
+            if (identity != null && VAFapDungeons.TryResolveStandin(identity.name, out _) && !VAFapDungeons.LocalIsRealAdmin()) return true;
 
             return false;
         }
@@ -271,10 +299,24 @@ namespace VerdantsAscent.Patches
         // Who the menu is being built for. A player always gets the player's menu; an admin gets
         // it too while debug mode is off, which is the A/B switch — debugmode is an admin-only
         // command, so turning it off is how an admin asks to see what their players see.
+        private static bool _singlePlayerLogged;   // 1.1.397: one Info line per session
         internal static bool ViewingAsPlayer()
         {
             // Client-only there is no server AdminOnlyMode for a player view to preview.
             if (VAFapServerPresence.IsClientOnly) return false;
+
+            // 1.1.397 (Fire 11-06: "fap allow singleplayer to access all the settings like an admin"): singleplayer (vanilla
+            // ZNet.IsSinglePlayer = this machine is the server and it is not open to others) has no players to preview, so never
+            // the player view, whatever debugmode says. A listen host whose world is open keeps the A/B switch.
+            if (ZNet.IsSinglePlayer)
+            {
+                if (!_singlePlayerLogged)
+                {
+                    _singlePlayerLogged = true;
+                    Debug.Log($"{VaPieces.PluginName}: build menu shows the ADMIN view: single player (world not open to others), so AdminOnlyMode's player preview does not apply");
+                }
+                return false;
+            }
 
             bool isAdmin;
             try { isAdmin = FiresCore.Sync.AdminSyncing.IsLocalAdmin(); }
@@ -315,7 +357,9 @@ namespace VerdantsAscent.Patches
         [HarmonyPrefix]
         public static void Prefix()
         {
+                try { VAFapDungeons.OnHammerOpened(); } catch { }   // 1.1.366
             VerdantsAscent.Utilities.FapNativeTrace.Step("FAP VAViewRefresh begin");
+            try { VaPieces.OnBuildMenuOpening(); } catch (System.Exception ex) { VaPieces.Log?.LogWarning("[FAP] admin gate check at build-menu open failed: " + ex.Message); }   // 1.1.350 (debugmode after join)
             VABuildMenuVisibility.RefreshIfViewChanged();
             VerdantsAscent.Utilities.FapNativeTrace.Step("FAP VAViewRefresh end");
         }

@@ -28,6 +28,10 @@ namespace VerdantsAscent.Network
             _registered = true;
             if (VaPieces.IsDedicatedServer) return;
 
+            VAFapLiveTest.Register();   // 1.1.283 (fap_live_test: live hide/unhide + live bake proof)
+            VAFapNearLoaderTest.Register(); VAFapMenuShotsTest.Register();   // 1.1.333 (fap_menu_shots_test: the build menu per top tab, Fire parity check)
+            VAFapEwdTest.Register();    // 1.1.309 (fap_ewd_test: a baked sign keeps its EWD data on EWD 1.79)
+
             new Terminal.ConsoleCommand("fap_ewpstatus",
                 "Show the FAP yaml file paths + their current sizes.",
                 (Terminal.ConsoleEventArgs args) =>
@@ -90,6 +94,27 @@ namespace VerdantsAscent.Network
                 },
                 isCheat: true);
 
+            // 1.1.355 (Fire 11-02: bridge stone "doesn't look like" the normal stone, lanterns white): read-only proof, changes nothing.
+            new Terminal.ConsoleCommand("fap_dungeons",
+                "fap_dungeons [remove <x> <z>] - lists the dungeon entrances FAP placed in this world; remove deletes the one at x z. Server only.",
+                (Terminal.ConsoleEventArgs args) =>
+                {
+                    bool remove = args.Length >= 4 && args[1] == "remove";
+                    float x = remove ? args.TryParameterFloat(2) : 0f, z = remove ? args.TryParameterFloat(3) : 0f;
+                    string r = VAFapDungeons.ListOrRemove(remove, x, z);
+                    args.Context.AddString(r);
+                    Debug.Log($"{VaPieces.PluginName}: {r}");
+                },
+                isCheat: true);
+            new Terminal.ConsoleCommand("fap_materials",
+                "fap_materials <prefab> - read-only: logs every renderer + slot of a prefab and of its nearest placed copy: material, shader, _MainTex, emission, and the game material of the same base name.",
+                (Terminal.ConsoleEventArgs args) =>
+                {
+                    if (args.Length < 2 || ZNetScene.instance == null) { args.Context.AddString("fap_materials <prefab>, in a world"); return; }
+                    DumpMaterials(args[1]);
+                    args.Context.AddString($"[FAP] fap_materials {args[1]}: see the log");
+                },
+                isCheat: false);
             new Terminal.ConsoleCommand("fap_snapdump",
                 "Diagnostic: report the snap points actually present on a build piece RIGHT NOW. No arg uses the piece currently selected in the hammer; otherwise pass a prefab name. Prints whether the prefab is in ZNetScene, whether any PieceTable already claimed it (which makes FAP skip it entirely, snap patch included), whether FAP's curated table ran, and every snappoint child with its local position. Use this when a piece refuses to snap: it separates 'the points are missing' from 'the points are there but the ghost picks the wrong one'.",
                 (Terminal.ConsoleEventArgs args) =>
@@ -100,7 +125,7 @@ namespace VerdantsAscent.Network
                         args.Context.AddString(line);
                         // AddString only reaches the in-game console buffer, which is
                         // no use when the answer has to be read back out of the log.
-                        Debug.Log($"{VaPieces.PluginName}: {line}");
+                        VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: {line}");
                     }
                 },
                 isCheat: true);
@@ -134,7 +159,7 @@ namespace VerdantsAscent.Network
                 isCheat: true);
 
             new Terminal.ConsoleCommand("fap_clear_orphan_fx",
-                "Sweep orphaned vanilla status-effect FX (wet / frost / etc.) left in the world when their character unloaded — the non-networked follow-FX the normal FX clear brush can't see. No arg or 'scan [radius]' reports; 'confirm [radius]' destroys. Radius defaults to 64m, centered on you. Args are order-independent.",
+                "Sweep status-effect FX (wet / frost / etc.) left in the world when their character unloaded: saved networked ones (vfx_Wet carries a ZNetView; FAP up to 1.1.397 saved them by mistake) and dead-constraint ones. No arg or 'scan [radius]' reports; 'confirm [radius]' destroys. Radius defaults to 64m, centered on you. Placed FX are never touched. Args are order-independent.",
                 (Terminal.ConsoleEventArgs args) =>
                 {
                     var player = Player.m_localPlayer;
@@ -152,6 +177,11 @@ namespace VerdantsAscent.Network
                         else if (float.TryParse(args[i], out float r) && r > 0f)
                             radius = r;
                     }
+                    // 1.1.398: the ZDO census first, so the saved (also unloaded) ones are counted and removed too.
+                    var census = VAStatusFxOrphans.Take(player.transform.position, radius);
+                    args.Context.AddString($"[FAP] Status-effect FX ZDOs within {radius:F0}m: {census.Zdos} ({census.Transient} transient, {census.Placed} placed, {census.AttachedLive} on a live character, {census.Orphans} left behind: {census.ByPrefabText()}).");
+                    if (confirm && census.Orphans > 0)
+                        args.Context.AddString($"[FAP] Removed {VAStatusFxOrphans.Remove(census)} left-behind status FX ZDO(s).");
                     VAFapOrphanFxCleaner.Run(player.transform.position, radius, confirm,
                         s => args.Context.AddString(s));
                 },
@@ -311,6 +341,15 @@ namespace VerdantsAscent.Network
                         ? Player.m_localPlayer.transform.position
                         : (ZNet.instance != null ? ZNet.instance.GetReferencePosition() : UnityEngine.Vector3.zero);
 
+                    // 1.1.380: with FAP on the server the purge runs there, where every ZDO is held, and the real result comes back
+                    if (!VerdantsAscent.Managers.VAFapServerPresence.IsClientOnly)
+                    {
+                        if (confirmed && !IsLocalAdminForWorldEdit()) { args.Context.AddString("[FAP] Purge refused - admin only."); return; }
+                        VerdantsAscent.Utilities.VAFapPrefabPurgeRpc.Send(args.Context, prefabHash, center, radius, confirmed);
+                        args.Context.AddString("[FAP] Asked the server; its answer follows.");
+                        return;
+                    }
+
                     var match = VerdantsAscent.Utilities.VAFapPrefabPurge.Survey(prefabHash, prefabName, center, radius);
                     if (match == null)
                     {
@@ -350,6 +389,18 @@ namespace VerdantsAscent.Network
                     int destroyed = VerdantsAscent.Utilities.VAFapPrefabPurge.Purge(prefabHash, center, radius);
                     args.Context.AddString($"[FAP] Destroyed {destroyed} '{prefabName}' ZDO(s) {scope}. "
                         + "Re-run without 'confirm' to confirm the area is clean.");
+                },
+                isCheat: true);
+
+            new Terminal.ConsoleCommand("fap_place_enemy_spawner",
+                "Place a vanilla spawner for a creature where you stand, as the hammer entry does. Usage: fap_place_enemy_spawner <creature>",
+                (Terminal.ConsoleEventArgs args) =>
+                {
+                    if (args.Length < 2 || Player.m_localPlayer == null) { args.Context.AddString("[FAP] Usage: fap_place_enemy_spawner <creature>, in a world."); return; }
+                    if (!IsLocalAdminForWorldEdit()) { args.Context.AddString("[FAP] Refused - admin only."); return; }
+                    int placed = VerdantsAscent.Utilities.VAEnemySpawners.PlaceAt(args[1], Player.m_localPlayer.transform.position, Quaternion.identity, Player.m_localPlayer);
+                    args.Context.AddString($"[FAP] Placed {placed} spawner(s) for {args[1]}.");
+                    Debug.Log($"{VaPieces.PluginName}: fap_place_enemy_spawner {args[1]}: {placed}");
                 },
                 isCheat: true);
 
@@ -616,7 +667,7 @@ namespace VerdantsAscent.Network
                     System.Action<string> emit = (line) =>
                     {
                         args.Context.AddString(line);
-                        Debug.Log($"{VaPieces.PluginName}: [bake_diagnose] {line}");
+                        VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: [bake_diagnose] {line}");
                         lineCount++;
                     };
 
@@ -781,6 +832,54 @@ namespace VerdantsAscent.Network
         //                       is empty (or absent) and there is nothing to click.
         //   * would-fail     -> the branch is claimed but the spawner's precondition is
         //                       already false, so a click reports "Failed to ...".
+        private static void DumpMaterials(string prefabName)
+        {
+            string tag = VaPieces.PluginName + ": [FapMaterials]";
+            var prefab = ZNetScene.instance.GetPrefab(prefabName);
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{tag} {prefabName}: prefab {(prefab != null ? "found" : "NOT in ZNetScene")}");
+            var game = new System.Collections.Generic.Dictionary<string, Material>(System.StringComparer.Ordinal);
+            foreach (var mat in Resources.FindObjectsOfTypeAll<Material>())
+            {
+                if (mat == null || string.IsNullOrEmpty(mat.name) || mat.name.EndsWith("_Copy", System.StringComparison.Ordinal) || mat.name.StartsWith("FAP_", System.StringComparison.Ordinal)) continue;
+                if (!game.ContainsKey(mat.name)) game[mat.name] = mat;
+            }
+            if (prefab != null) DumpRenderers(tag, "prefab", prefab, game);
+            ZNetView nearest = null; float best = float.MaxValue;
+            Vector3 me = Player.m_localPlayer != null ? Player.m_localPlayer.transform.position : Vector3.zero;
+            foreach (var nv in UnityEngine.Object.FindObjectsOfType<ZNetView>())
+            {
+                if (nv == null || Utils.GetPrefabName(nv.gameObject) != prefabName) continue;
+                float d = Vector3.Distance(nv.transform.position, me);
+                if (d < best) { best = d; nearest = nv; }
+            }
+            if (nearest != null) DumpRenderers(tag, $"placed at {nearest.transform.position.ToString("F1")} ({best:0} m)", nearest.gameObject, game);
+            else VerdantsAscent.VaPieces.Log?.LogDebug($"{tag} {prefabName}: no placed copy loaded");
+        }
+
+        private static void DumpRenderers(string tag, string what, GameObject go, System.Collections.Generic.Dictionary<string, Material> game)
+        {
+            var renderers = go.GetComponentsInChildren<Renderer>(true);
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{tag} {go.name} {what}: {renderers.Length} renderer(s)");
+            foreach (var r in renderers)
+            {
+                var mats = r.sharedMaterials;
+                for (int i = 0; i < mats.Length; i++)
+                {
+                    var mat = mats[i];
+                    if (mat == null) { VerdantsAscent.VaPieces.Log?.LogDebug($"{tag}   {r.name} (on {r.enabled}) slot {i}: NULL material"); continue; }
+                    string baseName = mat.name.EndsWith("_Copy", System.StringComparison.Ordinal) ? mat.name.Substring(0, mat.name.Length - 5) : mat.name;
+                    string gameText = game.TryGetValue(baseName, out var g) && g != mat ? $"game '{g.name}' shader {(g.shader != null ? g.shader.name : "null")} tex {TexName(g, "_MainTex")}" : "no other game material of that name";
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"{tag}   {r.name} (on {r.enabled}) slot {i}: '{mat.name}' shader {(mat.shader != null ? mat.shader.name : "null")} queue {mat.renderQueue} _MainTex {TexName(mat, "_MainTex")} color {(mat.HasProperty("_Color") ? mat.color.ToString() : "-")} _EmissionMap {TexName(mat, "_EmissionMap")} _EmissiveTex {TexName(mat, "_EmissiveTex")} _EmissionColor {(mat.HasProperty("_EmissionColor") ? mat.GetColor("_EmissionColor").ToString() : "-")} _EMISSION {mat.IsKeywordEnabled("_EMISSION")} _BumpMap {TexName(mat, "_BumpMap")} _MetallicTex {TexName(mat, "_MetallicTex")} _Metallic {(mat.HasProperty("_Metallic") ? mat.GetFloat("_Metallic").ToString("0.00") : "-")} _ValueNoiseVertex {(mat.HasProperty("_ValueNoiseVertex") ? mat.GetFloat("_ValueNoiseVertex").ToString("0.00") : "-")}; {gameText}");
+                }
+            }
+        }
+
+        private static string TexName(Material mat, string prop)
+        {
+            if (!mat.HasProperty(prop)) return "-";
+            var t = mat.GetTexture(prop);
+            return t != null ? t.name : "NULL";
+        }
         private static void SelfTestPlace(Terminal context)
         {
             Action<string> Line = s => { if (context != null) context.AddString(s); Debug.Log(s); };
@@ -1210,7 +1309,7 @@ namespace VerdantsAscent.Network
 
         private static bool IsLocalAdminForWorldEdit()
         {
-            try { return FiresCore.Sync.AdminSyncing.IsLocalAdmin(); }
+            try { return FiresCore.Sync.AdminSyncing.IsLocalAdmin(); }   // 1.1.305: kept admin-only even client-only: purge deletes other players' world objects, no undo (Fire to decide)
             catch { return false; }
         }
     }

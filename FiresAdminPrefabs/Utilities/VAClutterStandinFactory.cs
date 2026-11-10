@@ -129,7 +129,7 @@ namespace VerdantsAscent.Utilities
         private static string BuildDescription(GameObject realPrefab)
         {
             return "<color=#ffaa00>Clutter brush.</color> Click on terrain to paint a circle of "
-                 + realPrefab.name + ". Shift+Scroll resizes the brush live. "
+                 + realPrefab.name + ". Scroll = radius, Shift+Scroll = scale the brush live. "   // 1.1.292
                  + "Painted positions persist via TerrainComp ZDO; "
                  + "painting dirt/paved/path over the area erases the clutter.";
         }

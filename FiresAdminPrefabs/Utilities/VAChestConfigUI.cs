@@ -31,6 +31,7 @@ namespace VerdantsAscent.Utilities
         private const float MinW = 460f, MaxW = 1200f, MinH = 560f, MaxH = 1000f, Grip = 18f;
 
         private static VAChestConfigUI _instance;
+        private static bool s_p7ClosedLogged;   // 1.1.325 (UI audit P7)
         private static ConfigEntry<float> s_opacity, s_w, s_h, s_x, s_y;
 
         public static void EnsureCreated()
@@ -39,6 +40,7 @@ namespace VerdantsAscent.Utilities
             var go = new GameObject("FAP_ChestConfigUI");
             DontDestroyOnLoad(go);
             _instance = go.AddComponent<VAChestConfigUI>();
+            _instance.enabled = false;   // 1.1.325 (UI audit P7): starts closed; OpenInternal turns it on
         }
 
         public static void Open(string containerPrefabName)
@@ -83,6 +85,7 @@ namespace VerdantsAscent.Utilities
             s_h = cfg.Bind("ChestConfigUI", "Height", 720f, "The chest preset window's height.");
             s_x = cfg.Bind("ChestConfigUI", "X", -1f, "The window's left edge (-1 = centred; drag the title row).");
             s_y = cfg.Bind("ChestConfigUI", "Y", -1f, "The window's top edge (-1 = centred).");
+            VerdantsAscent.Managers.FapConfigUi.Apply(cfg);   // 1.1.279: window geometry is saved, never shown
         }
 
         private void OpenInternal(string containerPrefabName)
@@ -99,6 +102,7 @@ namespace VerdantsAscent.Utilities
             // Capture input (vanilla + other-mod hotkeys) for as long as the window is open.
             if (!_open) FiresCore.Input.FiresInputBlock.Acquire(this); VAImguiGuard.Open(this, () => _rect, "ChestConfig");
             _open = true;
+            enabled = true;   // 1.1.325 (UI audit P7)
 
             LoadPresetIntoForm(null);
         }
@@ -110,6 +114,8 @@ namespace VerdantsAscent.Utilities
             _pickerOpen = false;
             FiresCore.Input.FiresInputBlock.Release(this); VAImguiGuard.Close(this);
             SaveLayout();
+            enabled = false;   // 1.1.325 (UI audit P7): no Update/OnGUI while closed; Open() is the only way back
+            if (!s_p7ClosedLogged) { s_p7ClosedLogged = true; VaPieces.Log?.LogDebug("[FAP] VAChestConfigUI closed: OnGUI off until reopened"); }
         }
 
         private void SaveLayout()
@@ -130,6 +136,8 @@ namespace VerdantsAscent.Utilities
             _rect.y = Mathf.Clamp(_rect.y, 0f, Mathf.Max(0f, Screen.height - 60f));
             FiresRoundedSkin.DrawPendingTooltip();
         }
+
+        private readonly List<string> _pickNames = new List<string>(); private float _pickAt; private string _pickFor;   // 1.1.321 (P5)
 
         private void DrawWindow(int id)
         {
@@ -213,13 +221,18 @@ namespace VerdantsAscent.Utilities
             GUILayout.EndHorizontal();
             if (!_pickerOpen) return;
 
-            var names = new List<string>();
+            // 1.1.321 (UI audit P5): the picker list is rebuilt twice a second into a reused list, not every IMGUI pass
+            var names = _pickNames;
+            if (Time.unscaledTime >= _pickAt || _pickFor != _containerPrefab)
+            {
+            _pickAt = Time.unscaledTime + 0.5f; _pickFor = _containerPrefab; names.Clear();
             foreach (var kvp in VAChestPresetStore.All)
             {
                 var preset = kvp.Value;
                 if (preset == null) continue;
                 if (!string.Equals(preset.ContainerPrefab, _containerPrefab, StringComparison.Ordinal)) continue;
                 names.Add(preset.name);
+            }
             }
             if (names.Count == 0)
             {

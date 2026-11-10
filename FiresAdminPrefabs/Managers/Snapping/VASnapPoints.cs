@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 
 namespace VerdantsAscent.Managers.Snapping
 {
-    // Applies VASnapLayouts to the vanilla props FAP puts in the hammer.
+    // Names on bundle pieces' own snap points, and fap_snapdump. New points come from VASnapGeometry.
     //
     // A snap point is vanilla's own mechanism: an inactive child object tagged "snappoint". Piece.GetSnapPoints
     // collects those children in child order, and the placement ghost pairs its points with the target's within
@@ -14,116 +15,64 @@ namespace VerdantsAscent.Managers.Snapping
     {
         private const string SnapTag = "snappoint";
 
-        private static Dictionary<string, VASnapRule> _byPrefab;
-        private static readonly HashSet<int> _done = new HashSet<int>();
+        // 1.1.323 (Fire 10-27: "It's just snap point and a number" + "Exactly 1.7.2"): the bundle-authored names were all over the place
+        // (snap1, Fapsnap1, snapoint). A piece from one of FAP's asset bundles with no layout of its own gets MoreVanillaBuildPrefabs 1.7.2's
+        // default for unlabelled points, "Extra 1..N" (SnapPointManager.CreateNamedSnapPoints), in child order (vanilla's
+        // Piece.GetSnapPoints order, which saved snap defaults index). Positions and order are untouched; only names change. Once per prefab.
+        private static readonly HashSet<int> _bundleNamed = new HashSet<int>();
 
-        private static Dictionary<string, VASnapRule> ByPrefab
+        internal static void NormaliseBundleNames(GameObject prefab) => NormaliseBundleNames(prefab, out _, out _, true);
+
+        // Returns false when the prefab is not a FAP bundle piece, has a layout, or was done already. points / renamed: its snap points
+        // and how many names changed. say: the per-piece line (only when a name changed).
+        private static bool NormaliseBundleNames(GameObject prefab, out int points, out int renamed, bool say)
         {
-            get
-            {
-                if (_byPrefab != null) return _byPrefab;
-                var map = new Dictionary<string, VASnapRule>(StringComparer.Ordinal);
-                foreach (var rule in VASnapLayouts.Rules)
-                    foreach (var name in rule.Prefabs)
-                    {
-                        if (map.ContainsKey(name)) Debug.LogWarning($"{VaPieces.PluginName}: snap layout for '{name}' is listed twice; the first one is used.");
-                        else map[name] = rule;
-                    }
-                return _byPrefab = map;
-            }
-        }
-
-        internal static bool HasLayout(string prefabName) => prefabName != null && ByPrefab.ContainsKey(prefabName);
-
-        internal static void Apply(GameObject prefab)
-        {
-            if (prefab == null || !ByPrefab.TryGetValue(prefab.name, out var rule)) return;
-            if (!_done.Add(prefab.GetInstanceID())) return;
-
+            points = 0; renamed = 0;
+            if (prefab == null || _bundleNamed.Contains(prefab.GetInstanceID())) return false;
+            string bundle = null;
+            if (!VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out bundle) && !VAExternalBundleLoader.IsBundleOwnedPrefab(prefab)) return false;
+            _bundleNamed.Add(prefab.GetInstanceID());
             try
             {
-                FixColliders(prefab, rule);
-                foreach (var (child, pos) in rule.Moves)
+                var was = new List<string>();
+                foreach (Transform child in prefab.transform)
                 {
-                    var t = prefab.transform.Find(child);
-                    if (t != null) t.localPosition = pos;
+                    if (child == null || !child.CompareTag(SnapTag)) continue;
+                    string want = $"Snap point {++points}";
+                    if (child.name == want) continue;
+                    if (was.Count < 6) was.Add(child.name);
+                    child.name = want;
+                    renamed++;
                 }
-
-                int n = 0;
-                foreach (var (pos, label) in rule.Points) AddPoint(prefab, pos, label ?? $"fap snap {++n}");
-                if (rule.CornersOfMesh != null)
-                    foreach (var corner in MeshCorners(prefab, rule.CornersOfMesh)) AddPoint(prefab, corner, $"fap snap {++n}");
+                if (say && renamed > 0)
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: [Snap] {prefab.name} (bundle {bundle ?? "?"}): {points} point(s) named Snap point 1..{points}, renamed {renamed} (were {string.Join(", ", was)}{(renamed > was.Count ? ", ..." : "")})");
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"{VaPieces.PluginName}: snap layout for '{prefab.name}' failed: {ex.Message}");
+                Debug.LogWarning($"{VaPieces.PluginName}: [Snap] {prefab.name}: bundle snap point names not normalised: {ex.Message}");
             }
+            return true;
         }
 
-        private static void FixColliders(GameObject prefab, VASnapRule rule)
+        // 1.1.324 (round #25: no "[Snap]" line at all with 1.1.323 - FAP's bundle pieces reach the Hammer by another route and the late
+        // pass skips prefabs already in the table, so the per-prefab hook never saw them): one pass over the Hammer table itself after each
+        // scan. Info summary per pass; per-piece lines only where a name changed, the first 20.
+        internal static void NormaliseHammerBundlePieces(PieceTable table, string pass)
         {
-            if (rule.RecentredChild != null)
+            if (table?.m_pieces == null) return;
+            int pieces = 0, withPoints = 0, changed = 0, points = 0, renamedAll = 0, said = 0;
+            foreach (var go in table.m_pieces.ToArray())
             {
-                var t = prefab.transform.Find(rule.RecentredChild);
-                if (t != null) t.localPosition = Vector3.zero;
+                if (go == null) continue;
+                bool say = said < 20;
+                if (!NormaliseBundleNames(go, out int p, out int r, say)) continue;
+                pieces++;
+                if (p > 0) withPoints++;
+                if (r > 0) { changed++; if (say) said++; }
+                points += p; renamedAll += r;
             }
-
-            if (rule.NoRandomRotationOn != null)
-            {
-                var rotation = prefab.transform.Find(rule.NoRandomRotationOn)?.GetComponent<RandomPieceRotation>();
-                if (rotation != null) UnityEngine.Object.DestroyImmediate(rotation);
-            }
-
-            if (rule.CollidersToPieceLayer)
-            {
-                int pieceLayer = LayerMask.NameToLayer("piece");
-                foreach (var collider in prefab.GetComponentsInChildren<Collider>()) collider.gameObject.layer = pieceLayer;
-            }
-
-            if (rule.ReplacementBoxes != null)
-            {
-                foreach (var collider in prefab.GetComponentsInChildren<Collider>()) UnityEngine.Object.DestroyImmediate(collider);
-                foreach (var (center, size) in rule.ReplacementBoxes)
-                {
-                    var box = prefab.AddComponent<BoxCollider>();
-                    box.center = center;
-                    box.size = size;
-                }
-            }
-
-            if (rule.ResizedBox != null)
-                foreach (var box in prefab.GetComponentsInChildren<BoxCollider>())
-                    if (box.name == rule.ResizedBox)
-                    {
-                        box.center += rule.ResizedBoxCenterDelta;
-                        box.size += rule.ResizedBoxSizeDelta;
-                    }
-        }
-
-        // The corners of the first mesh whose name starts with the prefix, in that mesh's own space.
-        private static IEnumerable<Vector3> MeshCorners(GameObject prefab, string meshNamePrefix)
-        {
-            foreach (var filter in prefab.GetComponentsInChildren<MeshFilter>())
-            {
-                var mesh = filter.sharedMesh;
-                if (mesh == null || !mesh.name.StartsWith(meshNamePrefix, StringComparison.OrdinalIgnoreCase)) continue;
-                var bounds = mesh.bounds;
-                var corners = new List<Vector3>(8);
-                foreach (int sx in new[] { -1, 1 })
-                    foreach (int sy in new[] { -1, 1 })
-                        foreach (int sz in new[] { -1, 1 })
-                            corners.Add(bounds.center + Vector3.Scale(new Vector3(sx, sy, sz), bounds.extents));
-                return corners;
-            }
-            return Array.Empty<Vector3>();
-        }
-
-        private static void AddPoint(GameObject prefab, Vector3 localPos, string label)
-        {
-            var point = new GameObject(label) { tag = SnapTag };
-            point.transform.SetParent(prefab.transform, false);
-            point.transform.localPosition = localPos;
-            point.SetActive(false);
+            if (pieces > 0)
+                Debug.Log($"{VaPieces.PluginName}: [Snap] FAP bundle pieces ({pass}): {pieces} new on the Hammer, {withPoints} with snap points ({points} points), {changed} renamed to Extra 1..N ({renamedAll} names changed{(changed > said ? $"; {said} listed" : "")})");
         }
 
         // fap_snapdump: what the game will read off a piece right now, so "it won't snap" can be split into "there
@@ -149,9 +98,9 @@ namespace VerdantsAscent.Managers.Snapping
             foreach (var table in Resources.FindObjectsOfTypeAll<PieceTable>())
                 if (table?.m_pieces != null && table.m_pieces.Exists(p => p != null && p.name == name)) tables.Add(table.name);
             lines.Add(tables.Count > 0
-                ? $"  on PieceTable(s): {string.Join(", ", tables)} (a prefab another table already has is not FAP's, so no layout runs on it)"
+                ? $"  on PieceTable(s): {string.Join(", ", tables)}"
                 : "  on no PieceTable before FAP: FAP handles it");
-            lines.Add($"  FAP snap layout: {(HasLayout(name) ? "yes" : "none")}; applied this session: {(_done.Contains(prefab.GetInstanceID()) ? "yes" : "no")}");
+            lines.Add($"  points from FAP's geometry rule: {(VASnapGeometry.MadeByRule(name) ? "yes" : "no")}");
 
             var piece = prefab.GetComponent<Piece>();
             if (piece == null) lines.Add("  no Piece component: it can't be placed or removed as a build piece");

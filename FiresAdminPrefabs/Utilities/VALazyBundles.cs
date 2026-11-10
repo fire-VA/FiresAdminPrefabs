@@ -43,7 +43,6 @@ namespace VerdantsAscent.Utilities
         private static readonly Dictionary<string, float> s_lastUse = new Dictionary<string, float>(StringComparer.Ordinal);
         private static readonly Dictionary<int, string> s_realizedById = new Dictionary<int, string>();
         private static int s_unloaded, s_callerLogs;
-        private static float s_nextSweep;
 
         public static int StubCount => s_stubsByName.Count;
         public static int RealizedCount => s_realized.Count;
@@ -71,17 +70,110 @@ namespace VerdantsAscent.Utilities
         public static GameObject[] Harvest(AssetBundle bundle, string bundleLabel, VALazyBundleManifest.Manifest manifest)
         {
             var list = new List<GameObject>(manifest.prefabs.Count);
-            int stubs = 0, loaded = 0, missing = 0;
+            int stubs = 0, loaded = 0, missing = 0, nonPieceStubs = 0;
+            bool lazyNonPieces = ConfigManager.Instance?.configLazyBundlesLazyNonPieces?.Value ?? false;
             foreach (var e in manifest.prefabs)
             {
                 if (e == null || string.IsNullOrEmpty(e.prefab)) continue;
-                if (e.hasPiece) { list.Add(CreateStub(bundleLabel, e)); stubs++; continue; }
+                if (e.hasPiece)
+                {
+                    list.Add(CreateStub(bundleLabel, e)); stubs++;
+                    if (e.leads != null) foreach (var lead in e.leads) s_leadOwner[lead.GetStableHashCode()] = e.prefab;
+                    continue;
+                }
+                // 1.1.390 (group F, off by default): anything asking ZNetScene for it realizes it, like a piece; a direct reference in a loaded prefab loads it anyway.
+                if (lazyNonPieces && e.lazyNonPiece) { list.Add(CreateStub(bundleLabel, e)); nonPieceStubs++; continue; }
                 GameObject go = null;
                 try { go = bundle.LoadAsset<GameObject>(e.prefab); } catch { }
                 if (go != null) { list.Add(go); loaded++; } else missing++;
             }
-            Debug.Log($"{VaPieces.PluginName}: [LazyBundles] '{bundleLabel}': {stubs} piece(s) as stubs, {loaded} other prefab(s) loaded{(missing > 0 ? $", {missing} not found by name" : "")}");
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: [LazyBundles] '{bundleLabel}': {stubs} piece(s) as stubs, {nonPieceStubs} non-piece(s) as stubs, {loaded} other prefab(s) loaded{(missing > 0 ? $", {missing} not found by name" : "")}");
+            // 1.1.403 ([lead]/[fgn] 11-08, Fire's 0107w [Hitch]: 13.5 s / 5.6 s / 3.9 s frames inside ZNetScene.CreateObject): every bundle FAP loads is
+            // ONE LZMA block (UnityFS headers read 11-08: vapieces 96 -> 509 MB, furniturereborn_bal 71 -> 194 MB ...), so the FIRST asset load from a
+            // bundle unpacks the whole file (log: first realize from vapieces 5,565 ms, the next ones 1.5-48 ms). A bundle whose harvest loaded
+            // nothing by name was never touched, so its first touch landed in a create. Prewarm: one async load per such bundle right away, on
+            // Unity's loader thread, so the unpack is paid at the menu / loading screen and never inside a create.
+            if (loaded == 0 && stubs + nonPieceStubs > 0) QueuePrewarm(bundleLabel, bundle, FirstStubName(manifest));
+            else if (loaded > 0) s_warm.Add(bundleLabel);   // already touched by the by-name loads above
             return list.ToArray();
+        }
+
+        // ── 1.1.403 prewarm ──
+        private static readonly HashSet<string> s_warm = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly List<KeyValuePair<string, KeyValuePair<AssetBundle, string>>> s_prewarmQueue = new List<KeyValuePair<string, KeyValuePair<AssetBundle, string>>>();
+        private static bool s_prewarming;
+        private static int s_prewarmed; private static double s_prewarmSec;
+
+        private static readonly Dictionary<string, long> s_bundleLen = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        private static long BundleFileLength(string label)
+        {
+            if (s_bundleLen.TryGetValue(label, out long len)) return len;
+            len = 0;
+            try { var p = VAExternalBundleLoader.ResolveBundleFile(label); if (System.IO.File.Exists(p)) len = new System.IO.FileInfo(p).Length; } catch { }
+            s_bundleLen[label] = len;
+            return len;
+        }
+
+        private static string FirstStubName(VALazyBundleManifest.Manifest manifest)
+        {
+            foreach (var e in manifest.prefabs) if (e != null && !string.IsNullOrEmpty(e.prefab)) return e.prefab;
+            return null;
+        }
+
+        private static void QueuePrewarm(string label, AssetBundle bundle, string name)
+        {
+            if (bundle == null || string.IsNullOrEmpty(name) || s_warm.Contains(label)) return;
+            if (!(ConfigManager.Instance?.configLazyBundlesPrewarm?.Value ?? false)) return;
+            s_prewarmQueue.Add(new KeyValuePair<string, KeyValuePair<AssetBundle, string>>(label, new KeyValuePair<AssetBundle, string>(bundle, name)));
+            if (!s_prewarming && VaPieces.Instance != null) { s_prewarming = true; VaPieces.Instance.StartCoroutine(PumpPrewarm()); }
+        }
+
+        // One bundle at a time (one unpack in flight). Only the bundle is warmed; the prefab stays a stub until something asks for it.
+        private static IEnumerator PumpPrewarm()
+        {
+            float begun = Time.realtimeSinceStartup;
+            yield return null;   // the rest of this harvest pass queues its bundles first, so "largest first" sees them all
+            while (s_prewarmQueue.Count > 0)
+            {
+                // Never competes with a world load: no new unpack starts while the loading screen is up (one already in flight finishes).
+                while (LoadingScreenUp()) yield return null;
+                // Largest file first: the biggest unpacks are the worst first touches.
+                int pick = 0; long best = -1;
+                for (int i = 0; i < s_prewarmQueue.Count; i++)
+                {
+                    long len = BundleFileLength(s_prewarmQueue[i].Key);
+                    if (len > best) { best = len; pick = i; }
+                }
+                var next = s_prewarmQueue[pick]; s_prewarmQueue.RemoveAt(pick);
+                string label = next.Key; var bundle = next.Value.Key; string name = next.Value.Value;
+                if (bundle == null || s_warm.Contains(label)) continue;
+                float t0 = Time.realtimeSinceStartup;
+                AssetBundleRequest req = null;
+                try { req = bundle.LoadAssetAsync<GameObject>(name); } catch (Exception ex) { VaPieces.Log?.LogDebug($"[LazyBundles] prewarm of '{label}' threw {ex.GetType().Name}: {ex.Message}"); }
+                if (req != null) yield return req;
+                s_warm.Add(label);
+                s_prewarmed++; s_prewarmSec += Time.realtimeSinceStartup - t0;
+                VaPieces.Log?.LogDebug($"[LazyBundles] prewarmed '{label}' (its LZMA block unpacked off the main thread) in {Time.realtimeSinceStartup - t0:0.00} s");
+            }
+            float wall = Time.realtimeSinceStartup - begun;
+            s_prewarming = false;
+            VaPieces.Log?.LogInfo($"[LazyBundles] {s_prewarmed} lazy bundle(s) prewarmed before use (unpacking {s_prewarmSec:0.0} s on Unity's loader thread, {wall:0.0} s from first to last, largest first, paused while a loading screen was up), so a first piece from them no longer unpacks its bundle inside a create (1.1.403)");
+        }
+
+        // 1.1.378: hash of a prefab with no container path -> the stubbed piece that references it. A dedi loads the whole bundle and
+        // finds these in memory; here the referrer has to be realized first. Runs on the first ZDO that asks, once per hash.
+        private static readonly Dictionary<int, string> s_leadOwner = new Dictionary<int, string>();
+
+        internal static bool TryRealizeLead(ZNetScene scene, int hash)
+        {
+            if (!s_leadOwner.TryGetValue(hash, out var owner)) return false;
+            s_leadOwner.Remove(hash);
+            string bundle = s_stubsByName.TryGetValue(owner, out var stub) && stub != null ? stub.Bundle : null;
+            bool realized = Realize(owner) != null;
+            int registered = realized && bundle != null ? VAExternalBundleLoader.RegisterLoadedDependencies(scene, bundle) : 0;
+            bool found = scene.m_namedPrefabs.ContainsKey(hash);
+            VaPieces.Log?.LogDebug($"[LazyBundles] hash {hash}: via '{owner}': realized={realized}, {registered} dependency prefab(s) registered, found={found}");
+            return found;
         }
 
         private static GameObject CreateStub(string bundleLabel, VALazyBundleManifest.Entry e)
@@ -96,11 +188,14 @@ namespace VerdantsAscent.Utilities
             go.transform.SetParent(s_holder.transform, false);
             var nview = go.AddComponent<ZNetView>();
             nview.m_persistent = true;
-            var piece = go.AddComponent<Piece>();
-            piece.m_name = e.name;
-            piece.m_description = e.description;
-            piece.m_category = (Piece.PieceCategory)e.category;
-            piece.m_resources = Array.Empty<Piece.Requirement>();
+            if (e.hasPiece)
+            {
+                var piece = go.AddComponent<Piece>();
+                piece.m_name = e.name;
+                piece.m_description = e.description;
+                piece.m_category = (Piece.PieceCategory)e.category;
+                piece.m_resources = Array.Empty<Piece.Requirement>();
+            }
             var stub = go.AddComponent<Stub>();
             stub.Bundle = bundleLabel;
             stub.Entry = e;
@@ -114,6 +209,13 @@ namespace VerdantsAscent.Utilities
         [HarmonyPatch(typeof(ZNetScene), "Awake"), HarmonyPostfix, HarmonyPriority(Priority.Last)]
         private static void ZNetScene_Awake_Postfix(ZNetScene __instance)
         {
+            // 1.1.318 ([classes-ui] load/save audit M8): a throw here skipped the later ZNetScene.Awake postfixes
+            try { ZNetScene_Awake_PostfixBody(__instance); }
+            catch (Exception e) { Debug.LogError($"[FAP] lazy bundles: ZNetScene.Awake requirements pass failed: {e.Message}"); }
+        }
+
+        private static void ZNetScene_Awake_PostfixBody(ZNetScene __instance)
+        {
             if (__instance == null || s_stubsByName.Count == 0) return;
             var stations = new Dictionary<string, CraftingStation>(StringComparer.Ordinal);
             foreach (var p in __instance.m_prefabs)
@@ -126,6 +228,7 @@ namespace VerdantsAscent.Utilities
             {
                 if (stub == null) continue;
                 var piece = stub.GetComponent<Piece>();
+                if (piece == null) continue;   // 1.1.390: a non-piece stub has no requirements
                 var reqs = new List<Piece.Requirement>();
                 foreach (var r in stub.Entry.requirements)
                 {
@@ -172,6 +275,11 @@ namespace VerdantsAscent.Utilities
                 VaPieces.Log?.LogDebug($"[LazyBundles] '{name}' asked for by " + string.Join(" < ", frames.Take(6)
                     .Select(f => f.GetMethod()).Where(m => m != null).Select(m => (m.DeclaringType?.Name ?? "?") + "." + m.Name).ToArray()));
             }
+            // 1.1.403: an on-demand load that stalls a frame logs (Debug, Fire 11-08: players see warnings) its ms and why (bundle not yet warm = its unpack was paid here).
+            if (sync && (t.Elapsed.TotalMilliseconds >= 250.0 || !s_warm.Contains(stub.Bundle)))
+                VaPieces.Log?.LogDebug($"[LazyBundles] on-demand load of '{name}' from '{stub.Bundle}' took {t.Elapsed.TotalMilliseconds:0} ms in one frame " +
+                    (s_warm.Contains(stub.Bundle) ? "(bundle already warm: the prefab itself is heavy)" : "(bundle not prewarmed yet: its LZMA unpack landed here)"));
+            s_warm.Add(stub.Bundle);   // any completed load has unpacked the bundle: warn once per bundle, and a queued prewarm of it is skipped
             if (sync)
             {
                 s_syncLoads++; s_syncMs += t.Elapsed.TotalMilliseconds;
@@ -197,7 +305,7 @@ namespace VerdantsAscent.Utilities
                 if (named != null) named[real.name.GetStableHashCode()] = real;
             }
             // The Hammer: same slot, FAP's category from the stub, FAP's own hammer preparation on the real prefab.
-            VAVanillaPieceManager.ReplaceRealizedPiece(stubGo, real);
+            if (stub.Entry.hasPiece) VAVanillaPieceManager.ReplaceRealizedPiece(stubGo, real);
         }
 
         // Every way a prefab is asked for by name or hash (ZNetScene.CreateObject, blueprints, the baker, other mods): a stub
@@ -226,70 +334,68 @@ namespace VerdantsAscent.Utilities
         }
 
         // ── look-ahead: pieces within LookAheadZones of the player are loaded in the background before they are needed ──
-        private static float s_nextScan;
+        // 1.1.369 (Fire 11-02 "get to the bottom of this performance"; live log: Player.Update 112-149 ms once a second near dense builds): the look-ahead read every
+        // object in 49 zones in one frame, every second. Now it runs when the player's zone changes, after a load finishes and as a 10 s catch-up for objects streaming
+        // in, one zone per frame. What it loads and when it stops are unchanged.
         private static readonly List<ZDO> s_scan = new List<ZDO>();
+        private static readonly List<Vector2s> s_scanZones = new List<Vector2s>();
+        private static int s_scanIndex = -1;
+        private static Vector2s s_lastZone;
+        private static bool s_haveZone, s_rescan;
+        private static float s_nextCatchUp, s_nextTimingLine;
+        // 1.1.381 (lead 11-04, r71: 108 of 110 realizes were on demand, RavensRestGuildHall 400 ms): a scan queues every stub it finds, nearest zones first, and one pump loads them all.
+        private static readonly List<KeyValuePair<string, AssetBundle>> s_queue = new List<KeyValuePair<string, AssetBundle>>();
+        private static readonly HashSet<string> s_queued = new HashSet<string>(StringComparer.Ordinal);
+        private static bool s_pumping;
+        private static long s_scanTicks; private static int s_scanObjects, s_scanFrames;
 
         [HarmonyPatch(typeof(Player), "Update"), HarmonyPostfix]
         private static void Player_Update(Player __instance)
         {
-            if (s_stubsByName.Count == 0 || __instance != Player.m_localPlayer || Time.unscaledTime < s_nextScan) return;
-            s_nextScan = Time.unscaledTime + 1f;
-            if (ZDOMan.instance == null) return;
-            if (Time.unscaledTime >= s_nextSweep)
+            if (s_stubsByName.Count == 0 || __instance != Player.m_localPlayer || ZDOMan.instance == null) return;
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (s_scanIndex < 0)
             {
-                s_nextSweep = Time.unscaledTime + 60f;
-                int minutes = ConfigManager.Instance?.configLazyBundlesUnloadMinutes?.Value ?? 10;
-                if (minutes > 0) UnloadIdle(minutes);
+                var zone = ZoneSystem.GetZone(__instance.transform.position);
+                bool moved = !s_haveZone || zone.x != s_lastZone.x || zone.y != s_lastZone.y;
+                if (!moved && !s_rescan && Time.unscaledTime < s_nextCatchUp) return;
+                s_haveZone = true; s_lastZone = zone; s_rescan = false;
+                s_nextCatchUp = Time.unscaledTime + 10f;
+                int zones = ConfigManager.Instance?.configLazyBundlesLookAheadZones?.Value ?? 3;
+                s_scanZones.Clear();
+                for (int y = -zones; y <= zones; y++)
+                    for (int x = -zones; x <= zones; x++)
+                        s_scanZones.Add(new Vector2s(zone.x + x, zone.y + y));
+                s_scanZones.Sort((a, b) => ((a.x - zone.x) * (a.x - zone.x) + (a.y - zone.y) * (a.y - zone.y)).CompareTo((b.x - zone.x) * (b.x - zone.x) + (b.y - zone.y) * (b.y - zone.y)));
+                s_scanIndex = 0;
+                s_scanTicks = 0; s_scanObjects = 0; s_scanFrames = 0;
             }
-            if (s_loading.Count > 0) return;
-            int zones = ConfigManager.Instance?.configLazyBundlesLookAheadZones?.Value ?? 3;
             s_scan.Clear();
-            ZDOMan.instance.FindSectorObjects(ZoneSystem.GetZone(__instance.transform.position), new SimulationDistance(zones, 0), s_scan);
-            string next = null; AssetBundle nextBundle = null;
+            ZDOMan.instance.FindSectorObjects(s_scanZones[s_scanIndex], new SimulationDistance(0, 0), s_scan);
+            s_scanObjects += s_scan.Count;
             foreach (var zdo in s_scan)
             {
                 if (zdo == null || !s_stubsByHash.TryGetValue(zdo.GetPrefab(), out var stub) || stub == null) continue;
                 string name = stub.Entry.prefab;
                 if (s_realized.ContainsKey(name)) { s_lastUse[name] = Time.unscaledTime; continue; }   // still near: in use
-                if (next != null || s_loading.Contains(name)) continue;
+                if (s_queued.Contains(name) || s_loading.Contains(name)) continue;
                 var bundle = VAExternalBundleLoader.GetOpenBundle(stub.Bundle);
                 if (bundle == null) continue;
-                next = name; nextBundle = bundle;   // one at a time: the next scan picks the next
+                s_queued.Add(name); s_queue.Add(new KeyValuePair<string, AssetBundle>(name, bundle));
             }
-            if (next != null && VaPieces.Instance != null)
+            s_scanTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started; s_scanFrames++;
+            if (++s_scanIndex < s_scanZones.Count) return;
+            s_scanIndex = -1;
+            if (Time.unscaledTime >= s_nextTimingLine)
             {
-                s_loading.Add(next);
-                VaPieces.Instance.StartCoroutine(LoadAhead(nextBundle, next));
+                s_nextTimingLine = Time.unscaledTime + 60f;
+                VaPieces.Log?.LogDebug($"[LazyBundles] look-ahead: {s_scanObjects} object(s) in {s_scanZones.Count} zone(s) over {s_scanFrames} frame(s), {s_scanTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency:0.0} ms total");
             }
-        }
-
-        /// <summary>1.1.230: realized prefabs not used for this many minutes go back to their stub and their assets are
-        /// released (Resources.UnloadUnusedAssets, once per sweep). The Hammer's selected piece is kept. Returns how many.</summary>
-        public static int UnloadIdle(float minutes)
-        {
-            if (s_realized.Count == 0) return 0;
-            // 1.1.234 (R-1013 Fire hand test, 18:27 ntdll 0xc0000005: the 60 s sweep released 21 pieces the moment the build menu opened, and
-            // the next tab click crashed): never while the build menu is showing or the player is in place mode.
-            if (BuildUiBusy(out string busy)) { VaPieces.Log?.LogDebug($"[LazyBundles] idle unload deferred: {busy}"); return 0; }
-            float cutoff = Time.unscaledTime - minutes * 60f;
-            string selected = null;
-            try { selected = Player.m_localPlayer?.GetSelectedPiece()?.gameObject.name; } catch { }
-            // 1.1.232 (R-1013AP: the quit-time crash rendered a piece the test had just released): a piece still waiting for its
-            // icon render stays loaded until the render is done.
-            var idle = s_realized.Where(kv => kv.Key != selected && kv.Value != null && kv.Value.GetComponent<Piece>()?.m_icon != null
-                && (!s_lastUse.TryGetValue(kv.Key, out var t) || t < cutoff)).Select(kv => kv.Key).ToList();
-            int n = 0;
-            foreach (var name in idle) if (SwapOut(name)) n++;
-            // The player's available-piece lists hold the real Piece objects; rebuild them so nothing (a tab click, the HUD) reads a released one.
-            if (n > 0) RefreshAvailablePieces();
-            if (n == 0) return 0;
-            s_unloaded += n;
-            var t0 = System.Diagnostics.Stopwatch.StartNew();
-            FapNativeTrace.Step("lazy UnloadUnusedAssets begin", $"{n} piece(s)");
-            Resources.UnloadUnusedAssets();
-            FapNativeTrace.Step("lazy UnloadUnusedAssets end");
-            Debug.Log($"{VaPieces.PluginName}: [LazyBundles] {n} idle piece(s) back to stubs (unused {minutes:0} min); assets released in {t0.Elapsed.TotalMilliseconds:0} ms (call); {Summary()}");
-            return n;
+            if (s_queue.Count > 0 && !s_pumping && VaPieces.Instance != null)
+            {
+                s_pumping = true;
+                VaPieces.Instance.StartCoroutine(PumpLoadAhead());
+            }
         }
 
         private static bool SwapOut(string name)
@@ -304,7 +410,7 @@ namespace VerdantsAscent.Utilities
                 var named = NamedPrefabs(scene);
                 if (named != null) named[name.GetStableHashCode()] = stubGo;
             }
-            VAVanillaPieceManager.RestoreStubPiece(real, stubGo);
+            if (stub.Entry.hasPiece) VAVanillaPieceManager.RestoreStubPiece(real, stubGo);
             s_realized.Remove(name);
             s_lastUse.Remove(name);
             if (real != null) s_realizedById.Remove(real.GetInstanceID());
@@ -347,6 +453,34 @@ namespace VerdantsAscent.Utilities
 
         /// <summary>The bundle a stub's real prefab lives in, or null.</summary>
         public static string BundleOf(string name) => s_stubsByName.TryGetValue(name, out var s) && s != null ? s.Bundle : null;
+
+        private static bool LoadingScreenUp() => Hud.instance != null && Hud.instance.m_loadingScreen != null && Hud.instance.m_loadingScreen.alpha > 0f;
+
+        // One after another, no rescan between. Under the loading screen nothing is seen, so the load is direct (Fire 11-04: heavy is fine if hidden).
+        private static IEnumerator PumpLoadAhead()
+        {
+            int async = 0, hidden = 0; float begun = Time.realtimeSinceStartup;
+            while (s_queue.Count > 0)
+            {
+                var next = s_queue[0]; s_queue.RemoveAt(0); s_queued.Remove(next.Key);
+                if (s_realized.ContainsKey(next.Key)) continue;
+                if (LoadingScreenUp())
+                {
+                    try { Realize(next.Key, null, sync: false); } catch (Exception ex) { VaPieces.Log?.LogWarning($"[LazyBundles] '{next.Key}' threw: {ex.Message}"); }
+                    hidden++;
+                }
+                else
+                {
+                    s_loading.Add(next.Key);
+                    yield return LoadAhead(next.Value, next.Key);
+                    async++;
+                }
+                yield return null;
+            }
+            s_pumping = false;
+            s_rescan = true;   // what streamed in during the pump
+            VaPieces.Log?.LogDebug($"[LazyBundles] look-ahead pump: {async} async, {hidden} under the loading screen in {Time.realtimeSinceStartup - begun:0.0} s; {Summary()}");
+        }
 
         private static IEnumerator LoadAhead(AssetBundle bundle, string name)
         {

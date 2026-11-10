@@ -117,7 +117,7 @@ namespace VerdantsAscent.Patches
                     .Append(c == chosen ? "   <== chosen" : "");
             }
 
-            Debug.Log($"{VaPieces.PluginName}: build-menu window chain (screen {Screen.width}x{Screen.height}):{chain}" +
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: build-menu window chain (screen {Screen.width}x{Screen.height}):{chain}" +
                       $"\n  root children:{kids}" +
                       $"\n  -> resize/move target: {chosen.name}");
             return chosen;
@@ -144,9 +144,18 @@ namespace VerdantsAscent.Patches
                 NormalizeLayout(buildUi, panel);
                 var vanillaSize = panel.rect.size;   // 1.1.274: what a layout Reset returns to
                 RestoreGeometry(panel);
-                if (!Utilities.CoreUiBridge.RegisterHud("fap.buildmenu", panel, "Build menu", "FiresAdminPrefabs", resizable: true,
+                // 1.1.275 (Fire 10-16: "FAP lost its resize handle and drag handling on the build menu"): 1.1.273/274 registered a plain HUD
+                // element, which Core only lets move inside the layout editor ("not editable now (no editor open, not LiveEdit)"). It is a
+                // LIVE dock element now (DockService.Register, layer "hud", LiveEdit): drag + the bottom-right grid resize work any time.
+                // The drag handle is the panel's own transparent raycast Image - it sits behind every child, so only a press on empty
+                // chrome moves the menu (buttons, tags, search and the piece grid keep their clicks), as FAP's pre-1.1.272 mover did.
+                var chrome = panel.GetComponent<Image>();
+                if (chrome == null) { chrome = panel.gameObject.AddComponent<Image>(); chrome.color = new Color(0f, 0f, 0f, 0f); }
+                chrome.raycastTarget = true;
+                if (!Utilities.CoreUiBridge.RegisterDock("fap.buildmenu", "FiresAdminPrefabs", "hud", panel, panel, "Build menu",
+                        liveEdit: true, showGrip: true,
                         sizeChanged: s => VABuildUiWindowMarker.QueueSize(s), minSize: new Vector2(MinWidth, MinHeight),
-                        sizeReset: () => ResetSize(panel, vanillaSize)))   // 1.1.273: Core 0.2.574 SIZE mode = the grid width / height resize, as before
+                        sizeReset: () => ResetSize(panel, vanillaSize)))
                     Debug.Log($"{VaPieces.PluginName}: build menu stays where vanilla puts it (Core older than 0.2.572 has no HUD element API)");
             }
             catch (Exception ex)
@@ -246,7 +255,7 @@ namespace VerdantsAscent.Patches
             AppendChildren(sb, column, tagList, searchRow, "  ");
             sb.Append("\n  search row: ").Append(searchRow != null ? searchRow.name : "<not found>")
               .Append(searchRow != null ? (insideTagList ? "  (inside tag list)" : "  (sibling of tag list)") : "");
-            Debug.Log(sb.ToString());
+            VerdantsAscent.VaPieces.Log?.LogDebug(sb.ToString());
         }
 
         private static void AppendChildren(System.Text.StringBuilder sb, RectTransform parent, RectTransform tagList, RectTransform searchRow, string indent)
@@ -847,5 +856,18 @@ namespace VerdantsAscent.Patches
         [HarmonyPrefix]
         public static bool Prefix(BuildUi __instance, string pieceName)
             => !VABuildUiFavoriteRefresh.Refresh(__instance, pieceName);
+    }
+    // 1.1.294 (user report via Fire: build-menu icons greyed out of station range with No Cost on): vanilla
+    // UpdateRequirements tints by HaveRequirements, which checks station range without m_noPlacementCost (placement
+    // itself honours it). Icon tint only; HaveRequirements is left alone.
+    [HarmonyPatch(typeof(BuildUiPieceButton), nameof(BuildUiPieceButton.UpdateRequirements))]
+    internal static class VABuildUiNoCostIconPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Image ___m_icon)
+        {
+            if (___m_icon != null && Player.m_localPlayer != null && Player.m_localPlayer.PlacementCostDisabled)
+                ___m_icon.color = Color.white;
+        }
     }
 }

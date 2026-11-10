@@ -56,6 +56,29 @@ namespace VerdantsAscent.Patches
                  + $"layers [{layers}], lossyScale {ghost.transform.lossyScale.ToString("F2")}";
         }
 
+        // 1.1.351 (Fire 10-31: "half our pieces are trying to default to centerpoint when auto snapping is used", e.g. vanilla wood_floor):
+        // in Auto (m_manualSnapPoint -1) vanilla Player.UpdatePlacementGhost puts the ghost PIVOT on the aim point when the piece has
+        // m_clipGround (on terrain) or m_clipEverything, else the collider edge; then the nearest snap pair within 0.5 m wins. So the
+        // piece's clip flags and its snap points (as whatever mods left them) are the evidence for "auto lands on the centre".
+        private static readonly AccessTools.FieldRef<Player, int> ManualSnap = AccessTools.FieldRefAccess<Player, int>("m_manualSnapPoint");
+        private static readonly System.Collections.Generic.List<Transform> s_snaps = new System.Collections.Generic.List<Transform>();
+
+        internal static string SnapInfo(Player p, GameObject ghost)
+        {
+            try
+            {
+                var piece = ghost != null ? ghost.GetComponent<Piece>() : null;
+                if (piece == null) return "snap: no Piece";
+                s_snaps.Clear();
+                piece.GetSnapPoints(s_snaps);
+                int manual = p != null ? ManualSnap(p) : -2;
+                string pts = string.Join(" ", s_snaps.Take(12).Select(t => $"'{t.name}'{t.localPosition.ToString("F1")}").ToArray()) + (s_snaps.Count > 12 ? " ..." : "");
+                return $"snap: mode {(manual < 0 ? "Auto" : "manual #" + (manual + 1))}, clipGround {piece.m_clipGround}, clipEverything {piece.m_clipEverything}, "
+                     + $"groundPiece {piece.m_groundPiece}, {s_snaps.Count} point(s) {pts}";
+            }
+            catch (System.Exception ex) { return "snap: " + ex.Message; }
+        }
+
         [HarmonyPatch(typeof(Player), "SetupPlacementGhost"), HarmonyPostfix, HarmonyPriority(Priority.Last)]
         private static void AfterSetup(Player __instance)
         {
@@ -66,7 +89,7 @@ namespace VerdantsAscent.Patches
             s_lastGhost = ghost;
             if (ghost == null) return;   // no piece selected
             string prefab = Utils.GetPrefabName(ghost);
-            VaPieces.Log?.LogDebug($"[GhostEvidence] select '{prefab}' (FAP-injected {Injected(prefab)}): {Describe(ghost)}");
+            VaPieces.Log?.LogDebug($"[GhostEvidence] select '{prefab}' (FAP-injected {Injected(prefab)}): {Describe(ghost)}; {SnapInfo(__instance, ghost)}");
             H().StartCoroutine(Aim(__instance, ghost, prefab));
         }
 
@@ -83,7 +106,7 @@ namespace VerdantsAscent.Patches
                     ? $"ray hit {h.point.ToString("F1")} ('{h.collider.name}'), ghost {Vector3.Distance(h.point, ghost.transform.position):F2} m from it"
                     : "placement ray hit nothing within 50 m";
             }
-            VaPieces.Log?.LogDebug($"[GhostEvidence] aim '{prefab}': ghost at {ghost.transform.position.ToString("F1")}, {hit}; {Describe(ghost)}");
+            VaPieces.Log?.LogDebug($"[GhostEvidence] aim '{prefab}': ghost at {ghost.transform.position.ToString("F1")}, {hit}; {Describe(ghost)}; {SnapInfo(me, ghost)}");
         }
 
         [HarmonyPatch(typeof(Player), nameof(Player.PlacePiece)), HarmonyPrefix, HarmonyPriority(Priority.Last)]
@@ -93,7 +116,8 @@ namespace VerdantsAscent.Patches
             GameObject ghost = null;
             try { ghost = Ghost(__instance); } catch { }
             string g = ghost != null ? $"ghost {ghost.transform.position.ToString("F2")} rot {ghost.transform.rotation.eulerAngles.ToString("F0")}" : "no ghost";
-            VaPieces.Log?.LogDebug($"[GhostEvidence] place '{piece.name}' (FAP-injected {Injected(piece.name)}): requested {pos.ToString("F2")} rot {rot.eulerAngles.ToString("F0")}; {g}");
+            VaPieces.Log?.LogDebug($"[GhostEvidence] place '{piece.name}' (FAP-injected {Injected(piece.name)}): requested {pos.ToString("F2")} rot {rot.eulerAngles.ToString("F0")}; {g}; {SnapInfo(__instance, ghost)}");
+            VerdantsAscent.Utilities.VASnapLiveDiagnostics.SampleAtPlace();   // 1.1.352: the winning snap pair at the moment of placing
             H().StartCoroutine(Placed(piece.name, pos, rot));
         }
 

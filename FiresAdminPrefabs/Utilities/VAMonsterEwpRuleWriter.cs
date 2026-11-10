@@ -93,9 +93,9 @@ namespace VerdantsAscent.Utilities
         // ignoreGate bypasses only the EWP-active check, for the mod-load write.
         public static void RegenerateRules(bool ignoreGate = false)
         {
-            if (!ignoreGate && !VAEwpSoftDep.IsActive)
+            if (!ignoreGate && !VAEwpSoftDep.For(VerdantsAscent.Managers.ConfigManager.Instance?.configEwpMonsters))   // 1.1.279: per-kind toggle
             {
-                Debug.Log(
+                VerdantsAscent.VaPieces.Log?.LogDebug(
                     $"{VaPieces.PluginName}: VAMonsterEwpRuleWriter — " +
                     $"EWP soft-dep not active; skipping rule regeneration. " +
                     $"FAP OnDeath will handle respawn for preset-stamped monsters.");
@@ -128,7 +128,7 @@ namespace VerdantsAscent.Utilities
 
                     WriteAtomic(yaml.ToString());
 
-                    Debug.Log($"{VaPieces.PluginName}: VAMonsterEwpRuleWriter wrote {rulesEmitted} EWP destroy-rule(s) to {RuleFilePath}.");
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: VAMonsterEwpRuleWriter wrote {rulesEmitted} EWP destroy-rule(s) to {RuleFilePath}.");
 
                     // Mirror the rules (and the preset data) to the server so they fire
                     // there. Debounced, config-gated, admin + remote-server only.

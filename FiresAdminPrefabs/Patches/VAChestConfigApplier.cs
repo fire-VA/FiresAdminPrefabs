@@ -166,6 +166,45 @@ namespace VerdantsAscent.Patches
                 return name.Substring(0, name.Length - CloneSuffix.Length);
             return name;
         }
+
+        // 1.1.303: the placement apply, moved unchanged out of Piece_SetCreator_VAChestApply_Patch so the Radius Swapper runs the same
+        // call. fillInventory false = a preset changed in place on a placed chest (its contents are kept).
+        public static void ApplyToPlaced(VAChestPreset preset, Container container, bool fillInventory)
+        {
+            var netView = container != null ? container.m_nview : null;
+            var zdo = netView?.GetZDO();
+            if (preset == null || zdo == null) return;
+
+            StampPresetToZdo(preset, zdo);
+
+            // ZNetView.Awake already ran LoadFields before the stamp; re-running it
+            // applies m_autoDestroyEmpty to the live container this frame.
+            try { netView.LoadFields(); }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"{VaPieces.PluginName}: VAChestConfigApplier — LoadFields rerun threw: {ex.Message}");
+            }
+
+            if (fillInventory) PopulateInventory(preset, container);
+            // 1.1.214 (Fire 10-12): with UseEwpForPersistence on (server-synced; EWP runs on the server) EWP owns the respawn: the chest
+            // keeps the preset's va_chest = 1 and is NOT handed to Core. Otherwise Core respawns it when Core has the API (va_chest = 2).
+            bool ewpRoute = VAChestRespawnRoute.UseEwp();
+            bool coreTracked = !ewpRoute && VerdantsAscent.Utilities.VACoreLoot.TrackChest(preset, zdo);
+            VaPieces.Log?.LogDebug($"[FAP] chest preset '{preset.name}' placed ({zdo.m_uid}): respawn by {(ewpRoute ? "EWP" : coreTracked ? "Core" : "nobody (no respawn time or no Core)")}, "
+                + $"va_chest={zdo.GetInt(KeyChestMarker)} va_respawn_seconds={zdo.GetFloat("va_respawn_seconds"):0.##} va_chest_preset='{zdo.GetString(KeyAppliedPresetName)}' "
+                + $"autoDestroyEmpty={container.m_autoDestroyEmpty}");
+        }
+
+        // 1.1.303: no chest preset any more (the Radius Swapper's "no preset"): the applied-preset name, its name key and the marker
+        // are cleared, so EWP's rule and FAP no longer treat it as a preset chest. Its contents stay.
+        public static void ClearPresetFromZdo(ZDO zdo)
+        {
+            if (zdo == null) return;
+            string old = zdo.GetString(KeyAppliedPresetName);
+            if (!string.IsNullOrEmpty(old)) zdo.Set(old, 0);
+            zdo.Set(KeyAppliedPresetName, "");
+            zdo.Set(KeyChestMarker, 0);
+        }
     }
 
     // Piece.SetCreator runs only on PlacePiece's success path, on the placing player,
@@ -195,26 +234,13 @@ namespace VerdantsAscent.Patches
             var zdo = netView?.GetZDO();
             if (zdo == null) return;
 
-            VAChestConfigApplier.StampPresetToZdo(preset, zdo);
-
-            // ZNetView.Awake already ran LoadFields before the stamp; re-running it
-            // applies m_autoDestroyEmpty to the live container this frame.
-            try { netView.LoadFields(); }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"{VaPieces.PluginName}: VAChestConfigApplier — LoadFields rerun threw: {ex.Message}");
-            }
-
-            VAChestConfigApplier.PopulateInventory(preset, container);
-            // 1.1.214 (Fire 10-12): with UseEwpForPersistence on (server-synced; EWP runs on the server) EWP owns the respawn: the chest
-            // keeps the preset's va_chest = 1 and is NOT handed to Core. Otherwise Core respawns it when Core has the API (va_chest = 2).
-            bool ewpRoute = VAChestRespawnRoute.UseEwp();
-            bool coreTracked = !ewpRoute && VerdantsAscent.Utilities.VACoreLoot.TrackChest(preset, zdo);
-            VaPieces.Log?.LogDebug($"[FAP] chest preset '{preset.name}' placed ({zdo.m_uid}): respawn by {(ewpRoute ? "EWP" : coreTracked ? "Core" : "nobody (no respawn time or no Core)")}, "
-                + $"va_chest={zdo.GetInt(VAChestConfigApplier.KeyChestMarker)} va_respawn_seconds={zdo.GetFloat("va_respawn_seconds"):0.##} va_chest_preset='{zdo.GetString(VAChestConfigApplier.KeyAppliedPresetName)}' "
-                + $"autoDestroyEmpty={container.m_autoDestroyEmpty}");
+            VAChestConfigApplier.ApplyToPlaced(preset, container, true);   // 1.1.303: the body moved there (the Radius Swapper reuses it)
         }
     }
+}
+
+namespace VerdantsAscent.Patches
+{
 }
 
 namespace VerdantsAscent.Patches
@@ -227,6 +253,7 @@ namespace VerdantsAscent.Patches
         {
             var cfg = VerdantsAscent.Managers.ConfigManager.Instance;
             if (cfg == null || cfg.configUseEwpForPersistence == null || !cfg.configUseEwpForPersistence.Value) return false;
+            if (!(cfg.configEwpChests?.Value ?? true)) return false;   // 1.1.279: per-kind toggle
             bool server = ZNet.instance != null && ZNet.instance.IsServer();
             return !server || VAEwpDetector.IsEwpInstalled;
         }

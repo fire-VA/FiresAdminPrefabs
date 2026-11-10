@@ -33,6 +33,7 @@ namespace VerdantsAscent.Patches
             if (hash == 0 || __instance.m_namedPrefabs.ContainsKey(hash)) return true;
             try
             {
+                if (VerdantsAscent.Utilities.VALazyBundles.TryRealizeLead(__instance, hash)) return true;
                 if (Known().TryGetValue(hash, out var name) && VAExternalBundleLoader.AddLatePlaceholder(__instance, name, hash))
                 {
                     Debug.Log($"{VaPieces.PluginName}: placeholder for missing prefab {name} (hash {hash}): it is placed in this world but no bundle provides it; it loads invisible and keeps its save data");
@@ -49,7 +50,7 @@ namespace VerdantsAscent.Patches
             if (Time.realtimeSinceStartup >= _nextSummary)
             {
                 if (_nextSummary > 0f && _missesSinceSummary > 1)
-                    Debug.Log($"{VaPieces.PluginName}: missing prefab hashes, last 5 min: {_missesSinceSummary} create attempts over {_misses.Count} hash(es)");
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: missing prefab hashes, last 5 min: {_missesSinceSummary} create attempts over {_misses.Count} hash(es)");
                 _nextSummary = Time.realtimeSinceStartup + 300f;
                 _missesSinceSummary = 0;
             }

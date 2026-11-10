@@ -67,7 +67,7 @@ namespace VerdantsAscent.Utilities
                 // Detect by trying GetPixels32 and catching the throw.
                 Color32[] pixels;
                 try { pixels = srcTex.GetPixels32(); }
-                catch (UnityException)
+                catch (Exception)   // Unity throws an ArgumentException for a non-readable icon: take the Blit copy below
                 {
                     // Non-readable — fall back to a Blit copy via
                     // RenderTexture so we get a readable working copy.

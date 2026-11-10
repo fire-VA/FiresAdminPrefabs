@@ -24,26 +24,11 @@ namespace VerdantsAscent.Patches
         }
     }
 
-    // Strips MineRock from player-placed clones so the visibility loop never
-    // schedules. World-generated spawns have creator 0, so dungeon Leviathans and
-    // the like still mine normally.
-    [HarmonyPatch(typeof(MineRock), "Start")]
-    public static class MineRock_Start_VAStrip_Patch
-    {
-        [HarmonyPrefix]
-        public static bool Prefix(MineRock __instance)
-        {
-            if (__instance == null) return true;
-            var piece = __instance.GetComponent<Piece>();
-            if (piece == null) return true;
-            if (!piece.IsPlacedByPlayer()) return true;
-
-            UnityEngine.Object.Destroy(__instance);
-            if (ConfigManager.Instance.configVerboseLogging.Value)
-                Debug.Log($"{VaPieces.PluginName}: Stripped MineRock from player-placed '{piece.gameObject.name}' (creator={piece.GetCreator()})");
-            return false;
-        }
-    }
+    // 1.1.314 (Fire 10-23, Tool Swapper on copper: "make hammer-placed copper mineable"): player-placed MineRock clones are NO
+    // LONGER stripped. The strip was there so vanilla's UpdateVisability loop (scheduled in Start) could not run on a placed
+    // clone; the guard above already stops that loop from touching a missing ZNetView / ZDO, which was its only hazard. A placed
+    // MineRock (copper, tin, ...) keeps its hit areas and RPC_Hit, so it takes pickaxe damage and drops its ore like a
+    // world-generated one.
 
     // True through the body of Player.PlacePiece, so Awake-time patches firing
     // inside Instantiate can tell a fresh local placement from a reload — on a new
@@ -77,9 +62,11 @@ namespace VerdantsAscent.Patches
         }
     }
 
-    // Strips MineRock5 from player-placed fractured prefabs (Ashlands walls,
-    // MineRock_Meteorite) so vanilla's UpdateMesh → CombineMeshes never runs over
-    // their non-readable cell meshes and spams warnings on every placement.
+    // Player-placed fractured prefabs (Ashlands walls, MineRock_Meteorite) spammed warnings on every placement: vanilla's
+    // UpdateMesh runs CombineMeshes over each hit area's cell mesh, and those cell meshes are not readable. 1.1.314 (Fire 10-23:
+    // "strip only what caused it, from the cause"): MineRock5 is kept - so a placed ore rock is mineable - unless one of its
+    // cell meshes really is non-readable, which is the one thing CombineMeshes cannot do. Only then is it stripped, as before,
+    // with the mesh named in the log line. World-generated rocks are untouched either way.
     //
     // The placement flag is needed because m_creator is still 0 during Awake on a
     // fresh placement; on reload the flag is false but the ZDO has the creator.
@@ -95,15 +82,26 @@ namespace VerdantsAscent.Patches
             if (!VAPlayerPlacementContext.IsPlacing && !piece.IsPlacedByPlayer())
                 return true;
 
+            string unreadable = FirstUnreadableCellMesh(__instance);
+            if (unreadable == null) return true;   // every cell mesh combines: keep MineRock5, the rock stays mineable
+
             UnityEngine.Object.Destroy(__instance);
+            string reason = VAPlayerPlacementContext.IsPlacing ? "placement-context" : $"creator={piece.GetCreator()}";
             if (ConfigManager.Instance.configVerboseLogging.Value)
-            {
-                string reason = VAPlayerPlacementContext.IsPlacing
-                    ? "placement-context"
-                    : $"creator={piece.GetCreator()}";
-                Debug.Log($"{VaPieces.PluginName}: Stripped MineRock5 from player-placed '{piece.gameObject.name}' ({reason}) — silences CombineMeshes spam on fractured prefabs");
-            }
+                Debug.Log($"{VaPieces.PluginName}: Stripped MineRock5 from player-placed '{piece.gameObject.name}' ({reason}): cell mesh '{unreadable}' is not readable, so CombineMeshes cannot run on it");
             return false;
+        }
+
+        // The first hit-area cell mesh (a collider's MeshFilter, as MineRock5.Awake gathers them) that is not readable, or null.
+        private static string FirstUnreadableCellMesh(MineRock5 rock)
+        {
+            foreach (var collider in rock.GetComponentsInChildren<Collider>())
+            {
+                var filter = collider.GetComponent<MeshFilter>();
+                var mesh = filter != null ? filter.sharedMesh : null;
+                if (mesh != null && !mesh.isReadable) return mesh.name;
+            }
+            return null;
         }
     }
 

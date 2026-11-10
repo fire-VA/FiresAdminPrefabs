@@ -28,7 +28,7 @@ namespace VerdantsAscent.Managers
                 if (string.IsNullOrEmpty(customInteract.Name) && container != null) customInteract.Name = container.m_name;
                 if (string.IsNullOrEmpty(customInteract.AlternateInteract) && sign != null) customInteract.AlternateInteract = sign.m_name;
 
-                Debug.Log($"{VaPieces.PluginName}: CustomInteract on '{prefab.name}': " +
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: CustomInteract on '{prefab.name}': " +
                           $"{(movedSign ? "Sign" : "no Sign")} and {(movedContainer ? "Container" : "no Container")} rebuilt behind it, " +
                           "so use opens the container and alt-use edits the label.");
             }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;   // 1.1.282 (unhide live)
 using System.Text;
 using BepInEx;
 using UnityEngine;
@@ -398,7 +399,7 @@ namespace VerdantsAscent.Managers
         // ignored to begin with (caller can surface a "wasn't hidden"
         // message instead of misleading success).
         //
-        // We DON'T attempt an immediate in-place re-categorize because
+        // 1.1.282: now restored LIVE below (RestorePieceToHammerByName + RefreshAfterRestore); the old note follows.
         // InitializeOnce builds tab membership during its first run and
         // mutating the PieceTable live is full of race conditions —
         // safer to defer to the next clean rebuild and tell the admin
@@ -421,6 +422,14 @@ namespace VerdantsAscent.Managers
                     }
                 }
                 _ignoredPrefabs.Remove(prefabName);
+
+                // 1.1.282 (Fire: hidden pieces only came back after a world reload): back on the hammer LIVE,
+                // through the same RecategorizeEligiblePieces re-bucket + redraw the config toggles use.
+                bool live = VAVanillaPieceManager.RestorePieceToHammerByName(prefabName);
+                VAVanillaPieceManager.RefreshAfterRestore();
+                string tab = TryGetTabOverride(prefabName, out var t) ? t : "(auto)";
+                if (live) VaPieces.Log?.LogDebug($"[FAP] unhide: '{prefabName}' back in '{tab}' live");
+                else VaPieces.Log?.LogDebug($"[FAP] unhide: '{prefabName}' not on the hammer live (no hammer table / not a buildable prefab) - world reload restores it");
                 return true;
             }
             catch (Exception ex)
@@ -738,7 +747,9 @@ namespace VerdantsAscent.Managers
                         if (pieceObject == null) return false;
                         var piece = pieceObject.GetComponent<Piece>();
                         if (piece == null || piece.m_category != category) return false;
-                        return VAVanillaPieceManager.IsFapOwnedPiece(pieceObject);
+                        if (!VAVanillaPieceManager.IsFapOwnedPiece(pieceObject)) return false;
+                        VAVanillaPieceManager.NoteRemovedByHide(pieceObject);   // 1.1.282 (unhide live)
+                        return true;
                     });
                     Debug.Log($"{VaPieces.PluginName}: VAHammerTabOrganizer.TryHideCategoryLive — removed category '{tabName}' (enum={category}) from live table; pruned {pruned} piece(s).");
                 }
@@ -768,9 +779,111 @@ namespace VerdantsAscent.Managers
 
             _hiddenTabsLoaded.Remove(original);
 
-            // No live re-show: re-registering the prefabs runs only at world load
-            // (via SortHammerByMod), so unhide still needs a reload to restore them.
-            return RenameTab(hiddenTabName, original);
+            if (!RenameTab(hiddenTabName, original)) return false;
+
+            // 1.1.282 (Fire: hidden tabs only came back after a world reload): re-show LIVE. The restored folder's
+            // names leave the ignore set (LoadFromDisk put them there from Hidden_<tab>/prefabs.txt) unless
+            // Ignore/prefabs.txt hides them on its own, and get the tab membership LoadFromDisk would give them;
+            // then VAVanillaPieceManager.RestoreTabLive puts the pieces + the tab back on the table and redraws.
+            var listed = new List<string>();
+            try
+            {
+                string file = Path.Combine(HammerTabsDir, original, PrefabsFileName);
+                var ignoreFile = Path.Combine(HammerTabsDir, IgnoreFolderName, PrefabsFileName);
+                var ignoreLines = File.Exists(ignoreFile)
+                    ? new HashSet<string>(File.ReadAllLines(ignoreFile).Select(l => (l ?? "").Trim()), StringComparer.Ordinal)
+                    : new HashSet<string>(StringComparer.Ordinal);
+                if (File.Exists(file))
+                {
+                    foreach (var raw in File.ReadAllLines(file))
+                    {
+                        string line = raw == null ? string.Empty : raw.Trim();
+                        if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
+                        if (ignoreLines.Contains(line)) continue;
+                        if (_ignoredPrefabs.Remove(line) && _hiddenViaTabFolder > 0) _hiddenViaTabFolder--;
+                        if (!_prefabToTabOverride.ContainsKey(line)) _prefabToTabOverride[line] = original;
+                        if (!_prefabsByTab.TryGetValue(original, out var perTab)) _prefabsByTab[original] = perTab = new List<string>();
+                        if (!perTab.Contains(line)) perTab.Add(line);
+                        listed.Add(line);
+                    }
+                }
+                if (!IsVanillaTabName(original)) _knownTabNames.Add(original);
+                int back = VAVanillaPieceManager.RestoreTabLive(original, listed);
+                VaPieces.Log?.LogDebug($"[FAP] unhide: tab '{original}' back live ({back} piece(s) restored, {listed.Count} listed)");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"{VaPieces.PluginName}: VAHammerTabOrganizer.UnhideTab live restore failed for '{original}': {ex.Message} (a world reload still restores it)");
+            }
+            return true;
+        }
+
+        // 1.1.284 (fap_live_test tab fixture): removes an EMPTY custom tab - live off the hammer through the same
+        // TryHideCategoryLive removal HideTab uses, out of the in-memory tab lists, and its folder to the Recycle Bin
+        // (RecyclePath; never a hard delete). Refuses vanilla / Hidden_ / Ignore / Blueprints tabs and any folder
+        // whose prefabs.txt still lists a prefab. Internal: only the test fixture calls it.
+        internal static bool RemoveEmptyTab(string tabName, out string detail)
+        {
+            detail = null;
+            if (string.IsNullOrEmpty(tabName) || IsVanillaTabName(tabName)
+                || tabName.StartsWith(HiddenTabPrefix, StringComparison.Ordinal)
+                || string.Equals(tabName, IgnoreFolderName, StringComparison.Ordinal)
+                || string.Equals(tabName, VABlueprintHammerIntegration.BlueprintsTabName, StringComparison.Ordinal))
+            { detail = $"refused '{tabName}' (vanilla/hidden/Ignore/Blueprints)"; return false; }
+            string dir = Path.Combine(HammerTabsDir, tabName);
+            try
+            {
+                if (Directory.Exists(dir))
+                {
+                    string file = Path.Combine(dir, PrefabsFileName);
+                    if (File.Exists(file) && File.ReadAllLines(file).Any(l => { var t = (l ?? "").Trim(); return t.Length > 0 && !t.StartsWith("#", StringComparison.Ordinal); }))
+                    { detail = $"'{tabName}' still lists prefabs"; return false; }
+                    if (Directory.GetFiles(dir).Any(f => !string.Equals(Path.GetFileName(f), PrefabsFileName, StringComparison.OrdinalIgnoreCase)) || Directory.GetDirectories(dir).Length > 0)
+                    { detail = $"'{tabName}' folder holds other files"; return false; }
+                }
+                bool live = TryHideCategoryLive(tabName);
+                _knownTabNames.Remove(tabName);
+                _prefabsByTab.Remove(tabName);
+                bool recycled = !Directory.Exists(dir) || RecyclePath(dir);
+                detail = $"live category removed={live}, folder recycled={recycled}";
+                return recycled;
+            }
+            catch (Exception ex) { detail = "threw " + ex.Message; return false; }
+        }
+
+        // 1.1.284: send a file or folder to the Recycle Bin (shell32 SHFileOperation FO_DELETE + FOF_ALLOWUNDO).
+        // Returns false and leaves the path in place on any failure - never falls back to a hard delete.
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private struct ShFileOpStruct
+        {
+            public IntPtr hwnd;
+            [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.U4)] public int wFunc;
+            public string pFrom;
+            public string pTo;
+            public short fFlags;
+            [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)] public bool fAnyOperationsAborted;
+            public IntPtr hNameMappings;
+            public string lpszProgressTitle;
+        }
+        [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private static extern int SHFileOperation(ref ShFileOpStruct op);
+
+        internal static bool RecyclePath(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path)) return false;
+                string full = Path.GetFullPath(path);
+                if (!File.Exists(full) && !Directory.Exists(full)) return true;
+                const int FO_DELETE = 3;
+                const short FOF_SILENT = 0x0004, FOF_NOCONFIRMATION = 0x0010, FOF_ALLOWUNDO = 0x0040, FOF_NOERRORUI = 0x0400;
+                var op = new ShFileOpStruct { wFunc = FO_DELETE, pFrom = full + "\0\0", fFlags = (short)(FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI) };
+                int rc = SHFileOperation(ref op);
+                bool gone = rc == 0 && !op.fAnyOperationsAborted && !File.Exists(full) && !Directory.Exists(full);
+                if (!gone) Debug.LogWarning($"{VaPieces.PluginName}: RecyclePath('{full}') rc={rc} - left in place");
+                return gone;
+            }
+            catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: RecyclePath('{path}') failed: {ex.Message} - left in place"); return false; }
         }
 
         // Returns every disk folder whose name starts with HiddenTabPrefix.

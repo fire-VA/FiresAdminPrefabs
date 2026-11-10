@@ -25,8 +25,11 @@ namespace VerdantsAscent.Patches
             ClutterClear,
             ItemStand,
             Monster,
+            EnemySpawner,   // 1.1.384
             ClutterStandin,
             ClutterPrefab,
+            Swap,        // 1.1.291 Radius Swapper
+            Dungeon,     // 1.1.351 whole dungeon / empty entrance (VAFapDungeons)
         }
 
         // THE branch decision, in the order the prefix applies it. Pure: no side
@@ -39,6 +42,7 @@ namespace VerdantsAscent.Patches
             if (go == null) return PlaceBranch.None;
             string n = go.name;
 
+            if (VARadiusSwapTool.IsStandinName(n)) return PlaceBranch.Swap;   // 1.1.291
             if (VAFapEwpClearTool.IsStandinName(n)) return PlaceBranch.FxClear;
             if (VAFapPersistBrushTool.IsStandinName(n)) return PlaceBranch.FxPersist;
             if (VAFapMonsterClearTool.IsStandinName(n)) return PlaceBranch.SpawnerClear;
@@ -51,11 +55,19 @@ namespace VerdantsAscent.Patches
                 return PlaceBranch.ItemStand;
             }
 
+            if (n.StartsWith(VAEnemySpawners.NamePrefix, System.StringComparison.Ordinal))
+            {
+                detail = n.Substring(VAEnemySpawners.NamePrefix.Length);
+                return PlaceBranch.EnemySpawner;
+            }
+
             if (VAMonsterStandinFactory.IsStandinName(n))
             {
                 detail = VAMonsterStandinFactory.ResolveCreatureNameFromStandin(go);
                 return PlaceBranch.Monster;
             }
+
+            if (VAFapDungeons.TryResolveStandin(n, out detail)) return PlaceBranch.Dungeon;   // 1.1.351
 
             string realName = VAClutterStandinFactory.ResolveRealNameFromStandin(go);
             if (realName != null)
@@ -90,6 +102,32 @@ namespace VerdantsAscent.Patches
 
             switch (branch)
             {
+                case PlaceBranch.Swap:
+                {
+                    // 1.1.291 (Fire: Radius Swapper): the click swaps every FROM piece in the cylinder for TO; nothing is placed.
+                    if (!VAVanillaPieceManager.IsAdminGateOpen())
+                        return Trace("swap refused: admin gate closed", ghostGo, true);
+                    if (!VARadiusSwapTool.HasPair)
+                    {
+                        __instance.Message(MessageHud.MessageType.Center, VARadiusSwapTool.PairText());
+                        return Trace("swap: no pair queued", ghostGo, true);
+                    }
+                    float sRadius = VARadiusSwapTool.Radius;
+                    VARadiusWheel.Bounds(pos.y, out float yMin, out float yMax);
+                    string from = VARadiusSwapTool.FromName, to = VARadiusSwapTool.ToName;
+                    // 1.1.303 (Fire: preset-aware swapping): the queued picks carry the optional presets.
+                    var fromPick = VARadiusSwapTool.From ?? new SwapPick(from);
+                    var toPick = VARadiusSwapTool.To ?? new SwapPick(to);
+                    int swapped = VARadiusSwapTool.SwapPiecesInArea(pos, sRadius, yMin, yMax, fromPick, toPick, out string why, out string summary);
+                    bool presets = fromPick.HasPreset || toPick.HasPreset;
+                    __instance.Message(MessageHud.MessageType.TopLeft, why != null
+                        ? $"Swap: nothing swapped ({why})"
+                        : presets
+                            ? $"{VARadiusSwapTool.FromText(fromPick, toPick)} → {VARadiusSwapTool.ToText(fromPick, toPick)}: {summary}"
+                            : $"Swapped {swapped} {VARadiusSwapTool.DisplayName(from)} → {VARadiusSwapTool.DisplayName(to)}");
+                    return Trace($"swap {fromPick.LogText}->{toPick.LogText} n={swapped}", ghostGo, true);
+                }
+
                 case PlaceBranch.FxClear:
                 {
                     float fxRadius = ConfigManager.Instance.configFxClearRadius.Value;
@@ -133,9 +171,9 @@ namespace VerdantsAscent.Patches
                 case PlaceBranch.ClutterClear:
                 {
                     float cRadius = VAClutterClearTool.Radius;
-                    int cleared = VAClutterClearTool.ClearArea(pos, cRadius, VAClutterClearTool.HeightBounds);
+                    int cleared = VAClutterClearTool.ClearArea(pos, cRadius, VARadiusWheel.Height * 0.5f);   // 1.1.291: the shared Shift+wheel height, centred on the aim
                     __instance.Message(MessageHud.MessageType.TopLeft,
-                        $"Clutter clear: removed {cleared} sample(s) (r={cRadius:F1})");
+                        $"Clutter clear: removed {cleared} sample(s) (r={cRadius:F1}, h={VARadiusWheel.Height:0})");
                     return Trace("clutter-clear", ghostGo, true);
                 }
 
@@ -149,6 +187,13 @@ namespace VerdantsAscent.Patches
                     return Trace($"item-stand item='{itemName}' spawned={spawned}", ghostGo, true);
                 }
 
+                case PlaceBranch.EnemySpawner:
+                {
+                    int placedSpawners = VAEnemySpawners.PlaceAt(detail, pos, rot, __instance);
+                    __instance.Message(MessageHud.MessageType.TopLeft, placedSpawners > 0 ? $"Placed {placedSpawners}x {detail} spawner" : $"Failed to place {detail} spawner");
+                    return Trace($"enemy spawner creature={detail} placed={placedSpawners}", ghostGo, true);
+                }
+
                 case PlaceBranch.Monster:
                 {
                     string creatureName = detail;
@@ -158,6 +203,14 @@ namespace VerdantsAscent.Patches
                         : $"Failed to spawn {creatureName}";
                     __instance.Message(MessageHud.MessageType.TopLeft, monsterMsg);
                     return Trace($"monster creature='{creatureName}' spawned={spawned}", ghostGo, true);
+                }
+
+                case PlaceBranch.Dungeon:
+                {
+                    VAFapDungeons.TryResolveStandin(ghostGo.name, out string location);
+                    string msg = VAFapDungeons.Place(ghostGo.name, pos, rot);
+                    __instance.Message(MessageHud.MessageType.Center, msg);
+                    return Trace($"dungeon '{location}': {msg}", ghostGo, true);
                 }
 
                 case PlaceBranch.ClutterStandin:

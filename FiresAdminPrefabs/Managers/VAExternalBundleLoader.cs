@@ -201,6 +201,50 @@ namespace VerdantsAscent.Managers
         // before the main menu appeared. A coroutine pumps the loads through the menu, and
         // FinishLoadingBundles force-completes whatever is left before any prefab is injected, so
         // prefab availability doesn't depend on the head start.
+        // 1.1.378 (Fire 11-03): a mod ships bundles in plugins\<mod>\FapBundles. The same file name in two places shares a CAB, which Unity
+        // refuses to load twice, so a mod's copy wins over the loose one.
+        private const string ModBundleFolder = "FapBundles";
+
+        private static IEnumerable<string> ModBundleDirs()
+        {
+            string[] mods;
+            try { mods = Directory.GetDirectories(Paths.PluginPath); } catch { yield break; }
+            foreach (var mod in mods)
+            {
+                string dir = Path.Combine(mod, ModBundleFolder);
+                if (Directory.Exists(dir)) yield return dir;
+            }
+        }
+
+        private static string[] BundleFilesWithMods()
+        {
+            var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var dir in ModBundleDirs())
+                foreach (var file in Directory.GetFiles(dir))
+                    if (!byName.ContainsKey(Path.GetFileName(file))) byName[Path.GetFileName(file)] = file;
+            foreach (var file in Directory.GetFiles(AssetsDir))
+            {
+                string name = Path.GetFileName(file);
+                if (byName.TryGetValue(name, out var modCopy))
+                    Debug.LogWarning($"{VaPieces.PluginName}: bundle '{name}' is in Assets and in a mod; using the mod's ({modCopy}). Remove the loose file.");
+                else byName[name] = file;
+            }
+            var files = new string[byName.Count];
+            byName.Values.CopyTo(files, 0);
+            return files;
+        }
+
+        // A bundle file by name: a mod's copy, else Assets.
+        internal static string ResolveBundleFile(string fileName, string subfolder = null)
+        {
+            foreach (var dir in ModBundleDirs())
+            {
+                string p = subfolder == null ? Path.Combine(dir, fileName) : Path.Combine(dir, subfolder, fileName);
+                if (File.Exists(p)) return p;
+            }
+            return Path.Combine(AssetsDir, fileName);
+        }
+
         public static void BeginLoadAllBundlesAsync()
         {
             if (_asyncLoadStarted || _bundlesLoaded) return;
@@ -209,7 +253,7 @@ namespace VerdantsAscent.Managers
             EnsureFoldersExist();
 
             string[] files;
-            try { files = Directory.GetFiles(AssetsDir); }
+            try { files = BundleFilesWithMods(); }
             catch (Exception ex)
             {
                 Debug.LogWarning($"{VaPieces.PluginName}: VAExternalBundleLoader scan FAILED on '{AssetsDir}': {ex.Message}");
@@ -591,7 +635,7 @@ namespace VerdantsAscent.Managers
             }
             _dediTexturesUnloaded += textures.Count;
             _dediTextureBytes += bytes;
-            Debug.Log($"{VaPieces.PluginName}: dedicated server: unloaded {textures.Count} renderer texture(s), {bytes / 1048576.0:0} MB, of '{bundleLabel}'; "
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: dedicated server: unloaded {textures.Count} renderer texture(s), {bytes / 1048576.0:0} MB, of '{bundleLabel}'; "
                 + $"all bundles so far {_dediTexturesUnloaded} texture(s), {_dediTextureBytes / 1048576.0:0} MB (Performance > DediUnloadTextures)");
         }
 
@@ -682,7 +726,7 @@ namespace VerdantsAscent.Managers
             if (done.Count == 0) return;
             _nonReadableMeshes += done.Count;
             _nonReadableVertices += vertices;
-            Debug.Log($"{VaPieces.PluginName}: '{bundleLabel}': {done.Count} render mesh(es), {vertices:N0} vertices, dropped their CPU copy; "
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: '{bundleLabel}': {done.Count} render mesh(es), {vertices:N0} vertices, dropped their CPU copy; "
                 + $"{keep.Count} kept readable (collision, skinned, deferred). All bundles so far: {_nonReadableMeshes} mesh(es), {_nonReadableVertices:N0} vertices "
                 + "(Performance > ClientNonReadableRenderMeshes)");
         }
@@ -724,6 +768,22 @@ namespace VerdantsAscent.Managers
 
         /// <summary>1.1.228: the per-prefab part of InjectPrefabsIntoZNetScene for a prefab loaded after ZNetScene.Awake
         /// (a realized lazy piece). The caller puts it into ZNetScene. False = rejected (dead script slots, no manifest fix).</summary>
+        // 1.1.378: the startup dependency scan's rule, after a late realize. Returns how many were registered.
+        internal static int RegisterLoadedDependencies(ZNetScene scene, string bundleLabel)
+        {
+            int count = 0;
+            foreach (var dep in Resources.FindObjectsOfTypeAll<GameObject>())
+            {
+                if (dep == null || dep.scene.IsValid() || dep.transform.parent != null || !dep.name.EndsWith("_bal", StringComparison.Ordinal) || dep.GetComponent<ZNetView>() == null) continue;
+                int hash = dep.name.GetStableHashCode();
+                if (scene.m_namedPrefabs.ContainsKey(hash) || !PrepareLatePrefab(dep, bundleLabel)) continue;
+                scene.m_prefabs.Add(dep);
+                scene.m_namedPrefabs[hash] = dep;
+                count++;
+            }
+            return count;
+        }
+
         internal static bool PrepareLatePrefab(GameObject prefab, string bundleLabel)
         {
             if (prefab == null) return false;
@@ -745,6 +805,7 @@ namespace VerdantsAscent.Managers
             VAReadableNames.Apply(prefab);
             ApplyScriptAttachments(prefab);
             VerdantsAscent.Api.FapExternalPrefabs.Raise(prefab);
+            Snapping.VASnapGeometry.Apply(prefab);
             if (!VaPieces.IsDedicatedServer) MakeRenderMeshesNonReadable(new[] { prefab }, bundleLabel);
             VAMaterialRepair.RepairPrefab(prefab);
             return true;
@@ -820,7 +881,7 @@ namespace VerdantsAscent.Managers
                 }
 
                 if (clutterNames.Count > 0) _bundleClutterManifests[bundleName] = clutterNames;
-                Debug.Log($"{VaPieces.PluginName}:     manifest '{bundleName}{ManifestFileSuffix}' → {manifest.prefabCount} prefab(s) total, {clutterNames.Count} clutter, {prefabsWithAttachments} prefab(s) with script attachments ({totalAttachments} scripts).");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}:     manifest '{bundleName}{ManifestFileSuffix}' → {manifest.prefabCount} prefab(s) total, {clutterNames.Count} clutter, {prefabsWithAttachments} prefab(s) with script attachments ({totalAttachments} scripts).");
             }
             catch (Exception ex)
             {
@@ -1057,7 +1118,11 @@ namespace VerdantsAscent.Managers
         public static class ClutterSystem_Awake_VAManifestRegister_Patch
         {
             [HarmonyPostfix]
-            public static void Postfix() => RegisterClutterFromManifests();
+            public static void Postfix()   // 1.1.318 (audit M8)
+            {
+                try { RegisterClutterFromManifests(); }
+                catch (Exception e) { Debug.LogError($"{VaPieces.PluginName}: clutter registration on Awake failed: {e.Message}"); }
+            }
         }
 
         // Low priority so it sees ZNetScene's prefab list after the other Awake postfixes settle.
@@ -1066,7 +1131,11 @@ namespace VerdantsAscent.Managers
         {
             [HarmonyPriority(Priority.Low)]
             [HarmonyPostfix]
-            public static void Postfix() => RegisterClutterFromManifests();
+            public static void Postfix()   // 1.1.318 (audit M8)
+            {
+                try { RegisterClutterFromManifests(); }
+                catch (Exception e) { Debug.LogError($"{VaPieces.PluginName}: clutter registration on Awake failed: {e.Message}"); }
+            }
         }
 
         // ─────────────────────────────────────────────────────────
@@ -1081,9 +1150,16 @@ namespace VerdantsAscent.Managers
             public static void Prefix(ZNetScene __instance)
             {
                 if (__instance == null) return;
-                long barrierStart = System.Diagnostics.Stopwatch.GetTimestamp();
-                FinishLoadingBundles();
-                InjectPrefabsIntoZNetScene(__instance, System.Diagnostics.Stopwatch.GetTimestamp() - barrierStart);
+                // 1.1.318 ([classes-ui]'s load/save audit H2, after Fire's "Error loading world file"): a throw here skipped
+                // vanilla's ZNetScene.Awake body (no ZNetScene.instance, no m_namedPrefabs), so the world could not load on a
+                // client or a dedi. Anything this prefix throws is logged and vanilla always runs; each prefab is guarded too.
+                try
+                {
+                    long barrierStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                    FinishLoadingBundles();
+                    InjectPrefabsIntoZNetScene(__instance, System.Diagnostics.Stopwatch.GetTimestamp() - barrierStart);
+                }
+                catch (Exception e) { Debug.LogError($"{VaPieces.PluginName}: ZNetScene.Awake bundle injection failed; vanilla's world load continues without the rest: {e}"); }
             }
         }
 
@@ -1188,11 +1264,20 @@ namespace VerdantsAscent.Managers
             // runtime and vanilla readers call GetType() on it. When the manifest
             // says which MonoBehaviours belonged on this prefab, we can put them
             // back, so the prefab is worth keeping rather than discarding whole.
+            // 1.1.376 (Fire 11-03, Balrond bundles): prefabs with no container path never come from LoadAllAssets; those already in memory as a dependency of another prefab are registered too. _bal only, so other mods' templates stay theirs.
+            var known = new HashSet<GameObject>(ExternalPrefabs);
+            var skippedClash = new List<string>(); var skippedScripts = new List<string>(); var dependencyAdded = new List<string>();
+            foreach (var dep in Resources.FindObjectsOfTypeAll<GameObject>())
+                if (dep != null && !dep.scene.IsValid() && dep.transform.parent == null && dep.name.EndsWith("_bal", StringComparison.Ordinal)
+                    && !known.Contains(dep) && !sceneNames.Contains(dep.name) && dep.GetComponent<ZNetView>() != null && known.Add(dep))
+                { ExternalPrefabs.Add(dep); dependencyAdded.Add(dep.name); }
             int added = 0, skipped = 0, repipedPastDeadSlots = 0, readableNames = 0;
             foreach (var prefab in ExternalPrefabs)
             {
+                try   // 1.1.318 (audit H2): one bad bundle prefab no longer stops the rest (or vanilla's Awake)
+                {
                 if (prefab == null) continue;
-                if (sceneNames.Contains(prefab.name)) { skipped++; continue; }
+                if (sceneNames.Contains(prefab.name)) { skipped++; skippedClash.Add($"{prefab.name} ({SourceBundleOf(prefab)})"); continue; }
                 if (prefab.GetComponent<Location>() != null)
                 {
                     _locationPrefabsLeftOut.Add($"{prefab.name} ({SourceBundleOf(prefab)})");
@@ -1210,6 +1295,7 @@ namespace VerdantsAscent.Managers
                     else
                     {
                         RecordMissingScriptReject(prefab, missingScripts);
+                        skippedScripts.Add($"{prefab.name} ({SourceBundleOf(prefab)})");
                         skipped++;
                         continue;
                     }
@@ -1232,6 +1318,8 @@ namespace VerdantsAscent.Managers
                 VerdantsAscent.Api.FapExternalPrefabs.Raise(prefab);
                 wiringTicks += Lap(ref mark);
                 added++;
+                }
+                catch (Exception e) { Debug.LogError($"{VaPieces.PluginName}: injecting {(prefab != null ? prefab.name : "?")} failed; it is left out and the rest go on: {e.Message}"); }   // 1.1.318 (audit H2)
             }
             s_walkComponents.Clear();
             s_walkEffectAreas.Clear();
@@ -1240,6 +1328,7 @@ namespace VerdantsAscent.Managers
                 Debug.Log($"{VaPieces.PluginName}: VAExternalBundleLoader gave {readableNames} untranslated bundle name(s) a readable one " +
                           "(their mod's localization isn't loaded, so the game would show \"[key]\").");
 
+            VaPieces.Log?.LogDebug($"VAExternalBundleLoader why: {dependencyAdded.Count} dependency prefab(s) added: {string.Join(", ", dependencyAdded)}; {skippedClash.Count} name clash: {string.Join(", ", skippedClash)}; {skippedScripts.Count} missing script: {string.Join(", ", skippedScripts)}");
             Debug.Log($"{VaPieces.PluginName}: VAExternalBundleLoader injected {added} external prefab(s) into ZNetScene.m_prefabs (skipped {skipped} name-collisions, kept {repipedPastDeadSlots} with dead script slots because their manifest names the scripts to re-attach). Vanilla will populate m_namedPrefabs. Category breakdown via VABundleAssetRouter: {VABundleAssetRouter.FormatCategorySummary()}.");
 
             long repairStart = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -1752,7 +1841,8 @@ namespace VerdantsAscent.Managers
             [HarmonyPrefix]
             public static void Prefix()
             {
-                if (ZNetScene.instance != null) ScrubFakeNulls(ZNetScene.instance, "ZoneSystem.Start prefix");
+                try { if (ZNetScene.instance != null) ScrubFakeNulls(ZNetScene.instance, "ZoneSystem.Start prefix"); }   // 1.1.318 (audit M7)
+                catch (Exception e) { Debug.LogError($"{VaPieces.PluginName}: ZoneSystem.Start fake-null scrub failed; vanilla continues: {e.Message}"); }
             }
         }
 

@@ -261,6 +261,8 @@ namespace VerdantsAscent.Utilities
                 File.WriteAllText(manifestTempPath, JsonUtility.ToJson(manifest, prettyPrint: true));
                 ReplaceFile(manifestTempPath, manifestPath);
 
+                RegisterPublishedLive(bundlePath, manifestPath);   // 1.1.282 (new bake live in Baked Meshes)
+
                 if (VAFapLoadSummary.VerboseEnabled)
                     Debug.Log($"{VaPieces.PluginName}: VABakeBundle published '{baseName}' → {Path.GetFileName(bundlePath)} + {Path.GetFileName(manifestPath)} (prefab='{manifest.registerAsPrefab}', {manifest.partCount} parts, {manifest.materialNames.Count} mats, {manifest.zoneCount} zone(s), maxLOD={manifest.maxLodLevels}, lodEnabled={manifest.lodEnabled}).");
                 return true;
@@ -511,6 +513,52 @@ namespace VerdantsAscent.Utilities
             catch (Exception ex)
             {
                 Debug.LogWarning($"{VaPieces.PluginName}: VABakeBundle.RegisterAll — late hammer registration threw: {ex.Message}");
+            }
+        }
+
+        // 1.1.282 (Fire: a new bake only showed in Baked Meshes after relaunching): the startup path for ONE bake,
+        // run the moment Publish has written its manifest - RegisterLazyBundle (template root into ZNetScene +
+        // the lazy entry) then PushBundlePiecesOntoHammer's RegisterLateBundlePieces, the icon copy, and the
+        // build-menu redraw. The mesh is built on first use by EnsureLazyBundleBuilt from the in-memory bake
+        // (VAFapBlueprintBakeCache.Set stored it before Publish), so the async bundle write need not have landed.
+        // No double registration: RegisterLazyBundle skips a prefab hash already in m_namedPrefabs, and
+        // RegisterAllAsync rebuilds everything fresh on the next ZNetScene.Awake. Baking-admin's machine only:
+        // other clients get the prefab when the bundle reaches them (asset sync) and their next world load.
+        // 1.1.285: last live-registration result, read by PreBakeCoroutine for the bake-complete message ("new" / "existing";
+        // null = failed or skipped, the relaunch wording stays). Keyed by bundle path so a stale result never matches.
+        internal static string LastLiveBundle, LastLiveStatus;
+        internal static string LiveStatusFor(string cacheKey)
+        {
+            try { return LastLiveBundle != null && string.Equals(LastLiveBundle, BundlePathFor(cacheKey), StringComparison.OrdinalIgnoreCase) ? LastLiveStatus : null; }
+            catch { return null; }
+        }
+
+        private static void RegisterPublishedLive(string bundlePath, string manifestPath)
+        {
+            try
+            {
+                var scene = ZNetScene.instance;
+                LastLiveBundle = bundlePath; LastLiveStatus = null;   // 1.1.285
+                if (scene == null) return;   // no world: the next RegisterAllAsync picks the file up
+                var pending = new PendingManifest { BundlePath = bundlePath, ManifestText = File.ReadAllText(manifestPath) };
+                var manifest = ParseManifest(pending.ManifestText);
+                if (manifest == null) return;
+                string prefabName = MakePrefabName(manifest.sourceBlueprintFile);
+                bool existed = scene.m_namedPrefabs.ContainsKey(prefabName.GetStableHashCode());
+                if (!RegisterLazyBundle(scene, pending)) return;
+                var prefab = scene.GetPrefab(prefabName);
+                if (prefab == null) return;
+                VAVanillaPieceManager.RegisterLateBundlePieces(new[] { prefab });
+                CopyBadgedIconsToBundlePrefabs();
+                VAVanillaPieceManager.RefreshAfterRestore();
+                LastLiveStatus = existed ? "existing" : "new";   // 1.1.285
+                VaPieces.Log?.LogDebug(existed
+                    ? $"[FAP] bake: '{prefabName}' already registered this session (re-bake) - kept in Baked Meshes, new mesh after a world reload"
+                    : $"[FAP] bake: '{prefabName}' registered live in Baked Meshes");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"{VaPieces.PluginName}: VABakeBundle live registration failed for '{Path.GetFileName(bundlePath)}': {ex.Message} (a world reload registers it)");
             }
         }
 
@@ -1176,7 +1224,7 @@ namespace VerdantsAscent.Utilities
                 if (batchFinished && i + 1 < total) yield return null;
             }
 
-            Debug.Log($"{VaPieces.PluginName}: VABakeBundle.SpawnLiveChildrenForPlacedBundle — placed '{prefabName}' bundle: spawned {spawned} live child(ren), skipped {skipped} on chance roll, {missing} prefab(s) missing. GroupId='{groupId}'.");
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: VABakeBundle.SpawnLiveChildrenForPlacedBundle — placed '{prefabName}' bundle: spawned {spawned} live child(ren), skipped {skipped} on chance roll, {missing} prefab(s) missing. GroupId='{groupId}'.");
         }
 
         // The EWD data bridge is only a fallback, for Data this mod's own parser can't read.
@@ -1288,8 +1336,7 @@ namespace VerdantsAscent.Utilities
     // renamed the prune logs and does nothing; the bundle still works, only slower.
     internal static class VALiveChildStrip
     {
-        private const string SignUpdateTextMethod = "UpdateText";
-        private const string WearNTearRenderersField = "m_renderers";
+                private const string WearNTearRenderersField = "m_renderers";
 
         private static System.Reflection.FieldInfo _wearNTearRenderersField;
         private static bool _wearNTearRenderersFieldResolved;
@@ -1309,7 +1356,7 @@ namespace VerdantsAscent.Utilities
                 }
 
                 foreach (var sign in child.GetComponentsInChildren<Sign>(includeInactive: true))
-                    sign.CancelInvoke(SignUpdateTextMethod);
+                    VASignRevisionPoll.Replace(sign);   // the 2 s poll is replaced by a revision check (another player's text shows)
             }
             catch (Exception ex)
             {

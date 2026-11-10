@@ -31,6 +31,7 @@ namespace VerdantsAscent.Utilities
         private const float MinW = 460f, MaxW = 1200f, MinH = 560f, MaxH = 1000f, Grip = 18f;
 
         private static VAItemStandConfigUI _instance;
+        private static bool s_p7ClosedLogged;   // 1.1.325 (UI audit P7)
         private static ConfigEntry<float> s_opacity, s_w, s_h, s_x, s_y;
 
         public static void Open(string standPrefabName, string presetName) => Open(standPrefabName, presetName, null, null);
@@ -69,6 +70,7 @@ namespace VerdantsAscent.Utilities
             s_h = cfg.Bind("ItemStandPresetUI", "Height", 720f, "The item stand preset window's height.");
             s_x = cfg.Bind("ItemStandPresetUI", "X", -1f, "The window's left edge (-1 = centred; drag the title row).");
             s_y = cfg.Bind("ItemStandPresetUI", "Y", -1f, "The window's top edge (-1 = centred).");
+            VerdantsAscent.Managers.FapConfigUi.Apply(cfg);   // 1.1.279: window geometry is saved, never shown
         }
 
         private void OpenInternal(string standPrefab, string presetName, string prefillItem, string armPiece)
@@ -84,6 +86,7 @@ namespace VerdantsAscent.Utilities
             Load(p);
             if (!string.IsNullOrEmpty(prefillItem) && (p == null || string.IsNullOrEmpty(_item))) _item = prefillItem;
             _open = true;
+            enabled = true;   // 1.1.325 (UI audit P7)
             FiresCore.Input.FiresInputBlock.Acquire(this); VAImguiGuard.Open(this, () => _rect, "ItemStandPreset");
         }
 
@@ -93,6 +96,8 @@ namespace VerdantsAscent.Utilities
             _open = false;
             FiresCore.Input.FiresInputBlock.Release(this); VAImguiGuard.Close(this);
             SaveLayout();
+            enabled = false;   // 1.1.325 (UI audit P7): no Update/OnGUI while closed; Open() is the only way back
+            if (!s_p7ClosedLogged) { s_p7ClosedLogged = true; VaPieces.Log?.LogDebug("[FAP] VAItemStandConfigUI closed: OnGUI off until reopened"); }
         }
 
         private void SaveLayout()

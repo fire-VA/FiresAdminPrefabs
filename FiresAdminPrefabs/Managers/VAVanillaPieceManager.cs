@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -103,16 +103,7 @@ namespace VerdantsAscent.Managers
             "demister_ball", "CargoCrate", "FishingRodFloat",
             "Pickable_RandomFood", "Pickable_Item", "Pickable_DvergerThing",
             "Pickable_DolmenTreasure",
-            // Treasure chests are filled by zone generators; spawning them
-            // empty via hammer creates exploit-bait loot once they reload.
-            "TreasureChest_blackforest", "TreasureChest_heath",
-            "TreasureChest_heath_hildir", "TreasureChest_meadows",
-            "TreasureChest_meadows_buried", "TreasureChest_mountains",
-            "TreasureChest_swamp", "shipwreck_karve_chest",
-            "loot_chest_wood", "TreasureChest_forestcrypt",
-            "TreasureChest_plains_stone", "TreasureChest_mountaincave_hildir",
-            "TreasureChest_plainsfortress_hildir",
-            "TreasureChest_forestcrypt_hildir",
+            // 1.1.394 (Fire 11-05/06): the world loot chests are on the Hammer now (VALootPieceMode: placed = decor, no loot roll; menu switch to vanilla).
             // FAP-internal bake-parent template - the empty template must never
             // be hammer-selectable (the per-blueprint piece_<name> prefabs in
             // the Baked Meshes tab are the user-facing entry point).
@@ -151,12 +142,12 @@ namespace VerdantsAscent.Managers
         {
             if (_initialized)
             {
-                Debug.Log($"{VaPieces.PluginName}: VAVanillaPieceManager already initialized, skipping");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: VAVanillaPieceManager already initialized, skipping");
                 return;
             }
             if (_initializing)
             {
-                Debug.Log($"{VaPieces.PluginName}: VAVanillaPieceManager heavy init coroutine is already running, skipping duplicate call.");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: VAVanillaPieceManager heavy init coroutine is already running, skipping duplicate call.");
                 return;
             }
 
@@ -181,7 +172,7 @@ namespace VerdantsAscent.Managers
                 }
                 if (_registeredForNonAdmins)
                 {
-                    Debug.Log($"{VaPieces.PluginName}: VAVanillaPieceManager pieces are already registered for this non-admin session; still watching for a promotion.");
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: VAVanillaPieceManager pieces are already registered for this non-admin session; still watching for a promotion.");
                     return;
                 }
             }
@@ -292,8 +283,10 @@ namespace VerdantsAscent.Managers
             _eligibleByName[prefab.name] = prefab;
             injectedFreshPiece = EnsurePieceComponent(prefab);
             EnsurePersistentZNetView(prefab);
+            Snapping.VASnapPoints.NormaliseBundleNames(prefab);   // 1.1.323 (Fire): FAP bundle pieces' points are "Snappoint N" (MVBP's convention)
             EnsureSnapPoints(prefab);
             NeutralizeBrokenFireplace(prefab);
+            FixSpikeTriggerLayers(prefab);
 
             if (VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out var sourceBundle)
                 && (ConfigManager.Instance.IsBundleInNatureShaderAllOf(sourceBundle) || IsNaturePrefab(prefab)))
@@ -331,6 +324,7 @@ namespace VerdantsAscent.Managers
 
             if (added > 0)
                 Debug.Log($"{VaPieces.PluginName}: VAVanillaPieceManager.RegisterLateBundlePieces - added {added} late bundle piece(s) to the hammer.");
+            Snapping.VASnapPoints.NormaliseHammerBundlePieces(pieceTable, "late bundles"); Snapping.VASnapGeometry.ApplyToTable(pieceTable);   // 1.1.324
             return added;
         }
 
@@ -441,7 +435,12 @@ namespace VerdantsAscent.Managers
             foreach (var prefab in prefabSnapshot)
             {
                 if ((UnityEngine.Object)prefab == (UnityEngine.Object)null) continue;
-                if (!IsEligible(prefab, existingBuildables)) continue;
+                if (!IsEligible(prefab, existingBuildables, out string skipWhy))
+                {
+                    // 1.1.317: the full "why not on the Hammer" list (BepInEx\cache\FiresAdminPrefabs\hammer_skipped.txt)
+                    if (skipWhy != "already on a hammer/hoe/cultivator table" && skipWhy != "not a root prefab") s_skipped.Add(skipWhy + "\t" + prefab.name);
+                    continue;
+                }
 
                 // Already-injected skip. _injectedPrefabHashes is static and
                 // survives world-unload, but bundle prefabs are rebuilt fresh
@@ -495,6 +494,8 @@ namespace VerdantsAscent.Managers
             // generic filter would have taken it, so a regression is visible
             // in the log instead of vanishing.
             EnsureCuratedVanillaInjects(scene, pieceTable, ref registered, ref injected);
+            ReportSpikeTriggerLayers();   // 1.1.350
+            WriteSkippedReport(prefabSnapshot.Count);
             VAJotunnGuard.ReportOnce();   // 1.1.219: one line for the Jotunn-owned prefabs
 
             // Registration-only stops here: the pieces other mods need are on the table, and
@@ -536,6 +537,13 @@ namespace VerdantsAscent.Managers
             // so it sits with the FX placements it's meant to clean up.
             RegisterFxClearStandin(pieceTable);
 
+            // 1.1.291 (Fire: Radius Swapper): one icon at the head of the Misc tab; admin only (this point is past the registration-only return).
+            if (IsAdminGateOpen())
+            {
+                var swapStandin = VerdantsAscent.Utilities.VARadiusSwapTool.EnsureStandin(Piece.PieceCategory.Misc);
+                if (swapStandin != null && !pieceTable.m_pieces.Contains(swapStandin)) pieceTable.m_pieces.Add(swapStandin);
+            }
+
             // Item-stand tabs - one tile per (eligible item, orientation).
             // Placement spawns a vanilla itemstand/itemstandh with the chosen
             // item pre-attached via the s_item ZDO field.
@@ -547,6 +555,10 @@ namespace VerdantsAscent.Managers
             // Configure-monster UI for per-spawn overrides.
             yield return InitializeMonsterStandinsCoroutine(pieceTable);
             frameStopwatch.Restart();
+
+            // 1.1.351 (Fire 10-31): Dungeons tab - a whole-dungeon and an empty-entrance stand-in per vanilla location with an interior.
+            try { Utilities.VAFapDungeons.RegisterStandins(pieceTable); }
+            catch (Exception ex) { Debug.LogWarning($"[FAP] dungeons tab: stand-ins not built ({ex.Message})"); }
 
             // Prune any null entries that crept in (shouldn't happen with
             // our filter but cheap insurance against another mod nulling
@@ -578,6 +590,8 @@ namespace VerdantsAscent.Managers
             Debug.Log($"{VaPieces.PluginName}: VAVanillaPieceManager scanned {scene.m_prefabs.Count} prefabs, " +
                       $"{_eligibleByName.Count} eligible, {injected} got fresh Piece component, {registered} new hammer entries " +
                       $"(+{vanillaClutterAdded} vanilla ClutterSystem prefabs)");
+            Snapping.VASnapPoints.NormaliseHammerBundlePieces(pieceTable, "scan"); Snapping.VASnapGeometry.ApplyToTable(pieceTable);   // 1.1.324: FAP bundle pieces already on the Hammer
+            VerdantsAscent.Patches.VALootPieceMode.OnHammerScanned(pieceTable);   // 1.1.395: loot chest / debris names + Info count
 
             // 1.1.227: lazy third-party bundles, stage 1. The stub data of every Assets bundle, written once per bundle version.
             Utilities.VALazyBundleManifest.WriteMissing(scene, pieceTable);
@@ -695,6 +709,7 @@ namespace VerdantsAscent.Managers
             if (!VACategoryRegistry.TryGet(VACategoryRegistry.CatMonsters, out var monstersCat))
                 yield break;
 
+            VAEnemySpawners.AddRow();
             int found = VAMonsterRegistry.RebuildFromScene();
             int added = 0;
             var stopwatch = Stopwatch.StartNew();
@@ -706,6 +721,11 @@ namespace VerdantsAscent.Managers
                 {
                     pieceTable.m_pieces.Add(standin);
                     added++;
+                }
+                if (VAEnemySpawners.Wanted(entry))
+                {
+                    var spawnerPick = VAMonsterStandinFactory.GetOrCreateSpawner(entry, monstersCat);
+                    if (spawnerPick != null && !pieceTable.m_pieces.Contains(spawnerPick)) { pieceTable.m_pieces.Add(spawnerPick); added++; }
                 }
 
                 if (stopwatch.ElapsedMilliseconds >= InitFrameBudgetMs)
@@ -882,11 +902,131 @@ namespace VerdantsAscent.Managers
             var pieceTable = GetHammerPieceTable();
             if (pieceTable == null) return 0;
             int removed = pieceTable.m_pieces.RemoveAll(go =>
-                (UnityEngine.Object)go != (UnityEngine.Object)null
-                && string.Equals(go.name, prefabName, StringComparison.Ordinal));
+            {
+                if ((UnityEngine.Object)go == (UnityEngine.Object)null
+                    || !string.Equals(go.name, prefabName, StringComparison.Ordinal)) return false;
+                NoteRemovedByHide(go);   // 1.1.282 (unhide live): the exact object goes back on unhide
+                return true;
+            });
             if (removed > 0 && Player.m_localPlayer != null)
                 VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
             return removed;
+        }
+
+        // 1.1.282 (Fire: hidden pieces/tabs only came back after a world reload): every piece object a live hide
+        // took off the hammer, by prefab name, so un-hide can put the SAME object back (vanilla hammer pieces
+        // included, which the eligible scan never re-adds). Cleared per object as it is restored.
+        private static readonly Dictionary<string, List<GameObject>> _removedByHide =
+            new Dictionary<string, List<GameObject>>(StringComparer.Ordinal);
+
+        internal static void NoteRemovedByHide(GameObject go)
+        {
+            if ((UnityEngine.Object)go == (UnityEngine.Object)null) return;
+            if (!_removedByHide.TryGetValue(go.name, out var list)) _removedByHide[go.name] = list = new List<GameObject>();
+            if (!list.Contains(go)) list.Add(go);
+        }
+
+        // 1.1.282 (unhide live): puts one un-hidden prefab back on the live hammer. First the objects the hide
+        // removed (NoteRemovedByHide), else the prefab from ZNetScene through the same ProcessEligibleForHammer the
+        // load scan uses (a prefab hidden since before this load was never scanned). m_pieces.Contains guards
+        // every add, so nothing is duplicated. No refresh here: callers finish with RecategorizeEligiblePieces.
+        // Returns true when the prefab is on the hammer afterwards.
+        public static bool RestorePieceToHammerByName(string prefabName)
+        {
+            if (string.IsNullOrEmpty(prefabName)) return false;
+            var pieceTable = GetHammerPieceTable();
+            if (pieceTable == null) return false;
+
+            if (_removedByHide.TryGetValue(prefabName, out var removedList))
+            {
+                foreach (var go in removedList)
+                    if ((UnityEngine.Object)go != (UnityEngine.Object)null && !pieceTable.m_pieces.Contains(go))
+                        pieceTable.m_pieces.Add(go);
+                _removedByHide.Remove(prefabName);
+            }
+
+            bool onTable = pieceTable.m_pieces.Any(go =>
+                (UnityEngine.Object)go != (UnityEngine.Object)null && string.Equals(go.name, prefabName, StringComparison.Ordinal));
+            if (!onTable)
+            {
+                var prefab = ZNetScene.instance != null ? ZNetScene.instance.GetPrefab(prefabName) : null;
+                if ((UnityEngine.Object)prefab != (UnityEngine.Object)null
+                    && (_eligibleByName.ContainsKey(prefabName) || IsEligible(prefab, CollectAlreadyBuildablePrefabs())))
+                {
+                    ProcessEligibleForHammer(prefab, pieceTable, out _);
+                    onTable = pieceTable.m_pieces.Contains(prefab);
+                }
+            }
+
+            // A piece filed under the Hidden sentinel at load (ignored then) gets its tab back.
+            if (onTable)
+            {
+                foreach (var go in pieceTable.m_pieces)
+                {
+                    if ((UnityEngine.Object)go == (UnityEngine.Object)null || !string.Equals(go.name, prefabName, StringComparison.Ordinal)) continue;
+                    var piece = go.GetComponent<Piece>();
+                    if (piece == null || !VerdantsAscent.Utilities.VAPieceCategoryRuntime.IsHidden(piece.m_category)) continue;
+                    piece.m_category = VAHammerTabOrganizer.TryGetTabOverride(prefabName, out var tab)
+                                       && VAHammerTabOrganizer.TryResolveTabCategory(tab, out var cat)
+                        ? cat : AutoCategorize(go);
+                }
+            }
+            return onTable;
+        }
+
+        // 1.1.282 (unhide live): a hidden TAB comes back. Makes sure the category is on the table (same block as
+        // RetagPieceCategoryByName), restores the listed prefabs, then re-adds every piece TryHideCategoryLive /
+        // a hide took away that now routes to this tab (SortHammerByMod bundle tabs list no prefabs on disk).
+        // Ends with RecategorizeEligiblePieces - the live re-bucket + build-menu refresh the config toggles use.
+        public static int RestoreTabLive(string tabName, IEnumerable<string> listedPrefabs)
+        {
+            if (string.IsNullOrEmpty(tabName)) return 0;
+            var pieceTable = GetHammerPieceTable();
+            if (pieceTable == null) return 0;
+
+            if (!VAHammerTabOrganizer.IsVanillaTabName(tabName))
+            {
+                var cat = VACategoryRegistry.GetOrAdd(tabName);
+                if (!pieceTable.m_categories.Contains(cat))
+                {
+                    pieceTable.m_categories.Add(cat);
+                    pieceTable.m_categoryLabels.Add(VAHammerTabOrganizer.TryGetDisplayName(tabName, out var dn) ? dn : tabName);
+                    int needed = (int)cat + 1;
+                    while (PieceTableAccess.ByCategory(pieceTable).Count < needed)
+                        PieceTableAccess.ByCategory(pieceTable).Add(new List<Piece>());
+                }
+            }
+
+            int restored = 0;
+            if (listedPrefabs != null)
+                foreach (var name in listedPrefabs)
+                    if (RestorePieceToHammerByName(name)) restored++;
+
+            if (VAHammerTabOrganizer.TryResolveTabCategory(tabName, out var tabCat))
+            {
+                foreach (var name in _removedByHide.Keys.ToList())
+                {
+                    var list = _removedByHide[name];
+                    bool routesHere = list.Any(go => (UnityEngine.Object)go != (UnityEngine.Object)null
+                                                     && go.GetComponent<Piece>() != null
+                                                     && (go.GetComponent<Piece>().m_category == tabCat
+                                                         || (_eligibleByName.TryGetValue(name, out var e) && e == go && AutoCategorize(go) == tabCat)));
+                    if (routesHere && !VAHammerTabOrganizer.IsIgnored(name) && RestorePieceToHammerByName(name)) restored++;
+                }
+            }
+
+            RefreshAfterRestore();
+            return restored;
+        }
+
+        // 1.1.282 (unhide live): RecategorizeEligiblePieces re-syncs the tabs and redraws; it no-ops before the
+        // scan has eligible pieces, so the plain redraw RetagPieceCategoryByName uses runs then instead.
+        public static void RefreshAfterRestore()
+        {
+            if (_initialized && _eligibleByName.Count > 0) { RecategorizeEligiblePieces(); return; }
+            if (Player.m_localPlayer != null)
+                VerdantsAscent.Patches.HammerCategoryUI.RebuildPieceListIfHammer(Player.m_localPlayer, "VAVanillaPieceManager");
+            VABuildUiCategoryTags.RequestBuildMenuRefresh();
         }
 
         // Live-retag a piece's m_category by prefab name. Auto-registers a
@@ -973,8 +1113,9 @@ namespace VerdantsAscent.Managers
             // Config off -> gate is fully open, no admin check needed.
             if (!ConfigManager.Instance.configAdminOnlyMode.Value) return true;
 
-            // AdminOnlyMode is the server's to enforce; on a server without FAP there is nothing to enforce it with.
-            if (VAFapServerPresence.IsClientOnly) return true;
+            // 1.1.316 (Fire 10-23: "yes" - the admin-only hammer tabs follow the one admin answer): on a server WITHOUT FAP the tabs
+            // need debugmode (was: open for everyone). VAFapServerPresence.LocalIsAdmin is that answer (host / debugmode / fap-server).
+            if (VAFapServerPresence.IsClientOnly) return VAFapServerPresence.LocalIsAdmin(out _);
 
             // THE canonical Fires local-admin check. Unions IsServer(),
             // Valheim's own server-synced admin list, and Core's lockExempt
@@ -1003,7 +1144,7 @@ namespace VerdantsAscent.Managers
         internal static string DescribeOpenGate()
         {
             if (ConfigManager.Instance == null || !ConfigManager.Instance.configAdminOnlyMode.Value) return "AdminOnlyMode is off";
-            if (VAFapServerPresence.IsClientOnly) return "client-only: the server doesn't run FiresAdminPrefabs";
+            if (VAFapServerPresence.IsClientOnly) return VAFapServerPresence.LocalIsAdmin(out _) ? "client-only (no FAP on the server): debugmode is on" : "closed: client-only (no FAP on the server) and debugmode is off";
             try
             {
                 if (FiresCore.Sync.AdminSyncing.IsLocalAdmin())
@@ -1030,6 +1171,8 @@ namespace VerdantsAscent.Managers
         public static void RecategorizeEligiblePieces()
         {
             if (!_initialized || _eligibleByName.Count == 0) return;
+            // 1.1.277: nothing to re-bucket while the world is going away (no local player / ObjectDB / hammer table)
+            if (Player.m_localPlayer == null || GetHammerPieceTable() == null) return;
 
             // Re-bucketing the PIECES is not enough: which TABS exist is decided by
             // VanillaFriendly and the hide list too, and those live only in
@@ -1152,14 +1295,14 @@ namespace VerdantsAscent.Managers
                     }
                     if (VAHammerTabOrganizer.IsIgnored(name))
                     {
-                        Debug.Log($"{VaPieces.PluginName}: curated inject '{name}' - on the user's Ignore list; respected.");
+                        VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: curated inject '{name}' - on the user's Ignore list; respected.");
                         continue;
                     }
                     if (pieceTable.m_pieces.Contains(prefab)) continue;
 
                     if (ProcessEligibleForHammer(prefab, pieceTable, out bool fresh)) registered++;
                     if (fresh) injected++;
-                    Debug.Log($"{VaPieces.PluginName}: curated inject '{name}' - added to the hammer (generic scan had missed it).");
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: curated inject '{name}' - added to the hammer (generic scan had missed it).");
                 }
                 catch (Exception ex)
                 {
@@ -1178,49 +1321,56 @@ namespace VerdantsAscent.Managers
         // user's Ignore list, which hides a prefab from the hammer while
         // keeping it registered in ZNetScene.
         private static bool IsEligible(GameObject prefab, HashSet<string> existingBuildables)
+            => IsEligible(prefab, existingBuildables, out _);
+
+        // 1.1.317 ([fgn] for Fire 10-26: "make sure that fap is truly adding every buildable prefab to the Hammer"; the
+        // Ashlands fortress spikes were missing). why = the rule that rejected it (null = eligible), for hammer_skipped.txt.
+        private static bool IsEligible(GameObject prefab, HashSet<string> existingBuildables, out string why)
         {
-            if ((UnityEngine.Object)prefab == (UnityEngine.Object)null) return false;
+            why = null;
+            if ((UnityEngine.Object)prefab == (UnityEngine.Object)null) { why = "null"; return false; }
 
             // Ignore gate - checked early so we don't waste the rest
             // of the filter on a prefab the user has explicitly hidden.
-            if (VAHammerTabOrganizer.IsIgnored(prefab.name)) return false;
+            if (VAHammerTabOrganizer.IsIgnored(prefab.name)) { why = "on the HammerTabs Ignore list"; return false; }
 
             // RemovedPrefabPlaceholders stubs (the removed castle tower) keep old saves loading; they are not pieces.
-            if (VAExternalBundleLoader.IsRemovedPrefabPlaceholder(prefab)) return false;
+            if (VAExternalBundleLoader.IsRemovedPrefabPlaceholder(prefab)) { why = "removed-prefab placeholder"; return false; }
 
             // Skip-bundle gate - bundles whose tab folder was renamed to "Skip"
             // have all their prefabs filtered out, including future ones.
             if (VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out var srcBundleForSkip)
                 && VAHammerTabOrganizer.IsBundleSkipped(srcBundleForSkip))
             {
+                why = "its bundle's tab folder is named Skip";
                 return false;
             }
 
             // Must be a root prefab - child GameObjects in the prefab list
             // are usually broken references and never make sense to place.
-            if (prefab.transform.parent != null) return false;
+            if (prefab.transform.parent != null) { why = "not a root prefab"; return false; }
 
             // Skip anything already on a hammer/cultivator/hoe table.
-            if (existingBuildables.Contains(prefab.name)) return false;
+            if (existingBuildables.Contains(prefab.name)) { why = "already on a hammer/hoe/cultivator table"; return false; }
 
             // Hard name rejects.
-            if (_hardSkipNames.Contains(prefab.name)) return false;
+            if (_hardSkipNames.Contains(prefab.name)) { why = "hard skip name"; return false; }
 
             // Prefix rejects.
             foreach (var prefix in _skipPrefixes)
             {
                 if (prefab.name.StartsWith(prefix, StringComparison.Ordinal))
-                    return false;
+                { why = "name starts with '" + prefix + "'"; return false; }
             }
             foreach (var needle in _skipContains)
             {
                 if (prefab.name.IndexOf(needle, StringComparison.Ordinal) >= 0)
-                    return false;
+                { why = "name contains '" + needle + "'"; return false; }
             }
 
             // ZNetView is non-negotiable. Without it the placed piece has no
             // network identity and would simply vanish on the next zone reload.
-            if (prefab.GetComponent<ZNetView>() == null) return false;
+            if (prefab.GetComponent<ZNetView>() == null) { why = "no ZNetView on the root"; return false; }
 
             // FAP-baked bundle prefabs carry VABakeParentLoader and intentionally
             // attach live interactive children (Container, Chair, ItemDrop) that
@@ -1228,40 +1378,127 @@ namespace VerdantsAscent.Managers
             // short-circuit them to eligible.
             if (prefab.GetComponent<Utilities.VABakeParentLoader>() != null) return true;
 
-            // Reject active-entity and world-system-anchor components. HasAny
-            // walks the FULL hierarchy (not just the root) because bundle and
-            // modded prefabs nest these on child GameObjects; a root-only check
-            // would let a fish/creature slip through and run entity + Piece
-            // logic together, NRE-spamming every frame.
-            if (HasAny<Projectile>(prefab)) return false;
-            if (HasAny<Humanoid>(prefab)) return false;
-            if (HasAny<AnimalAI>(prefab)) return false;
-            if (HasAny<Character>(prefab)) return false;
-            if (HasAny<CreatureSpawner>(prefab)) return false;
-            if (HasAny<SpawnArea>(prefab)) return false;
-            if (HasAny<Fish>(prefab)) return false;
-            if (HasAny<RandomFlyingBird>(prefab)) return false;
-            if (HasAny<MusicLocation>(prefab)) return false;
-            if (HasAny<Aoe>(prefab)) return false;
-            if (HasAny<ItemDrop>(prefab)) return false;
-            if (HasAny<DungeonGenerator>(prefab)) return false;
-            if (HasAny<TerrainModifier>(prefab)) return false;
-            if (HasAny<EventZone>(prefab)) return false;
-            if (HasAny<LocationProxy>(prefab)) return false;
-            if (HasAny<LootSpawner>(prefab)) return false;
-            if (HasAny<Mister>(prefab)) return false;
-            if (HasAny<Ragdoll>(prefab)) return false;
-            if (HasAny<TombStone>(prefab)) return false;
-            if (HasAny<LiquidVolume>(prefab)) return false;
-            if (HasAny<Gibber>(prefab)) return false;
-            if (HasAny<ShipConstructor>(prefab)) return false;
-            if (HasAny<TriggerSpawner>(prefab)) return false;
-            if (HasAny<TeleportAbility>(prefab)) return false;
-            if (HasAny<Trader>(prefab)) return false;
-            if (HasAny<CamShaker>(prefab)) return false;
+            // ENTITY rejects walk the FULL hierarchy: bundle and modded prefabs nest creatures/fish on child GameObjects, and a
+            // root-only check would let one slip through and run entity + Piece logic together (NRE spam every frame).
+            if (HasAny<Humanoid>(prefab)) { why = "has Humanoid (in its hierarchy)"; return false; }
+            if (HasAny<AnimalAI>(prefab)) { why = "has AnimalAI (in its hierarchy)"; return false; }
+            if (HasAny<Character>(prefab)) { why = "has Character (in its hierarchy)"; return false; }
+            // 1.1.350 (Fire 10-31: "a spawner placed from the hammer SHOULD spawn mobs"): a ROOT CreatureSpawner is a placeable
+            // spawner (Spawner_Draugr ...); one nested in a bundle/modded prefab is still the NRE case above.
+            if (!HasRoot<CreatureSpawner>(prefab) && HasAny<CreatureSpawner>(prefab)) { why = "has CreatureSpawner (nested, not the root)"; return false; }
+            if (HasAny<Fish>(prefab)) { why = "has Fish (in its hierarchy)"; return false; }
+            if (HasAny<RandomFlyingBird>(prefab)) { why = "has RandomFlyingBird (in its hierarchy)"; return false; }
+            if (HasAny<Ragdoll>(prefab)) { why = "has Ragdoll (in its hierarchy)"; return false; }
+            if (HasAny<TombStone>(prefab)) { why = "has TombStone (in its hierarchy)"; return false; }
+            if (HasAny<Trader>(prefab)) { why = "has Trader (in its hierarchy)"; return false; }
+
+            // 1.1.317: SYSTEM/EFFECT rejects check the ROOT only, like MoreVanillaBuildPrefabs (ShouldIgnorePrefab uses
+            // prefab.GetComponent). Vanilla building pieces carry these on CHILDREN as part of the piece: the Ashlands fortress
+            // spikes and the dvergr stakewalls have a damage Aoe child, siege pieces a CamShaker child, some pieces a
+            // TerrainModifier child. The full-hierarchy check dropped all of those from the Hammer.
+            if (HasRoot<Projectile>(prefab)) { why = "has Projectile (root)"; return false; }
+            // 1.1.350 (Fire 10-31 "Add nests too"): SpawnArea (nests, bone piles) and TriggerSpawner are spawners, on the Hammer.
+            if (HasRoot<MusicLocation>(prefab)) { why = "has MusicLocation (root)"; return false; }
+            if (HasRoot<Aoe>(prefab)) { why = "has Aoe (root)"; return false; }
+            if (HasRoot<ItemDrop>(prefab)) { why = "has ItemDrop (root)"; return false; }
+            if (HasRoot<DungeonGenerator>(prefab)) { why = "has DungeonGenerator (root)"; return false; }
+            if (HasRoot<TerrainModifier>(prefab)) { why = "has TerrainModifier (root)"; return false; }
+            // 1.1.351 (Fire 10-31): event zones are placeable (VAEventZonePresets sets their event + radius).
+            if (HasRoot<LocationProxy>(prefab)) { why = "has LocationProxy (root)"; return false; }
+            if (HasRoot<LootSpawner>(prefab)) { why = "has LootSpawner (root)"; return false; }
+            if (HasRoot<Mister>(prefab)) { why = "has Mister (root)"; return false; }
+            if (HasRoot<LiquidVolume>(prefab)) { why = "has LiquidVolume (root)"; return false; }
+            if (HasRoot<Gibber>(prefab) && !VerdantsAscent.Patches.VALootPieceMode.Debris.Contains(prefab.name)) { why = "has Gibber (root)"; return false; }   // 1.1.394: the 2 Morkhalla debris pieces are allowed (VALootPieceMode decor keeps them whole)
+            if (HasRoot<ShipConstructor>(prefab)) { why = "has ShipConstructor (root)"; return false; }
+            if (HasRoot<TeleportAbility>(prefab)) { why = "has TeleportAbility (root)"; return false; }
+            if (HasRoot<CamShaker>(prefab)) { why = "has CamShaker (root)"; return false; }
 
             return true;
         }
+
+        private static readonly List<string> s_skipped = new List<string>();
+
+        // One file per scan, every prefab the Hammer scan rejected and why (already-buildable and child entries left out),
+        // grouped by reason, plus one Debug line with the counts. Team cache convention: BepInEx\cache\<Mod>.
+        private static void WriteSkippedReport(int scanned)
+        {
+            try
+            {
+                var byWhy = new SortedDictionary<string, List<string>>(StringComparer.Ordinal);
+                foreach (var line in s_skipped)
+                {
+                    int tab = line.IndexOf('\t');
+                    string why = line.Substring(0, tab), name = line.Substring(tab + 1);
+                    if (!byWhy.TryGetValue(why, out var l)) byWhy[why] = l = new List<string>();
+                    l.Add(name);
+                }
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine("# FiresAdminPrefabs " + global::VerdantsAscent.VaPieces.PluginVersion + $": prefabs NOT added to the Hammer and why ({s_skipped.Count} of {scanned} scanned; already-buildable and child prefabs not listed)");
+                var counts = new List<string>();
+                foreach (var kv in byWhy)
+                {
+                    kv.Value.Sort(StringComparer.OrdinalIgnoreCase);
+                    sb.AppendLine().AppendLine($"## {kv.Key} ({kv.Value.Count})");
+                    foreach (var n in kv.Value) sb.AppendLine(n);
+                    counts.Add($"{kv.Key} {kv.Value.Count}");
+                }
+                string dir = System.IO.Path.Combine(BepInEx.Paths.BepInExRootPath, "cache", "FiresAdminPrefabs");
+                System.IO.Directory.CreateDirectory(dir);
+                string path = System.IO.Path.Combine(dir, "hammer_skipped.txt");
+                System.IO.File.WriteAllText(path, sb.ToString());
+                Debug.Log($"[FAP] hammer scan: {s_skipped.Count} prefabs not added ({string.Join("; ", counts)}); full list {path}");
+                s_skipped.Clear();
+            }
+            catch (Exception ex) { Debug.LogWarning("[FAP] hammer_skipped.txt not written: " + ex.Message); }
+        }
+
+        // 1.1.350 (Fire 10-31, a player: "when placing the spiked walls only 3-4 of them place"). Vanilla Player.PieceRayTest
+        // raycasts m_placeRayMask without a QueryTriggerInteraction and Valheim's physics settings hit triggers, so a placed
+        // Ashlands_Fortress_Wall_Spikes ('HIT AREA' on layer piece) or dvergrtown_wood_stakewall (layer Default) catches the
+        // ray with its invisible damage box and the next spike won't go beside it. Vanilla's own buildable spikes
+        // (piece_dvergr_sharpstakes, dvergrprops_wood_stakewall) keep that trigger on character_trigger, outside the mask:
+        // the same layer here. Aoe still damages through OnTriggerStay (character vs character_trigger, as sharpstakes).
+        private static readonly string[] s_placeRayLayers = { "Default", "static_solid", "Default_small", "piece", "piece_nonsolid", "terrain", "vehicle" };   // Player.m_placeRayMask
+        private static int s_spikePieces, s_spikeTriggers;
+
+        private static void FixSpikeTriggerLayers(GameObject prefab)
+        {
+            var config = ConfigManager.Instance;
+            if (config?.configSpikeTriggerLayerFix == null || !config.configSpikeTriggerLayerFix.Value) return;
+            int target = LayerMask.NameToLayer("character_trigger");
+            if (target < 0) return;
+            int mask = LayerMask.GetMask(s_placeRayLayers);
+            int moved = 0;
+            foreach (var aoe in prefab.GetComponentsInChildren<Aoe>(true))
+            {
+                if (aoe == null || aoe.gameObject == prefab || !aoe.m_useTriggers) continue;
+                var go = aoe.gameObject;
+                if ((mask & (1 << go.layer)) == 0) continue;
+                bool trigger = false;
+                foreach (var c in go.GetComponents<Collider>()) if (c != null && c.isTrigger) { trigger = true; break; }
+                if (!trigger) continue;
+                VaPieces.Log?.LogDebug($"[FAP] spike trigger: {prefab.name}/{go.name} layer {LayerMask.LayerToName(go.layer)} -> character_trigger (in the placement ray mask; vanilla sharpstakes layer)");
+                go.layer = target;
+                moved++;
+            }
+            if (moved == 0) return;
+            s_spikePieces++; s_spikeTriggers += moved;
+        }
+
+        // One Info proof line per scan (called after the scan loop).
+        private static void ReportSpikeTriggerLayers()
+        {
+            if (s_spikePieces == 0) return;
+            Debug.Log($"[FAP] spike triggers: {s_spikePieces} piece(s), {s_spikeTriggers} trigger(s) moved to character_trigger (vanilla sharpstakes layer), so the placement ray no longer lands on them");
+            s_spikePieces = 0; s_spikeTriggers = 0;
+        }
+
+        // 1.1.350: placeable spawners (CreatureSpawner, SpawnArea nests / bone piles, TriggerSpawner) on the root.
+        internal static bool IsSpawnerPrefab(GameObject prefab)
+            => prefab != null && (HasRoot<CreatureSpawner>(prefab) || HasRoot<SpawnArea>(prefab) || HasRoot<TriggerSpawner>(prefab));
+
+        private static bool HasRoot<T>(GameObject prefab) where T : Component
+            => (UnityEngine.Object)prefab.GetComponent<T>() != (UnityEngine.Object)null;
 
         // True if the type appears anywhere in the prefab hierarchy.
         // includeInactive=true because many prefabs ship with inactive
@@ -1325,10 +1562,21 @@ namespace VerdantsAscent.Managers
             return set;
         }
 
+        // 1.1.277 (NRE on world exit: the config live-reapply fired during ZNet teardown): "?." does not see a DESTROYED Unity object, so
+        // ObjectDB / the Hammer prefab are checked with Unity's own null test; no ObjectDB or no hammer = no table.
         private static PieceTable GetHammerPieceTable()
         {
-            var hammer = ObjectDB.instance?.GetItemPrefab("Hammer");
-            return hammer?.GetComponent<ItemDrop>()?.m_itemData?.m_shared?.m_buildPieces;
+            try
+            {
+                var db = ObjectDB.instance;
+                if (db == null) return null;
+                var hammer = db.GetItemPrefab("Hammer");
+                if (hammer == null) return null;
+                var drop = hammer.GetComponent<ItemDrop>();
+                if (drop == null) return null;
+                return drop.m_itemData?.m_shared?.m_buildPieces;
+            }
+            catch (Exception) { return null; }
         }
 
         // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1340,12 +1588,6 @@ namespace VerdantsAscent.Managers
         // author's Piece keeps its flags.
         private static bool EnsurePieceComponent(GameObject prefab)
         {
-            // FAP's snap layouts (Snapping\VASnapLayouts) for the vanilla props
-            // that shipped with no snap points or too few (dvergr poles/beams,
-            // goblin walls, blackmarble pieces...). Runs for BOTH paths, an
-            // authored Piece or a fresh one, and is idempotent per prefab.
-            Snapping.VASnapPoints.Apply(prefab);
-
             var piece = prefab.GetComponent<Piece>();
             if ((UnityEngine.Object)piece != (UnityEngine.Object)null)
             {
@@ -1385,6 +1627,9 @@ namespace VerdantsAscent.Managers
             piece.m_description = BuildPieceDescription(prefab);
             piece.m_enabled = true;
             piece.m_category = AutoCategorize(prefab);
+            // 1.1.328: a sound has nothing to render; give it the shared speaker icon now (PlanBuild mirrors every hammer piece and Jotunn
+            // rejects one without an icon). Effects that can render keep getting their rendered icon.
+            if (prefab.name.StartsWith("sfx_", StringComparison.Ordinal) && piece.m_icon == null) piece.m_icon = VerdantsAscent.Managers.VAPlaceholderIcons.Sound();
 
             piece.m_clipGround = true;
             piece.m_clipEverything = true;
@@ -1446,7 +1691,44 @@ namespace VerdantsAscent.Managers
                 return;
             }
 
-            if (!nview.m_persistent) nview.m_persistent = true;
+            if (nview.m_persistent) return;
+
+            // 1.1.398 (Fire 11-07: phantom wet drops): a prefab FAP doesn't own (vanilla or another
+            // mod's) is never changed. Flipping the shared vfx_Wet made every rain/swim wet effect a
+            // saved ZDO that outlived its creature. The PLACED copy is made persistent instead, on its
+            // own ZDO (PersistPlacedZdo), which ZNetView keeps on every reload.
+            if (!IsFapBundlePrefab(prefab))
+            {
+                _persistOnPlaceHashes.Add(prefab.name.GetStableHashCode());
+                return;
+            }
+            nview.m_persistent = true;
+        }
+
+        private static readonly HashSet<int> _persistOnPlaceHashes = new HashSet<int>();
+        private static bool _persistOnPlaceLogged;
+
+        // FAP's own bundle / baked prefabs: FAP owns them, so their prefab flag may change.
+        private static bool IsFapBundlePrefab(GameObject prefab)
+            => VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out _)
+               || Utilities.VABakeBundle.TryGetCacheKeyForPrefab(prefab.name) != null;
+
+        // True when a placement of this prefab must be saved although its shared prefab is
+        // transient (see EnsurePersistentZNetView).
+        public static bool PersistsOnPlace(string prefabName)
+            => !string.IsNullOrEmpty(prefabName) && _persistOnPlaceHashes.Contains(prefabName.GetStableHashCode());
+
+        // Makes one placed object's ZDO persistent. Owner only; returns true when it changed.
+        public static bool PersistPlacedZdo(ZDO zdo, string prefabName)
+        {
+            if (zdo == null || zdo.Persistent || !PersistsOnPlace(prefabName)) return false;
+            zdo.Persistent = true;
+            if (!_persistOnPlaceLogged)
+            {
+                _persistOnPlaceLogged = true;
+                Debug.Log($"{VaPieces.PluginName}: placed '{prefabName}' saved on its own ZDO; {_persistOnPlaceHashes.Count} shared vanilla/mod prefab(s) on the hammer stay unchanged (transient when the game spawns them).");
+            }
+            return true;
         }
 
         // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1489,6 +1771,13 @@ namespace VerdantsAscent.Managers
                 && VACategoryRegistry.TryGet(VACategoryRegistry.CatClutter, out var clutterCat))
             {
                 return clutterCat;
+            }
+
+            // 1.1.350 (Fire 10-31: "we have a whole monsters tab"): spawners and nests go in the Monsters tab.
+            if (IsSpawnerPrefab(prefab)
+                && VACategoryRegistry.TryGet(VACategoryRegistry.CatMonsters, out var monstersTab))
+            {
+                return monstersTab;
             }
 
             // Sort-hammer-by-mod override: with the toggle on, a bundle prefab
@@ -1608,7 +1897,7 @@ namespace VerdantsAscent.Managers
             return config != null
                 && config.configUseEwpForPersistence != null
                 && config.configUseEwpForPersistence.Value
-                && VerdantsAscent.Utilities.VAEwpSoftDep.IsActive;
+                && VerdantsAscent.Utilities.VAEwpSoftDep.For(config.configEwpEffects);   // 1.1.279: per-kind toggle
         }
 
         private static HashSet<string> _effectAllowlistCache;
@@ -1946,8 +2235,15 @@ namespace VerdantsAscent.Managers
         // The generic pass, for prefabs with no snap layout. This one KEEPS
         // the "already has snaps" bail: inventing bounds corners on a piece
         // someone authored snaps for would fight the author. The layouts in
-        // Snapping\VASnapLayouts are the opposite case and run first.
+        // 1.1.320 (Fire 10-26, Searica parity: "ONE centre Origin point"): a prop with no layout and no snap points of its own gets
+        // exactly what ExtraSnapPointsMadeEasy gives it, one "Origin" point at the pivot (ExtraSnapsAdder: Origin at (0,0,0)), so its
+        // starting snap point is the pivot, not an invented bounds corner. The old bounds-corner pass is kept below, unused.
         private static void EnsureSnapPoints(GameObject prefab)
+        {
+            Snapping.VASnapGeometry.Apply(prefab);
+        }
+
+        private static void EnsureBoundsSnapPoints(GameObject prefab)
         {
             if (HasExistingSnapPoints(prefab)) return;
 

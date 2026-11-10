@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -63,7 +63,7 @@
          FUC's DLL into FAP's plugin folder; the user installs FUC
          separately and BepInEx loads it ahead of FAP. -->
     <Reference Include="FiresUnifiedCore">
-      <HintPath>..\..\FiresUnifiedCore\FiresUnifiedCore\bin\Release\FiresUnifiedCore.dll</HintPath>
+      <HintPath>..\..\_coreS_wishbone_core1036\FiresUnifiedCore\bin\Release\FiresUnifiedCore.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="assembly_guiutils">
@@ -87,6 +87,10 @@
     <Reference Include="gui_framework">
       <HintPath>..\..\..\..\..\..\..\Program Files (x86)\Steam\steamapps\common\Valheim\valheim_Data\Managed\gui_framework.dll</HintPath>
     </Reference>
+    <Reference Include="SoftReferenceableAssets">
+      <HintPath>..\..\..\..\..\..\..\Program Files (x86)\Steam\steamapps\common\Valheim\valheim_Data\Managed\SoftReferenceableAssets.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
       <HintPath>..\packages\Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
     </Reference>
@@ -102,7 +106,7 @@
          r2modman profile; if EWD updates and breaks the API, this
          build's reference needs updating to match. -->
     <Reference Include="ExpandWorldData">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim dedicated server\BepInEx\plugins\JereKuusela-Expand_World_Data\ExpandWorldData.dll</HintPath>
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim dedicated server - EBMIsolated\BepInEx\plugins\JereKuusela-Expand_World_Data\ExpandWorldData.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="YamlDotNet, Version=16.0.0.0, Culture=neutral, PublicKeyToken=ec19458f3c15af5e, processorArchitecture=MSIL">
@@ -175,10 +179,21 @@
     <Compile Include="ExternalScripts\MissingPieces\*.cs" />
     <Compile Include="Api\FapExternalPrefabs.cs" />
     <Compile Include="Api\FapPieceMenu.cs" />
+    <Compile Include="Api\FapHammerMenu.cs" />
+    <Compile Include="Api\FapBlueprints.cs" />
+    <Compile Include="Api\FapPresets.cs" />
+    <Compile Include="Api\FapBuildLists.cs" />
+    <Compile Include="Api\FapTools.cs" />
+    <Compile Include="Managers\FapCoreSettingsOwned.cs" />
+    <Compile Include="Api\FapPresetRows.cs" />
+    <Compile Include="Api\FapPresetKinds.cs" />
+    <Compile Include="Api\FapPresetKinds2.cs" />
     <Compile Include="Ascend.cs" />
     <Compile Include="Managers\ConfigManager.cs" />
+    <Compile Include="Managers\FapConfigUi.cs" />
     <Compile Include="Managers\VAPieceManager.cs" />
     <Compile Include="Managers\VAVanillaPieceManager.cs" />
+    <Compile Include="Managers\VAPlaceholderIcons.cs" />
     <Compile Include="Managers\VAExternalBundleLoader.cs" />
     <Compile Include="Managers\VAArmorMaterialGuard.cs" />
     <Compile Include="Managers\VABundleItemRefRepair.cs" />
@@ -193,8 +208,8 @@
     <Compile Include="Managers\VAMaterialRepair.cs" />
     <Compile Include="Managers\VAInjectedShaders.cs" />
     <Compile Include="Managers\VAHammerTabOrganizer.cs" />
-    <Compile Include="Managers\Snapping\VASnapRule.cs" />
-    <Compile Include="Managers\Snapping\VASnapLayouts.cs" />
+    <Compile Include="Managers\Snapping\VASnapGeometry.cs" />
+    <Compile Include="Patches\VAOffsetCentre.cs" />
     <Compile Include="Managers\Snapping\VASnapPoints.cs" />
     <Compile Include="Managers\Snapping\VASnapDefaults.cs" />
     <Compile Include="Managers\VABlueprintLoader.cs" />
@@ -212,7 +227,6 @@
     <Compile Include="Patches\HammerRotationPatches.cs" />
     <Compile Include="Patches\MineRockSafetyPatch.cs" />
     <Compile Include="Patches\MissingPrefabHashGuard.cs" />
-    <Compile Include="Patches\EffectListTransientPatch.cs" />
     <Compile Include="Patches\HammerScrollPatches.cs" />
     <Compile Include="Patches\InfinityHammerMeasureGuard.cs" />
     <Compile Include="Patches\VAInfinityHammerAreaScalePatch.cs" />
@@ -230,8 +244,17 @@
     <Compile Include="Utilities\VAPieceIconRenderer.cs" />
     <Compile Include="Utilities\VALazyBundleManifest.cs" />
     <Compile Include="Utilities\VALazyBundles.cs" />
+    <Compile Include="Utilities\VATowerNearChunks.cs" />
+    <Compile Include="Utilities\VAPrefabChildren.cs" />
+    <Compile Include="Utilities\VAStatusFxOrphans.cs" />
+    <Compile Include="Utilities\VAStatusFxTrace.cs" />
+    <Compile Include="Managers\VAGuidePointRepair.cs" />
     <Compile Include="Utilities\FapNativeTrace.cs" />
     <Compile Include="Utilities\VASnapLiveDiagnostics.cs" />
+    <Compile Include="Utilities\VAFapDungeons.cs" />
+    <Compile Include="Api\FapEntrances.cs" />
+    <Compile Include="Utilities\VAEventZonePresets.cs" />
+    <Compile Include="Utilities\VAPlacedSpawnerBoxes.cs" />
     <Compile Include="Sync\VAFapSyncManifest.cs" />
     <Compile Include="Sync\VAFapSyncChunker.cs" />
     <Compile Include="Sync\VAFapSyncRpcs.cs" />
@@ -252,6 +275,10 @@
     <Compile Include="Utilities\VAClutterRegistry.cs" />
     <Compile Include="Utilities\VAClutterStandinFactory.cs" />
     <Compile Include="Utilities\VAClutterBrushIndicator.cs" />
+    <Compile Include="Utilities\VARadiusWheel.cs" />
+    <Compile Include="Utilities\VARadiusSwapTool.cs" />
+    <Compile Include="Utilities\VASwapUi.cs" />
+    <Compile Include="Utilities\VASwapPresets.cs" />
     <Compile Include="Utilities\VAFapEwpYamlWriter.cs" />
     <Compile Include="Utilities\VAFapEwpClearTool.cs" />
     <Compile Include="Utilities\VAFapThreadLog.cs" />
@@ -274,6 +301,7 @@
     <Compile Include="Utilities\VARuntimeMonoStub.cs" />
     <Compile Include="Utilities\VAMonsterRegistry.cs" />
     <Compile Include="Utilities\VAMonsterStandinFactory.cs" />
+    <Compile Include="Utilities\VAEnemySpawners.cs" />
     <Compile Include="Utilities\VAMonsterSpawner.cs" />
     <Compile Include="Utilities\VAMonsterConfigQueue.cs" />
     <Compile Include="Utilities\VAMonsterPreset.cs" />
@@ -283,8 +311,10 @@
     <Compile Include="Utilities\VAMonsterConfigUI.cs" />
     <Compile Include="Patches\VAMonsterConfigApplier.cs" />
     <Compile Include="Patches\VABuildUiCategoryTags.cs" />
+    <Compile Include="Patches\VAInfinityToolsTab.cs" />
     <Compile Include="Patches\VAPlacementGhostGuard.cs" />
     <Compile Include="Patches\VAGhostEvidence.cs" />
+    <Compile Include="Patches\VAPlacedPieceIH.cs" />
     <Compile Include="Patches\VADevPrefabs.cs" />
     <Compile Include="Patches\VAFapRespawner.cs" />
     <Compile Include="Utilities\VAFapPersistBrushTool.cs" />
@@ -295,7 +325,14 @@
     <Compile Include="Patches\VAExternalMenuPinPatches.cs" />
     <Compile Include="Patches\VAGhostRippleGuardPatch.cs" />
     <Compile Include="Patches\VABuildUiPatches.cs" />
+    <Compile Include="Patches\VAHopperContextProvider.cs" />
+    <Compile Include="Patches\VALootPieceMode.cs" />
     <Compile Include="Utilities\CoreUiBridge.cs" />
+    <Compile Include="Utilities\CoreImguiWidgets.cs" />
+    <Compile Include="Utilities\VAKitControls.cs" />
+    <Compile Include="Utilities\VASoundPresets.cs" />
+    <Compile Include="Utilities\VASoundPresetUi.cs" />
+    <Compile Include="Utilities\VAScreenHold.cs" />
     <Compile Include="Patches\VAHammerRightClickPatches.cs" />
     <Compile Include="Utilities\VAItemStandRegistry.cs" />
     <Compile Include="Utilities\VAItemStandStandinFactory.cs" />
@@ -306,6 +343,7 @@
     <Compile Include="Patches\VAClutterDirtPaintCleanup.cs" />
     <Compile Include="Patches\VAClutterOrphanZdoCleanup.cs" />
     <Compile Include="Patches\VAItemStandHidePatch.cs" />
+    <Compile Include="Patches\VAItemStandNameCompat.cs" />
     <Compile Include="Patches\VAUndoBracketPlacePiecePatch.cs" />
     <Compile Include="Utilities\VAUndoBridge.cs" />
     <Compile Include="Patches\VAZNetViewLoadFieldsGuard.cs" />
@@ -365,10 +403,15 @@
     <Compile Include="Utilities\VABlueprintGroupRegistry.cs" />
     <Compile Include="Utilities\VABlueprintPieceMarker.cs" />
     <Compile Include="Utilities\VABakeBatchMarker.cs" />
+    <Compile Include="Utilities\FapCoreFar.cs" />
+    <Compile Include="Utilities\FapHorizonCull.cs" />
+    <Compile Include="Utilities\FapVegLod.cs" />
+    <Compile Include="Utilities\FapAwakeDispatch.cs" />
     <Compile Include="Utilities\VABakeColliderToggle.cs" />
     <Compile Include="Utilities\VABakeZoneKey.cs" />
     <Compile Include="Utilities\VABakeLodPolicy.cs" />
     <Compile Include="Utilities\VABakeBundle.cs" />
+    <Compile Include="Utilities\VASignRevisionPoll.cs" />
     <Compile Include="Utilities\VABakeTemplateRegistry.cs" />
     <Compile Include="Utilities\VAFapBlueprintBakeCache.cs" />
     <Compile Include="Utilities\VAFapBakeCacheDisk.cs" />
@@ -377,6 +420,10 @@
     <Compile Include="Utilities\VAFapReadableMeshProvider.cs" />
     <Compile Include="Utilities\VABakeParentPrefab.cs" />
     <Compile Include="Patches\VABlueprintGroupPatches.cs" />
+    <Compile Include="Network\VAFapLiveTest.cs" />
+    <Compile Include="Network\VAFapMenuShotsTest.cs" />
+    <Compile Include="Network\VAFapNearLoaderTest.cs" />
+    <Compile Include="Network\VAFapEwdTest.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

@@ -5,7 +5,7 @@ namespace VerdantsAscent.Utilities
 {
     // Area brush in the Clutter tab that removes FAP-painted clutter inside a radius. Painted
     // clutter lives in each zone's TerrainComp ZDO byte array rather than as networked objects,
-    // so this edits those arrays through VAClutterPaintTool. Shift+Scroll resizes the brush.
+    // so this edits those arrays through VAClutterPaintTool. Scroll = radius, Shift+Scroll = height the brush.
     public static class VAClutterClearTool
     {
         public const string StandinName = "FAP_ClutterClearTool";
@@ -26,7 +26,7 @@ namespace VerdantsAscent.Utilities
             "<color=#66cc88>Clutter Clear Brush.</color> Click on terrain to remove "
             + "FAP-painted clutter inside the brush radius. Only affects clutter painted "
             + "with this mod's paint tool; vanilla biome clutter regrows naturally. "
-            + "Shift+Scroll resizes; cleared positions persist (won't respawn on zone reload).";
+            + "Scroll = radius, Shift+Scroll = height; cleared positions persist (won't respawn on zone reload).";
 
         private static GameObject _standin;
 

@@ -141,4 +141,59 @@ namespace VerdantsAscent.Utilities
             return destroyed;
         }
     }
+
+    // 1.1.380 (lead 11-03: fap_purge_prefab said "Destroyed N" while all 9 towers stayed in the save): a client only holds the ZDOs near it and only
+    // queues the destroy, so the count meant nothing. The server holds every ZDO: an admin's purge runs there and the real result comes back.
+    public static class VAFapPrefabPurgeRpc
+    {
+        private const string RequestRpc = "FAP_PurgePrefab";
+        private const string ResultRpc = "FAP_PurgePrefabResult";
+        private const float MaxRadius = 20000f;
+        private static ZRoutedRpc s_registeredOn;
+        private static Terminal s_waiting;
+
+        public static void Register()
+        {
+            if (ZRoutedRpc.instance == null || ReferenceEquals(s_registeredOn, ZRoutedRpc.instance)) return;
+            s_registeredOn = ZRoutedRpc.instance;
+            ZRoutedRpc.instance.Register<int, Vector3, float, bool>(RequestRpc, OnRequest);
+            ZRoutedRpc.instance.Register<string>(ResultRpc, OnResult);
+        }
+
+        public static void Send(Terminal context, int prefabHash, Vector3 center, float radius, bool confirm)
+        {
+            Register();
+            s_waiting = context;
+            ZRoutedRpc.instance.InvokeRoutedRPC(ZRoutedRpc.instance.GetServerPeerID(), RequestRpc, prefabHash, center, radius, confirm);
+        }
+
+        private static void OnRequest(long sender, int prefabHash, Vector3 center, float radius, bool confirm)
+        {
+            if (ZNet.instance == null || !ZNet.instance.IsServer()) return;
+            string result;
+            if (!FiresCore.Sync.AdminSyncing.IsAdmin(sender)) result = "refused: admin on the server only";
+            else if (float.IsNaN(center.x) || float.IsNaN(center.y) || float.IsNaN(center.z) || float.IsNaN(radius) || radius > MaxRadius || (radius <= 0f && radius != -1f)) result = "refused: bad position or radius";
+            else
+            {
+                string name = ZNetScene.instance?.GetPrefab(prefabHash)?.name ?? prefabHash.ToString();
+                var match = VAFapPrefabPurge.Survey(prefabHash, name, center, radius);
+                if (match == null) result = "refused: ZDO table not readable";
+                else if (!confirm) result = $"server holds {match.TotalHeld} '{name}', {match.WithinRadius} would go ({match.ByZone.Count} zone(s), {match.NearestDistance:0} to {match.FarthestDistance:0} m). Nothing deleted.";
+                else
+                {
+                    int removed = VAFapPrefabPurge.Purge(prefabHash, center, radius);
+                    result = $"server removed {removed} '{name}'; {match.TotalHeld - removed} left in the world.";
+                }
+            }
+            Debug.Log($"{VaPieces.PluginName}: fap_purge_prefab from {sender}: {result}");
+            ZRoutedRpc.instance.InvokeRoutedRPC(sender, ResultRpc, result);
+        }
+
+        private static void OnResult(long sender, string result)
+        {
+            if (sender != ZRoutedRpc.instance.GetServerPeerID() || string.IsNullOrEmpty(result) || result.Length > 300) return;
+            Debug.Log($"{VaPieces.PluginName}: fap_purge_prefab: {result}");
+            if (s_waiting != null) s_waiting.AddString("[FAP] " + result);
+        }
+    }
 }

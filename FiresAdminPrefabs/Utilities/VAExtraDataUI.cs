@@ -21,10 +21,12 @@ namespace VerdantsAscent.Utilities
         private const float MinW = 640f, MaxW = 1880f, MinH = 420f, MaxH = 1060f, Grip = 18f, LabelW = 0.36f;
 
         private static VAExtraDataUI _open;
+        private static bool s_p7ClosedLogged;   // 1.1.325 (UI audit P7)
         private static ConfigEntry<float> s_opacity, s_width, s_height, s_x, s_y;
 
         private string _prefabName;
         private List<VAExtraField> _fields;
+        private readonly Dictionary<VAExtraField, string[]> _rowText = new Dictionary<VAExtraField, string[]>();   // 1.1.321 (P1)
         private readonly Dictionary<string, string> _typed = new Dictionary<string, string>();   // survives the search filter
         private string _presetName = string.Empty;
         private string _filter = string.Empty;
@@ -65,6 +67,7 @@ namespace VerdantsAscent.Utilities
             _open.SaveLayout();
             Destroy(_open.gameObject);
             _open = null;
+            if (!s_p7ClosedLogged) { s_p7ClosedLogged = true; VaPieces.Log?.LogDebug("[FAP] VAExtraDataUI closed: OnGUI off until reopened"); }   // 1.1.325 (UI audit P7): this host is destroyed on close (no OnGUI while closed)
         }
 
         internal static void BindLayout()
@@ -76,6 +79,7 @@ namespace VerdantsAscent.Utilities
             s_height = cfg.Bind("DataPresetUI", "Height", 820f, "The data preset window's height.");
             s_x = cfg.Bind("DataPresetUI", "X", -1f, "The window's left edge (-1 = centred; drag the title row).");
             s_y = cfg.Bind("DataPresetUI", "Y", -1f, "The window's top edge (-1 = centred).");
+            VerdantsAscent.Managers.FapConfigUi.Apply(cfg);   // 1.1.279: window geometry is saved, never shown
         }
 
         private void PlaceWindow()
@@ -175,8 +179,23 @@ namespace VerdantsAscent.Utilities
         // One field: its name, its value box (the prefab's own value shown when empty), its hint; hover = the full tooltip.
         private void DrawRow(VAExtraField field, float labelW)
         {
+            // 1.1.321 (UI audit P1): the row's label / hint / tooltip are built once per field (the fields are fixed for this open)
+            if (!_rowText.TryGetValue(field, out string[] text))
+            {
+                string now = string.IsNullOrEmpty(field.PrefabValue) ? "(empty)" : field.PrefabValue;
+                text = new[]
+                {
+                    field.Settable ? $"<b>{field.Key}</b>" : $"<color=#B0A080>{field.Key}</color>",
+                    field.Settable ? $"now {now} - {field.Hint}" : field.UnsettableReason,
+                    (field.Settable ? field.Hint : field.UnsettableReason)
+                        + $"\nType: {field.Kind}. Accepts: {Accepts(field.Kind)}."
+                        + $"\nCurrent value on {_prefabName}: {now}."
+                        + "\nLeave empty to keep the prefab's own value."
+                };
+                _rowText[field] = text;
+            }
             GUILayout.BeginHorizontal();
-            GUILayout.Label(field.Settable ? $"<b>{field.Key}</b>" : $"<color=#B0A080>{field.Key}</color>", FiresRoundedSkin.Label, GUILayout.Width(labelW));
+            GUILayout.Label(text[0], FiresRoundedSkin.Label, GUILayout.Width(labelW));
             if (field.Settable)
             {
                 _typed.TryGetValue(field.Key, out string typed);
@@ -191,12 +210,8 @@ namespace VerdantsAscent.Utilities
                 }
             }
             GUILayout.EndHorizontal();
-            string hint = field.Settable ? $"now {(string.IsNullOrEmpty(field.PrefabValue) ? "(empty)" : field.PrefabValue)} - {field.Hint}" : field.UnsettableReason;
-            GUILayout.Label(hint, FiresRoundedSkin.Desc);
-            FiresRoundedSkin.MarkHint((field.Settable ? field.Hint : field.UnsettableReason)
-                + $"\nType: {field.Kind}. Accepts: {Accepts(field.Kind)}."
-                + $"\nCurrent value on {_prefabName}: {(string.IsNullOrEmpty(field.PrefabValue) ? "(empty)" : field.PrefabValue)}."
-                + "\nLeave empty to keep the prefab's own value.");
+            GUILayout.Label(text[1], FiresRoundedSkin.Desc);
+            FiresRoundedSkin.MarkHint(text[2]);
             GUILayout.Space(4f);
         }
 
@@ -309,7 +324,7 @@ namespace VerdantsAscent.Utilities
         {
             if (Player.m_localPlayer != null)
                 Player.m_localPlayer.Message(MessageHud.MessageType.Center, message);
-            Debug.Log($"{VaPieces.PluginName}: {message}");
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: {message}");
         }
     }
 }

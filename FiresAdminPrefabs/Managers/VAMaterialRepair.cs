@@ -75,6 +75,88 @@ namespace VerdantsAscent.Managers
         }
 
         // Wants an albedo and has none — the definition of the white case.
+        // 1.1.364 (Fire 11-02, Tools\AUDIT_vapieces_materials_20261102.md, r12 + r15 fap_materials): one rule. A bundle *_Copy of a vanilla material IS that
+        // material: its shader, every map, value and keyword, from the vanilla original of the same name. All *_Copy texture references dangled at build, so
+        // the copies lost their normal, metal and emission maps (DvergrTownLantern_mat_Copy: emission colour 2,2,2 with no map = a white slot; Grausten: full
+        // metal with no metal map = dark). Vanilla only: bundles, Jotunn mods and FDM can wear a vanilla name (stonefloor_2x2 = FDM_BuilderGrid), and when the
+        // albedos differ it is not the same material. A texture-less copy matches a textured or texture-less original; no original = left alone.
+        public static int TotalMaterialsFromVanilla;
+        private static Dictionary<string, List<Material>> _vanillaByName;
+
+        private static void BuildVanillaByName()
+        {
+            if (_vanillaByName != null || ZNetScene.instance == null) return;
+            _vanillaByName = new Dictionary<string, List<Material>>(StringComparer.Ordinal);
+            foreach (var p in ZNetScene.instance.m_prefabs)
+            {
+                if (p == null || VAExternalBundleLoader.TryGetSourceBundle(p.name, out _) || VerdantsAscent.Utilities.VAJotunnGuard.IsJotunnOwned(p.name)) continue;
+                if (p.name.StartsWith("FDM", StringComparison.Ordinal) || p.name.StartsWith("Fires", StringComparison.Ordinal) || p.name.StartsWith("FAP_", StringComparison.Ordinal)) continue;
+                foreach (var r in p.GetComponentsInChildren<Renderer>(true))
+                    foreach (var m in r.sharedMaterials)
+                    {
+                        if (m == null || string.IsNullOrEmpty(m.name) || m.name.EndsWith("_Copy", StringComparison.Ordinal)) continue;
+                        if (!_vanillaByName.TryGetValue(m.name, out var list)) _vanillaByName[m.name] = list = new List<Material>();
+                        if (!list.Contains(m)) list.Add(m);
+                    }
+            }
+        }
+
+        private static readonly Dictionary<string, string> AliasPiece = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            { "stonepillarMat", "stone_pillar" }, { "defaultMat_Copy", "stone_arch" },
+        };
+        private static readonly HashSet<string> _noOriginal = new HashSet<string>(StringComparer.Ordinal);
+
+        private static bool AdoptFromPiece(Material mat, string pieceName, GameObject prefab)
+        {
+            var src = ZNetScene.instance != null ? ZNetScene.instance.GetPrefab(pieceName) : null;
+            if (src == null) return false;
+            foreach (var r in src.GetComponentsInChildren<MeshRenderer>(true))
+                foreach (var m in r.sharedMaterials)
+                {
+                    if (m == null || m.shader == null || !m.shader.name.StartsWith("Custom/", StringComparison.Ordinal) || !m.HasProperty("_MainTex") || m.mainTexture == null) continue;
+                    mat.shader = m.shader;
+                    mat.CopyPropertiesFromMaterial(m);
+                    mat.shaderKeywords = m.shaderKeywords;
+                    mat.renderQueue = m.renderQueue;
+                    TotalMaterialsFromVanilla++;
+                    VaPieces.Log?.LogDebug($"[VAMaterialRepair] {prefab.name} material {mat.name}: piece {pieceName}'s {m.name}");
+                    return true;
+                }
+            return false;
+        }
+
+        private static bool AdoptVanilla(Material mat, GameObject prefab)
+        {
+            try
+            {
+                if (mat == null || ConfigManager.Instance?.configBundleCopiesUseGameShader?.Value != true) return false;
+                // 1.1.368 (Fire: the bridge's arches render white, "Stone pillars had the same problem"): the rip gave some vanilla pieces a placeholder material named
+                // after the mesh, so the blueprint bake copied an empty one. Those names map to the piece they came from: the one data rule beside the name rule.
+                if (AliasPiece.TryGetValue(mat.name, out var piece)) return AdoptFromPiece(mat, piece, prefab);
+                if (!mat.name.EndsWith("_Copy", StringComparison.Ordinal)) return false;
+                BuildVanillaByName();
+                if (_vanillaByName == null || !_vanillaByName.TryGetValue(mat.name.Substring(0, mat.name.Length - 5), out var list))
+                {
+                    if (_noOriginal.Add(mat.name)) VaPieces.Log?.LogDebug($"[VAMaterialRepair] no vanilla original for {mat.name} (first on {prefab.name}); left as it is, texture {(mat.HasProperty("_MainTex") && mat.mainTexture != null ? mat.mainTexture.name : "none")}");
+                    return false;
+                }
+                Texture own = mat.HasProperty("_MainTex") ? mat.mainTexture : null;
+                Material vanilla = null;
+                foreach (var v in list)
+                    if (v.shader != null && v.HasProperty("_MainTex") && (own == null || v.mainTexture == own)) { vanilla = v; break; }
+                if (vanilla == null) return false;
+                mat.shader = vanilla.shader;
+                mat.CopyPropertiesFromMaterial(vanilla);
+                mat.shaderKeywords = vanilla.shaderKeywords;
+                mat.renderQueue = vanilla.renderQueue;
+                TotalMaterialsFromVanilla++;
+                VaPieces.Log?.LogDebug($"[VAMaterialRepair] {prefab.name} material {mat.name}: vanilla {vanilla.name}, shader {vanilla.shader.name}");
+                return true;
+            }
+            catch (Exception ex) { VaPieces.Log?.LogDebug($"[VAMaterialRepair] vanilla copy on '{mat?.name}' failed: {ex.Message}"); return false; }
+        }
+
         private static bool NeedsMainTexture(Material mat)
         {
             try { return mat != null && mat.HasProperty("_MainTex") && mat.mainTexture == null; }
@@ -327,6 +409,7 @@ namespace VerdantsAscent.Managers
                 {
                     TotalMaterialsScanned++;
                     var mat = mats[i];
+                    if (mat != null && !_examined.ContainsKey(mat) && AdoptVanilla(mat, prefab)) { _examined[mat] = true; TotalMaterialsRepaired++; continue; }   // 1.1.364
 
                     VAExternalBundleLoader.MaterialDescriptorDto matDesc = null;
 
@@ -444,27 +527,8 @@ namespace VerdantsAscent.Managers
                             }
                         }
 
-                        // PRIORITY 2: substitute the whole slot via vanilla
-                        // template / descriptor reconstruction.
-                        TotalMaterialsNullShader++;
-                        var substitute = BuildFallbackMaterial(prefab, i, matDesc, renderer);
-                        if (substitute != null)
-                        {
-                            mats[i] = substitute;
-                            NoteRepairResult(substitute, prefab);
-                            slotChanged = true;
-                            _examined[mat] = true;
-                            TotalMaterialsRepaired++;
-                            if (ConfigManager.Instance != null && ConfigManager.Instance.configVerboseLogging.Value)
-                            {
-                                Debug.Log($"{VaPieces.PluginName}: VAMaterialRepair — substituted material on '{prefab.name}' (slot {i}): shader was OK but mainTexture missing → category '{ClassifyPrefabForMaterial(prefab)}'.");
-                            }
-                        }
-                        else
-                        {
-                            _examined[mat] = false;
-                            TotalMaterialsUnrepairable++;
-                        }
+                        // 1.1.364: nothing names a texture and no vanilla original: left as it is (stonepillarMat's plain colour), never a category lookalike.
+                        _examined[mat] = false;
                         continue;
                     }
 
@@ -798,7 +862,7 @@ namespace VerdantsAscent.Managers
                 "darkwood_roof_creep_45", "wood_roof");
 
             TryStashMaterial(scene, "default",
-                "Hammer", "piece_workbench", "wood_door", "stone_wall_2x1");
+                "stone_wall_2x1", "wood_door", "piece_workbench", "Hammer");   // 1.1.356: a plain building material first
 
             int templateCount = _vanillaMaterialTemplates.Count;
             Debug.Log($"{VaPieces.PluginName}: VAMaterialRepair vanilla material cache built — {templateCount} category template(s): [{string.Join(", ", _vanillaMaterialTemplates.Keys)}]");
@@ -819,7 +883,9 @@ namespace VerdantsAscent.Managers
                 GameObject candidate;
                 try { candidate = scene.GetPrefab(name); } catch { continue; }
                 if (candidate == null) continue;
-                var renderer = candidate.GetComponentInChildren<Renderer>(includeInactive: true);
+                // 1.1.356 (r12: bridge slots 7 + 8 = 'FAP_RepairCopy_(default)' on Legacy Particles, texture starspark, the white "lanterns"):
+                // the Hammer's first Renderer is a particle system. A template comes from a mesh, in the opaque range.
+                var renderer = System.Array.Find(candidate.GetComponentsInChildren<MeshRenderer>(includeInactive: true), r => r != null && r.sharedMaterial != null && r.sharedMaterial.renderQueue < 3000 && r.sharedMaterial.shader != null && r.sharedMaterial.shader.name.StartsWith("Custom/") && r.sharedMaterial.HasProperty("_MainTex") && r.sharedMaterial.mainTexture != null);   // 1.1.357: a textured building material (stone_wall_2x1's first mesh is its snow skin, Valheim/Snow Mesh)
                 if (renderer == null) continue;
                 Material[] sharedMats;
                 try { sharedMats = renderer.sharedMaterials; } catch { continue; }
@@ -1261,7 +1327,7 @@ namespace VerdantsAscent.Managers
         // One-line summary for the end-of-injection log.
         public static string FormatSummary()
         {
-            string baseLine = $"prefabs={TotalPrefabsScanned}, materials={TotalMaterialsScanned}, repaired={TotalMaterialsRepaired} (null-slot={TotalMaterialsNullSlot}, null-shader={TotalMaterialsNullShader}, error-shader={TotalMaterialsErrorShader}), unrepairable={TotalMaterialsUnrepairable}";
+            string baseLine = $"from vanilla original={TotalMaterialsFromVanilla}, prefabs={TotalPrefabsScanned}, materials={TotalMaterialsScanned}, repaired={TotalMaterialsRepaired} (null-slot={TotalMaterialsNullSlot}, null-shader={TotalMaterialsNullShader}, error-shader={TotalMaterialsErrorShader}), unrepairable={TotalMaterialsUnrepairable}";
             baseLine += $", LODGroups: {LodGroupsAuthored} bundle prefab(s) with their own, {LodGroupsAdded} given a cull LODGroup, {LodGroupsSkipped} skipped";
             if (TotalMaterialsTextureByName > 0)
                 baseLine += $", texture recovered by material name={TotalMaterialsTextureByName}";

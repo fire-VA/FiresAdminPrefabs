@@ -23,6 +23,10 @@ namespace VerdantsAscent.Patches
         public const string CatItemStandsH = "Item Stands (H)";
         public const string CatMonsters = "Monsters";
         public const string CatBakedMeshes = "Baked Meshes";
+        // 1.1.351 (Fire 10-31: "the dungeons would be merged into the dungeon tab, so it would just grow when dungeon master is
+        // installed"): the same label FiresDungeonMaster asks GetOrAdd for (its Ascend.cs DungeonSectionsCategory), so its rooms land here.
+        public const string CatDungeons = "Dungeons";   // FiresDungeonMaster's rooms
+        public const string CatLocations = "Locations";   // 1.1.365
 
         private static readonly Dictionary<string, Piece.PieceCategory> _byName =
             new Dictionary<string, Piece.PieceCategory>(StringComparer.Ordinal);
@@ -115,7 +119,7 @@ namespace VerdantsAscent.Patches
         private static readonly string[] OwnCategories =
         {
             CatNature, CatClutter, CatCreatorShop, CatBlueprints, CatFX, CatVFX,
-            CatItemStandsV, CatItemStandsH, CatMonsters, CatBakedMeshes,
+            CatItemStandsV, CatItemStandsH, CatMonsters, CatBakedMeshes, CatDungeons, CatLocations,
         };
 
         // FAP's own tabs, as opposed to the categories other mods allocate here by name (Dungeon Sections, the

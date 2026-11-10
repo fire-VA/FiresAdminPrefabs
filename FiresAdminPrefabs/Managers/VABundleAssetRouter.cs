@@ -299,7 +299,7 @@ namespace VerdantsAscent.Managers
             keep.m_persistent = persistent;
 
             if (removedDependents.Count > 0)
-                Debug.Log($"{VaPieces.PluginName}: NormalizeZNetView — '{prefab.name}' nests network objects; removed {removedDependents.Count} component(s) that need the nested ZNetView [{string.Join(", ", removedDependents)}].");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: NormalizeZNetView — '{prefab.name}' nests network objects; removed {removedDependents.Count} component(s) that need the nested ZNetView [{string.Join(", ", removedDependents)}].");
         }
 
         private static void RemoveNestedZNetView(ZNetView view, List<string> removedDependents)

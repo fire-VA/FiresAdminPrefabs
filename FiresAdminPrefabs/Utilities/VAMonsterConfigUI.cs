@@ -49,6 +49,7 @@ namespace VerdantsAscent.Utilities
         // ── Singleton ────────────────────────────────────────────────
 
         private static VAMonsterConfigUI _instance;
+        private static bool s_p7ClosedLogged;   // 1.1.325 (UI audit P7)
         private static ConfigEntry<float> s_opacity, s_w, s_h, s_x, s_y;
 
         public static void EnsureCreated()
@@ -57,6 +58,7 @@ namespace VerdantsAscent.Utilities
             var go = new GameObject("FAP_MonsterConfigUI");
             DontDestroyOnLoad(go);
             _instance = go.AddComponent<VAMonsterConfigUI>();
+            _instance.enabled = false;   // 1.1.325 (UI audit P7): starts closed; OpenInternal turns it on
         }
 
         public static void Open(string creaturePrefabName)
@@ -107,6 +109,7 @@ namespace VerdantsAscent.Utilities
         private bool _respawn;
         private string _respawnSeconds = "60", _stackingRadius = "100", _health = "", _starLevel = "1";
         private bool _boss;
+        private string _spawnerDelay = "", _spawnerLevelMin = "", _spawnerLevelMax = "", _spawnerLevelChance = "", _spawnerTrigger = "";   // 1.1.384: empty = the vanilla spawner value
         private string _defeatKey = "", _drops = "", _dropsAmount = "";   // _drops: multiline, EWP-native items[] format
         private string _scaleX = "1", _scaleY = "1", _scaleZ = "1";
 
@@ -126,6 +129,7 @@ namespace VerdantsAscent.Utilities
             s_h = cfg.Bind("MonsterConfigUI", "Height", 760f, "The monster preset window's height.");
             s_x = cfg.Bind("MonsterConfigUI", "X", -1f, "The window's left edge (-1 = centred; drag the title row).");
             s_y = cfg.Bind("MonsterConfigUI", "Y", -1f, "The window's top edge (-1 = centred).");
+            VerdantsAscent.Managers.FapConfigUi.Apply(cfg);   // 1.1.279: window geometry is saved, never shown
         }
 
         // ── Open / Close ─────────────────────────────────────────────
@@ -143,6 +147,7 @@ namespace VerdantsAscent.Utilities
             // Capture input (vanilla + other-mod hotkeys) for as long as the window is open.
             if (!_open) FiresCore.Input.FiresInputBlock.Acquire(this); VAImguiGuard.Open(this, () => _rect, "MonsterConfig");
             _open = true;
+            enabled = true;   // 1.1.325 (UI audit P7)
 
             // Always open on a blank form. Auto-loading an existing preset
             // caused save-leakage: a new name typed over a populated form
@@ -158,6 +163,8 @@ namespace VerdantsAscent.Utilities
             _pickerOpen = false;
             FiresCore.Input.FiresInputBlock.Release(this); VAImguiGuard.Close(this);
             SaveLayout();
+            enabled = false;   // 1.1.325 (UI audit P7): no Update/OnGUI while closed; Open() is the only way back
+            if (!s_p7ClosedLogged) { s_p7ClosedLogged = true; VaPieces.Log?.LogDebug("[FAP] VAMonsterConfigUI closed: OnGUI off until reopened"); }
         }
 
         private void SaveLayout()
@@ -223,6 +230,12 @@ namespace VerdantsAscent.Utilities
                 "How many copies to spawn at the click point. Set both to 1 for single spawns.");
             _groupMax = Row("Group size — max", _groupMax,
                 "Random count between min and max (inclusive) per click.");
+            GUILayout.Label("Placed spawner (empty keeps vanilla)", FiresRoundedSkin.SectionBar);
+            _spawnerDelay = Row("Spawner delay (minutes)", _spawnerDelay, "CreatureSpawner.m_respawnTimeMinuts. 0 spawns once, never again.");
+            _spawnerLevelMin = Row("Spawner stars min level", _spawnerLevelMin, "CreatureSpawner.m_minLevel. 1 = no star.");
+            _spawnerLevelMax = Row("Spawner stars max level", _spawnerLevelMax, "CreatureSpawner.m_maxLevel.");
+            _spawnerLevelChance = Row("Spawner level-up chance (%)", _spawnerLevelChance, "CreatureSpawner.m_levelupChance.");
+            _spawnerTrigger = Row("Spawner trigger distance (m)", _spawnerTrigger, "CreatureSpawner.m_triggerDistance: a player must be this close.");
             _respawn = ToggleRow("Respawn on death", _respawn,
                 "When ON, the creature respawns after the configured delay. " +
                 "Uses EWP's destroy-rule pipeline when EWP is installed; falls back to a FAP-side coroutine otherwise.");
@@ -299,16 +312,23 @@ namespace VerdantsAscent.Utilities
             GUI.DragWindow(new Rect(0f, 0f, _rect.width - 200f, 30f));
         }
 
+        private readonly List<string> _pickNames = new List<string>(); private float _pickAt; private string _pickFor;   // 1.1.321 (P5)
+
         // The saved presets for this creature as NavItem buttons (NavSel = the loaded one).
         private void DrawPresetList()
         {
-            var names = new List<string>();
+            // 1.1.321 (UI audit P5): rebuilt twice a second into a reused list, not every IMGUI pass
+            var names = _pickNames;
+            if (Time.unscaledTime >= _pickAt || _pickFor != _creature)
+            {
+            _pickAt = Time.unscaledTime + 0.5f; _pickFor = _creature; names.Clear();
             foreach (var entry in VAMonsterPresetStore.All)
             {
                 var preset = entry.Value;
                 if (preset == null) continue;
                 if (!string.Equals(preset.Creature, _creature, StringComparison.Ordinal)) continue;
                 names.Add(preset.name);
+            }
             }
             if (names.Count == 0)
             {
@@ -415,6 +435,11 @@ namespace VerdantsAscent.Utilities
             _boss = preset.TryGetIntStr("override_boss") == "1"
                 || preset.TryGetIntStr("Humanoid.m_boss") == "1";
             _defeatKey = preset.TryGetString("Humanoid.m_defeatSetGlobalKey") ?? string.Empty;
+            _spawnerDelay = preset.TryGetFloatStr("va_spawn_delay_min") ?? "";
+            _spawnerLevelMin = preset.TryGetIntStr("va_level_min") ?? "";
+            _spawnerLevelMax = preset.TryGetIntStr("va_level_max") ?? "";
+            _spawnerLevelChance = preset.TryGetFloatStr("va_levelup_chance") ?? "";
+            _spawnerTrigger = preset.TryGetFloatStr("va_trigger_distance") ?? "";
             _drops = VALootTextFormat.Serialize(preset.items);
             _dropsAmount = preset.itemAmount ?? string.Empty;
 
@@ -483,6 +508,12 @@ namespace VerdantsAscent.Utilities
 
             float stackingRadius = ParseFloat(_stackingRadius, 100f);
             preset.floats.Add($"va_prevent_stacking_radius, {stackingRadius.ToString("F1", CultureInfo.InvariantCulture)}");
+
+            if (float.TryParse(_spawnerDelay, NumberStyles.Float, CultureInfo.InvariantCulture, out float spawnerFloat)) preset.floats.Add($"va_spawn_delay_min, {spawnerFloat.ToString("F2", CultureInfo.InvariantCulture)}");
+            if (float.TryParse(_spawnerLevelChance, NumberStyles.Float, CultureInfo.InvariantCulture, out spawnerFloat)) preset.floats.Add($"va_levelup_chance, {spawnerFloat.ToString("F2", CultureInfo.InvariantCulture)}");
+            if (float.TryParse(_spawnerTrigger, NumberStyles.Float, CultureInfo.InvariantCulture, out spawnerFloat)) preset.floats.Add($"va_trigger_distance, {spawnerFloat.ToString("F2", CultureInfo.InvariantCulture)}");
+            if (int.TryParse(_spawnerLevelMin, out int spawnerInt)) preset.ints.Add($"va_level_min, {spawnerInt}");
+            if (int.TryParse(_spawnerLevelMax, out spawnerInt)) preset.ints.Add($"va_level_max, {spawnerInt}");
 
             // strings
             string sharedName = (_sharedName ?? string.Empty).Trim();

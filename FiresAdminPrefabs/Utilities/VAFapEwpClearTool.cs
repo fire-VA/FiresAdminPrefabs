@@ -36,7 +36,7 @@ namespace VerdantsAscent.Utilities
             + "vanilla world content is left in place (only the FAP_persist field is "
             + "cleared, which is a no-op for objects that never had it set). Watchdog "
             + "re-runs every WatchdogTickIntervalSec for WatchdogDurationSec to catch "
-            + "anything EWP respawned during the destroy/sync race. Shift+Scroll resizes.";
+            + "anything EWP respawned during the destroy/sync race. Scroll = radius, Shift+Scroll = height.";
 
         private static readonly Dictionary<Piece.PieceCategory, GameObject> _standinsByCategory =
             new Dictionary<Piece.PieceCategory, GameObject>();
@@ -116,6 +116,23 @@ namespace VerdantsAscent.Utilities
                 {
                     Debug.LogWarning($"{VaPieces.PluginName}: FxClear.Destroy threw on '{netView.name}': {ex.Message}");
                 }
+            }
+
+            // 1.1.398 (Fire 11-07): status-effect FX a creature left behind (saved vfx_Wet drops) carry
+            // no FAP marker, so the loop above never saw them.
+            try
+            {
+                var census = VAStatusFxOrphans.Take(center, radius);
+                int orphans = VAStatusFxOrphans.Remove(census);
+                if (orphans > 0)
+                {
+                    destroyed += orphans;
+                    Debug.Log($"{VaPieces.PluginName}: FxClear removed {orphans} left-behind status FX ({census.ByPrefabText()}) at {center} r={radius:F1}.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"{VaPieces.PluginName}: FxClear status-FX sweep threw: {ex.Message}");
             }
             return (disarmed, destroyed);
         }

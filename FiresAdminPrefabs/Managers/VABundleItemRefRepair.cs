@@ -45,6 +45,7 @@ namespace VerdantsAscent.Managers
             { "Pickable_Straw_bal", "Straw_bal" }, { "Pickable_Straw_DeepNorth_bal", "Straw_bal" },
             { "Pickable_ThistleFarm_bal", "Thistle" }, { "Pickable_TinNew_bal", "TinOre" },
             { "Pickable_Yarrow_bal", "Yarrow_bal" },
+            { "Pickable_Mushroom_bzerker_bal", "MushroomBzerker" },   // 1.1.399: vanilla item (rip GameElements\Items\consumables\MushroomBzerker.prefab)
         };
 
         // a bundle item that isn't registered -> the closest vanilla item
@@ -96,6 +97,22 @@ namespace VerdantsAscent.Managers
             return go != null ? go.GetComponent<ItemDrop>() : null;
         }
 
+        // 1.1.399 (log sweep 11-07): what an unmapped pickable carries, so its item is mapped from data, never guessed.
+        private static void DescribeUnmapped(Pickable p, string prefab)
+        {
+            try
+            {
+                string bundle = VAExternalBundleLoader.TryGetSourceBundle(prefab ?? p.gameObject.name, out string b) ? b : "?";
+                var drops = p.m_extraDrops?.m_drops;
+                string dropText = drops == null || drops.Count == 0 ? "none"
+                    : string.Join(", ", drops.Select(d => $"{(d.m_item != null ? d.m_item.name : "null")} {d.m_stackMin}-{d.m_stackMax} w{d.m_weight}"));
+                VaPieces.Log?.LogDebug($"[VABundleItemRefRepair] unmapped pickable '{p.gameObject.name}' (prefab '{prefab}', bundle '{bundle}'): "
+                    + $"m_itemPrefab {(p.m_itemPrefab != null ? p.m_itemPrefab.name : "null")}, m_amount {p.m_amount}, m_overrideName '{p.m_overrideName}', "
+                    + $"m_extraDrops [{dropText}], respawn {p.m_respawnTimeMinutes} min.");
+            }
+            catch (Exception e) { VaPieces.Log?.LogDebug($"[VABundleItemRefRepair] describing '{p.gameObject.name}' threw: {e.Message}"); }
+        }
+
         private static void Resolve(ZNetScene scene)
         {
             int pickOk = 0, pickFallback = 0; var pickMissing = new List<string>(); var fallbacks = new List<string>();
@@ -103,8 +120,9 @@ namespace VerdantsAscent.Managers
             {
                 if (p == null) continue;
                 if (p.m_itemPrefab != null && p.m_itemPrefab.GetComponent<ItemDrop>() != null) continue;
+                if (p.m_extraDrops != null && p.m_extraDrops.m_drops != null && p.m_extraDrops.m_drops.Count > 0 && p.m_itemPrefab == null) continue;   // 1.1.322 (log sweep N15): a random pickable yields from its drop table, not m_itemPrefab
                 string key = p.gameObject.name;
-                if (!PickableItems.TryGetValue(key, out string want) && !PickableItems.TryGetValue(prefab ?? "", out want)) { pickMissing.Add(key); continue; }
+                if (!PickableItems.TryGetValue(key, out string want) && !PickableItems.TryGetValue(prefab ?? "", out want)) { pickMissing.Add(key); DescribeUnmapped(p, prefab); continue; }
                 var item = Item(scene, want);
                 if (item == null && VanillaFallback.TryGetValue(want, out string fb)) { item = Item(scene, fb); if (item != null) { pickFallback++; fallbacks.Add($"{want}->{fb}"); } }
                 else if (item != null) pickOk++;

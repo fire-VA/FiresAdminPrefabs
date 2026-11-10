@@ -155,7 +155,7 @@ namespace VerdantsAscent.Utilities
                 }
             }
             preset.items = rebuilt;
-            Debug.Log($"{VaPieces.PluginName}: VAChestPresetStore migrated malformed items in preset '{preset.name}'.");
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: VAChestPresetStore migrated malformed items in preset '{preset.name}'.");
             return true;
         }
 

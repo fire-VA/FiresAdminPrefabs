@@ -29,6 +29,7 @@ namespace VerdantsAscent.Utilities
         private const float MinW = 480f, MaxW = 1200f, MinH = 560f, MaxH = 1100f, Grip = 18f;
 
         private static VALightConfigUI _instance;
+        private static bool s_p7ClosedLogged;   // 1.1.325 (UI audit P7)
         private static ConfigEntry<float> s_opacity, s_w, s_h, s_x, s_y;
 
         public static bool IsOpen => _instance != null && _instance._open;
@@ -98,6 +99,7 @@ namespace VerdantsAscent.Utilities
             s_h = cfg.Bind("LightPresetUI", "Height", 760f, "The light preset window's height.");
             s_x = cfg.Bind("LightPresetUI", "X", -1f, "The window's left edge (-1 = centred; drag the title row).");
             s_y = cfg.Bind("LightPresetUI", "Y", -1f, "The window's top edge (-1 = centred).");
+            VerdantsAscent.Managers.FapConfigUi.Apply(cfg);   // 1.1.279: window geometry is saved, never shown
         }
 
         private void OpenInternal(string prefab, ZNetView target, VALightPreset start)
@@ -111,6 +113,7 @@ namespace VerdantsAscent.Utilities
             Load(start);
             Status(target != null ? $"Editing this placed {prefab} live (everyone sees it)." : $"Apply queues the preset for your next {prefab} placements.");
             _open = true;
+            enabled = true;   // 1.1.325 (UI audit P7)
             FiresCore.Input.FiresInputBlock.Acquire(this); VAImguiGuard.Open(this, () => _rect, "LightPreset");
         }
 
@@ -119,12 +122,19 @@ namespace VerdantsAscent.Utilities
             if (!_open) return;
             _open = false;
             FiresCore.Input.FiresInputBlock.Release(this); VAImguiGuard.Close(this);
+            VAScreenHold.Release(this);   // 1.1.301
             if (s_w != null) { s_w.Value = _rect.width; s_h.Value = _rect.height; s_x.Value = _rect.x; s_y.Value = _rect.y; }
+            if (_switchToSound == null) enabled = false;   // 1.1.325 (UI audit P7): off while closed (stays on while a Sound switch is pending)
+            if (!s_p7ClosedLogged) { s_p7ClosedLogged = true; VaPieces.Log?.LogDebug("[FAP] VALightConfigUI closed: OnGUI off until reopened"); }
         }
+
+        private ZNetView _switchToSound;   // 1.1.300: set by the Sound button, acted on here (never mid-OnGUI)
 
         private void Update()
         {
+            if (_switchToSound != null) { var t = _switchToSound; _switchToSound = null; Close(); VASoundPresetUi.Open(t); return; }
             if (!_open) return;
+            VAScreenHold.Hold(this);   // 1.1.301: free cursor + pinned camera while open (Core InputBlock, as hold-Shift+Alt)
             if (Cursor.lockState != CursorLockMode.None) Cursor.lockState = CursorLockMode.None;
             if (!Cursor.visible) Cursor.visible = true;
             if (ZInput.GetKeyDown(KeyCode.Escape)) Close();
@@ -143,14 +153,22 @@ namespace VerdantsAscent.Utilities
             FiresRoundedSkin.DrawPendingTooltip();
         }
 
+        private string _title, _titleOf; private bool _titleTarget;   // 1.1.321 (UI audit P3/P6)
+        private System.Collections.Generic.List<string> _saved; private float _savedAt;
+
         private void DrawWindow(int id)
         {
             FiresRoundedSkin.ResetTooltip();
             GUILayout.BeginHorizontal();
-            GUILayout.Label(_target != null ? $"Light: this {_prefab}" : $"Light preset: {_prefab}", FiresRoundedSkin.Title);
+            if (_title == null || _titleOf != _prefab || _titleTarget != (_target != null)) { _titleOf = _prefab; _titleTarget = _target != null; _title = _titleTarget ? $"Light: this {_prefab}" : $"Light preset: {_prefab}"; }   // 1.1.321 (UI audit P6)
+            GUILayout.Label(_title, FiresRoundedSkin.Title);
             GUILayout.FlexibleSpace();
+            // 1.1.300 (Fire 10-20): a placed piece with light AND sound switches to its sound editor
+            if (_target != null && _target.IsValid() && VASoundPresets.HasSound(VASoundPresets.PrefabNameOf(_target))
+                && GUILayout.Button("Sound", FiresRoundedSkin.ButtonSmall, GUILayout.Width(70f)))
+                _switchToSound = _target;
             GUILayout.Label("Opacity", FiresRoundedSkin.Label, GUILayout.Width(62f));
-            s_opacity.Value = GUILayout.HorizontalSlider(s_opacity.Value, 0.4f, 1f, FiresRoundedSkin.Slider, FiresRoundedSkin.SliderThumb, GUILayout.Width(110f));
+            s_opacity.Value = CoreImguiWidgets.OpacitySlider(s_opacity.Value, 0.4f, 1f, 110f);   // 1.1.293: Core slim slider, old slider on older Core
             if (GUILayout.Button("x", FiresRoundedSkin.ButtonSmall, GUILayout.Width(28f))) Close();
             GUILayout.EndHorizontal();
             GUILayout.Space(4f);
@@ -158,7 +176,8 @@ namespace VerdantsAscent.Utilities
             _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.Height(_rect.height - 190f));
             GUILayout.Label("Preset", FiresRoundedSkin.SectionBar);
             _name = Row("Preset name", _name, "A name to save this look under and reuse it.");
-            var saved = VALightPresetStore.All.Select(p => p.name).OrderBy(n => n).ToList();
+            if (_saved == null || Time.unscaledTime >= _savedAt) { _savedAt = Time.unscaledTime + 0.5f; _saved = VALightPresetStore.All.Select(p => p.name).OrderBy(n => n).ToList(); }   // 1.1.321 (UI audit P3): twice a second
+            var saved = _saved;
             if (saved.Count > 0)
             {
                 GUILayout.Label("Saved presets (click to load):", FiresRoundedSkin.Desc);
@@ -242,7 +261,8 @@ namespace VerdantsAscent.Utilities
         {
             GUILayout.BeginHorizontal();
             GUILayout.Label(label, FiresRoundedSkin.Label, GUILayout.Width(210f));
-            v = GUILayout.HorizontalSlider(v, min, max, FiresRoundedSkin.Slider, FiresRoundedSkin.SliderThumb);
+            if (CoreImguiWidgets.HasSlider) v = CoreImguiWidgets.Slider(v, min, max, VASoundPresetWindow.Fmt(v, "0.00"), 220f);   // 1.1.293: Core slim slider
+            else v = GUILayout.HorizontalSlider(v, min, max, FiresRoundedSkin.Slider, FiresRoundedSkin.SliderThumb);
             GUILayout.EndHorizontal();
             return v;
         }
@@ -349,8 +369,10 @@ namespace VerdantsAscent.Utilities
         private bool AdminOk()
         {
             bool admin;
-            try { admin = FiresCore.Sync.AdminSyncing.IsLocalAdmin(); } catch { admin = false; }
-            if (!admin) Status("Admins only (Fire 10-12).", true);
+            // 1.1.306 (Fire 10-21): a placed light = own pieces only on a server without FAP (VAFapServerPresence.MayEditPiece);
+            // queuing a preset for your own placements follows the 1.1.305 rule
+            try { admin = _target != null ? VerdantsAscent.Managers.VAFapServerPresence.MayEditPiece(_target.gameObject) : VerdantsAscent.Managers.VAFapServerPresence.LocalMayUseAdminFeatures(); } catch { admin = false; }
+            if (!admin) Status(_target != null && VerdantsAscent.Managers.VAFapServerPresence.IsClientOnly ? "Admins only: on a server without FAP turn debugmode on (Fire 10-23)." : "Admins only (Fire 10-12).", true);
             return admin;
         }
 
@@ -361,26 +383,5 @@ namespace VerdantsAscent.Utilities
         private static float OptFlt(string s) => string.IsNullOrWhiteSpace(s) ? -1f : Math.Max(0f, Flt(s));
     }
 
-    // Shift+RMB on a placed light (admins): the editor for that piece. Only when nothing else has the mouse and the key isn't
-    // a build action: no hammer placement ghost, no inventory / menu / console, no other FAP window.
-    [HarmonyPatch(typeof(Player), "Update")]
-    public static class Player_Update_VALightPick_Patch
-    {
-        private static readonly int PieceMask = LayerMask.GetMask("piece", "piece_nonsolid", "Default", "static_solid", "Default_small");
-
-        [HarmonyPostfix]
-        public static void Postfix(Player __instance)
-        {
-            if (__instance == null || __instance != Player.m_localPlayer || VALightConfigUI.IsOpen) return;
-            if (!Input.GetMouseButtonDown(1) || !(Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))) return;
-            if (InventoryGui.IsVisible() || Menu.IsVisible() || Console.IsVisible() || Chat.instance?.HasFocus() == true || __instance.InPlaceMode()) return;
-            try { if (!FiresCore.Sync.AdminSyncing.IsLocalAdmin()) return; } catch { return; }
-            var cam = GameCamera.instance != null ? GameCamera.instance.transform : null;
-            if (cam == null || !Physics.Raycast(cam.position, cam.forward, out RaycastHit hit, 30f, PieceMask)) return;
-            var view = hit.collider.GetComponentInParent<ZNetView>();
-            if (view == null || !view.IsValid() || view.GetComponent<Piece>() == null || !VALightApplier.HasLight(view.gameObject)) return;
-            VaPieces.Log?.LogDebug($"[FAP] Shift+RMB light pick: {view.gameObject.name} ({view.GetZDO().m_uid})");
-            VALightConfigUI.OpenForPlaced(view);
-        }
-    }
+    // 1.1.300 (Fire 10-20): the Shift+RMB light pick is gone; placed lights open from Core's context menu (VASoundContextProvider: "Edit light...").
 }

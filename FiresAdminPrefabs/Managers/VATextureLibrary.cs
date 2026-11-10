@@ -172,6 +172,12 @@ namespace VerdantsAscent.Managers
             [HarmonyPostfix]
             public static void Postfix()
             {
+                try { PostfixBody(); }   // 1.1.318 (audit M8): a throw no longer skips the later Awake postfixes
+                catch (System.Exception e) { UnityEngine.Debug.LogError($"[FAP] texture library: ZNetScene.Awake build failed: {e.Message}"); }
+            }
+
+            private static void PostfixBody()
+            {
                 Build();
                 Utilities.VATextureFolderLoader.LoadAll();
             }

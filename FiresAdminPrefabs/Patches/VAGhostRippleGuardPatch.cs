@@ -55,7 +55,7 @@ namespace VerdantsAscent.Patches
 
             for (int i = 0; i < destroyed.Count; i++) ghostRippleDistance.Remove(destroyed[i]);
             _destroyedMaterialsDroppedThisSession += destroyed.Count;
-            Debug.Log($"{VaPieces.PluginName}: dropped {destroyed.Count} destroyed ghost material(s) from the vanilla " +
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: dropped {destroyed.Count} destroyed ghost material(s) from the vanilla " +
                       $"ripple list ({_destroyedMaterialsDroppedThisSession} this session).");
         }
     }

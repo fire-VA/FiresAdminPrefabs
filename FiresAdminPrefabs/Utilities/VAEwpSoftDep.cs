@@ -18,5 +18,8 @@ namespace VerdantsAscent.Utilities
                 return cfg.configUseEwpForPersistence.Value;
             }
         }
+
+        /// <summary>1.1.279: EWP persistence is on AND this kind's [Persistence] toggle is on (a missing toggle counts as on).</summary>
+        public static bool For(BepInEx.Configuration.ConfigEntry<bool> kind) => IsActive && (kind?.Value ?? true);
     }
 }

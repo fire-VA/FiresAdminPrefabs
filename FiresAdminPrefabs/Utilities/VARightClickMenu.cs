@@ -52,6 +52,16 @@ namespace VerdantsAscent.Utilities
         private static bool _needsScroll;
         private static Vector2 _scroll;
         private static int _openedFrame = -1;
+        private static bool s_p7ClosedLogged;   // 1.1.325 (UI audit P7)
+        // 1.1.325 (UI audit P7): the host runs Update/OnGUI only while the menu or the text prompt is up.
+        private static void SyncHostEnabled()
+        {
+            if (_host == null) return;
+            bool on = _items != null || _promptOpen;
+            if (_host.enabled == on) return;
+            _host.enabled = on;
+            if (!on) if (!s_p7ClosedLogged) { s_p7ClosedLogged = true; VaPieces.Log?.LogDebug("[FAP] VARightClickMenu closed: OnGUI off until reopened"); }
+        }
 
         public static bool IsOpen => _items != null;
 
@@ -81,6 +91,7 @@ namespace VerdantsAscent.Utilities
             _items = new List<Item>(items);
             _openedFrame = Time.frameCount;
             UpdateBlocker();
+            SyncHostEnabled();   // 1.1.325 (P7)
         }
 
         public static void Close()
@@ -90,6 +101,7 @@ namespace VerdantsAscent.Utilities
             try { var m = new System.Diagnostics.StackFrame(1).GetMethod(); VaPieces.Log?.LogDebug($"[VARightClickMenu] closed by {m?.DeclaringType?.Name}.{m?.Name} (frame {Time.frameCount})"); } catch { }
             _items = null;
             UpdateBlocker();
+            SyncHostEnabled();   // 1.1.325 (P7)
         }
 
         private static void EnsureHost()
@@ -115,6 +127,7 @@ namespace VerdantsAscent.Utilities
             blockerGo.SetActive(false);
 
             _host = _hostGo.AddComponent<Host>();
+            _host.enabled = false;   // 1.1.325 (UI audit P7): starts closed; Show / ShowTextPrompt turn it on
         }
 
         // Swallows uGUI clicks under whichever of the menu / prompt is open (the prompt wins; it closes the menu).
@@ -227,6 +240,7 @@ namespace VerdantsAscent.Utilities
         private const string PromptFieldName = "FAP_TextPromptField";
         private static readonly object PromptInputToken = new object();
         private static bool _promptOpen;
+        internal static bool PromptOpen => _promptOpen;   // 1.1.306
         private static Rect _promptRect;
         private static string _promptTitle;
         private static string _promptText;
@@ -251,6 +265,7 @@ namespace VerdantsAscent.Utilities
 
             FiresCore.Input.FiresInputBlock.Acquire(PromptInputToken);
             UpdateBlocker();
+            SyncHostEnabled();   // 1.1.325 (P7)
         }
 
         public static void ClosePrompt()
@@ -261,6 +276,7 @@ namespace VerdantsAscent.Utilities
             _promptOnSubmit = null;
             if (GUIUtility.keyboardControl != 0) GUIUtility.keyboardControl = 0;
             UpdateBlocker();
+            SyncHostEnabled();   // 1.1.325 (P7)
         }
 
         private static void SubmitPrompt()

@@ -96,12 +96,6 @@ namespace VerdantsAscent.Utilities
                 "beams and walls, goblin walls and roofs, blackmarble posts, columns and creep " +
                 "pieces, doors, gates, chests — hand-tuned tables, so they lock to neighbors and " +
                 "to each other end-to-end.");
-            w.Divider();
-
-            w.SubHeader("If SearsCatalog Is Installed");
-            w.Paragraph("FAP stands down entirely and lets SearsCatalog drive the panel — the two do the same job, " +
-                "and Sears wins to avoid two mods fighting over one grid. Everything else in FAP (tabs, " +
-                "right-click menus, placement) works normally.");
         }
 
         private static void BuildMenuResize(HelpContentWriter w)
@@ -110,18 +104,16 @@ namespace VerdantsAscent.Utilities
             w.SubHeader("Resize");
             w.Bullet("Grab the ' // ' grip in the bottom-right corner of the build panel and drag.");
             w.Bullet("A plain drag grows or shrinks the grid: more or fewer icons across and down.");
-            w.Bullet("Shift + drag zooms instead: the same icons, bigger or smaller (0.7x to 2.5x).");
-            w.Divider();
-
-            w.SubHeader("It Remembers");
-            w.Paragraph("Your size is written to [BuildMenu] WindowWidth and WindowHeight, and the zoom to [BuildMenu] " +
-                "WindowScale, in FAP's config, and restored on every login. Empty width/height (NaN) means vanilla's " +
-                "size. These are per-player local settings — the server never overwrites them, and each player picks their own.");
             w.Divider();
 
             w.SubHeader("Move");
-            w.Bullet("Click-drag any empty wood-grain part of the panel to reposition it on screen.");
-            w.Bullet("Position resets on world reload — it's a per-session convenience, not a saved layout.");
+            w.Bullet("Click-drag any empty part of the panel to move it on screen.");
+            w.Divider();
+
+            w.SubHeader("It Remembers");
+            w.Paragraph("The Fires UI saves your size AND position on its own and puts the panel back where you " +
+                "left it every time. Each player keeps their own; the server never touches it.");
+            w.Bullet("The layout Reset puts the build menu back to vanilla size.");
         }
 
         private static void BuildMenuSearch(HelpContentWriter w)
@@ -154,7 +146,8 @@ namespace VerdantsAscent.Utilities
             w.Bullet("CreatorShop — the general catch-all for injected vanilla prefabs.");
             w.Bullet("Clutter — prefabs recognized as clutter (grass, ground detail, instanced scatter).");
             w.Bullet("Monsters — one placeable stand-in per creature in the game.");
-            w.Bullet("Item Stands (V) / (H) — one tile per item, wall-mount and shelf-mount orientations.");
+            w.Bullet("Item Stands — one tile per item. One tab by default; the \"Item stand tab\" setting picks " +
+                "Horizontal, Vertical or Both.");
             w.Bullet("FX / VFX — effect prefabs, split by prefix.");
             w.Bullet("Blueprints — one tile per .blueprint / .vbuild file you've added.");
             w.Bullet("Baked Meshes — pre-combined single-prefab versions of baked blueprints.");
@@ -258,7 +251,7 @@ namespace VerdantsAscent.Utilities
             w.SubHeader("Tab Right-Click");
             w.Bullet("Rename '<tab>' — set a friendly display label; the folder name stays as the internal key.");
             w.Bullet("Hide '<tab>' — hides the tab (renames its folder with a Hidden_ prefix).");
-            w.Bullet("Show hidden tabs... — list and restore hidden tabs. Needs a world reload to apply.");
+            w.Bullet("Show hidden tabs... — list and restore hidden tabs; they come back straight away.");   // 1.1.282: un-hide is live
         }
 
         private static void BuildHideRestore(HelpContentWriter w)
@@ -377,14 +370,15 @@ namespace VerdantsAscent.Utilities
         private static void BuildItemStands(HelpContentWriter w)
         {
             w.Header("Item Stands");
-            w.Paragraph("Two tabs — Item Stands (V) and (H) — give you one pre-populated tile per item in the game, " +
+            w.Paragraph("The Item Stands tab gives you one ready-made tile per item in the game, " +
                 "so you can place a displayed item directly instead of placing a stand and then filling it.");
             w.Divider();
 
-            w.Bullet("(V) is wall-mounted / vertical; (H) is shelf-mounted / horizontal. Pick the orientation you " +
-                "want rather than rotating after placement.");
+            w.Bullet("By default there is ONE Item Stands tab. The \"Item stand tab\" setting picks Horizontal " +
+                "(shelf), Vertical (wall) or Both (two tabs).");
+            w.Bullet("Shift + right-click the tab to switch it on the spot.");
             w.Bullet("[HammerToggles] ItemStandHideStandVisual hides the stand itself, leaving just the floating item.");
-            w.Bullet("With [General] VanillaFriendly ON, these tabs are limited to items vanilla clients also have.");
+            w.Bullet("With \"Use vanilla friendly\" ON, these tabs are limited to items vanilla clients also have.");
         }
 
         private static void BuildFx(HelpContentWriter w)
@@ -490,7 +484,7 @@ namespace VerdantsAscent.Utilities
             w.Bullet("DisableStaticPhysics — stops placed props from ground-snapping ~20s after placement. Without " +
                 "this, carefully positioned objects drift to terrain height. The suppression survives zone " +
                 "unload/reload.");
-            w.Bullet("ForcePersistence — marks placed pieces persistent so they survive world save/load.");
+            w.Bullet("Keep effects saved — marks placed pieces persistent so they survive world save/load.");
             w.Bullet("SuppressRandomRotation — stops prefabs that randomize their own rotation from doing so, " +
                 "so what you preview is what you place.");
             w.Bullet("SwapFracOnPlace — swaps fractured/destroyed variants for their intact versions at placement.");
@@ -501,18 +495,34 @@ namespace VerdantsAscent.Utilities
         private static void BuildPersistence(HelpContentWriter w)
         {
             w.AdminHeader("Persistence & EWP Respawns");
-            w.Paragraph("Two different systems, and which one you want depends on whether your players have FAP.");
+            w.Paragraph("The Persistence section in FAP's settings decides who keeps your placed effects, chests, " +
+                "monsters and item stands alive. Which one you want depends on whether your players have FAP.");
             w.AdminDivider();
 
-            w.SubHeader("FAP Persistence");
-            w.Paragraph("[HammerToggles] ForcePersistence marks placed pieces persistent directly. Simple, but " +
-                "the behavior only exists on machines running FAP.");
+            w.SubHeader("Use EWP persistence");
+            w.Paragraph("Hands everything that respawns to Expand World Prefabs. Needs EWP on the server AND on " +
+                "the admin PC. The SERVER does the work, so players without mods see it right too.");
+            w.Bullet("Under it, one switch per kind: \"EWP: effects and timed pieces\", \"EWP: chests\", " +
+                "\"EWP: monsters\", \"EWP: item stands\".");
+            w.Bullet("Without EWP, FAP runs the monster respawn timers itself and the Fires Core refills chests.");
             w.Divider();
 
-            w.SubHeader("EWP-Backed Persistence (vanilla-safe)");
-            w.Paragraph("With [General] UseEwpForPersistence, FAP instead writes rules that ExpandWorldPrefabs " +
-                "enforces server-side. Because the SERVER does the work, vanilla clients see correct behavior too. " +
-                "This is also what drives monster/chest respawn timers.");
+            w.SubHeader("Use FAP persistence");
+            w.Paragraph("FAP's own respawner. Only players who also run FAP can see it. It switches itself OFF " +
+                "(and stays off) when you turn on EWP persistence or vanilla friendly.");
+            w.Divider();
+
+            w.SubHeader("Use vanilla friendly");
+            w.Paragraph("Only offers things that players without mods can see.");
+            w.Divider();
+
+            w.SubHeader("Keep effects saved");
+            w.Paragraph("The \"Keep effects saved\" hammer toggle marks placed pieces persistent directly. Simple, but " +
+                "it only works on machines running FAP.");
+            w.Bullet("Every switch in the Persistence section is server-synced: on a server, the server decides.");
+            w.AdminDivider();
+
+            w.SubHeader("Where EWP Rules Go");
             w.Bullet("Rules are written to config/expand_world/expand_prefabs_FAP*.yaml.");
             w.Bullet("Preset data is written to config/data/data_FAP*.yaml.");
             w.AdminDivider();
@@ -521,7 +531,7 @@ namespace VerdantsAscent.Utilities
             w.Paragraph("This is the step people miss. As an admin you are a CLIENT — those yaml files are written " +
                 "on YOUR machine, not the server's, so respawns never fire until they're pushed up.");
             w.Bullet("fap_push_presets — pushes your FAP preset + EWP rule yaml to the connected server.");
-            w.Bullet("[Sync] AutoPushOnPlace — does it automatically when you place a respawning chest/monster " +
+            w.Bullet("\"Auto-send presets to the server\" (General, Advanced) — does it automatically when you place a respawning chest/monster " +
                 "or save a preset. Debounced so bulk building doesn't flood the connection.");
             w.Bullet("The server applies them and reloads without a restart.");
             w.AdminDivider();
@@ -569,43 +579,45 @@ namespace VerdantsAscent.Utilities
         private static void BuildConfigReference(HelpContentWriter w)
         {
             w.AdminHeader("Config Reference");
-            w.Paragraph("config/com.Fire.adminprefabs.cfg. Most settings apply live; the ones that rebuild the " +
-                "piece table need a world reload.");
+            w.Paragraph("Open the settings in F1 › Config settings (FiresAdminPrefabs). Only Build menu, " +
+                "Hammer toggles, keybinds and Persistence show at first; tick \"Show advanced\" for the rest. " +
+                "Most settings apply live; the ones that rebuild the piece table need a world reload.");
             w.AdminDivider();
 
-            w.SubHeader("[General]");
-            w.Bullet("ServerEnforced — master lock. When true on the server, every synced setting below is forced " +
-                "to the server's value on all clients.");
-            w.Bullet("AdminOnlyMode — restricts FAP placement to admins.");
-            w.Bullet("VanillaFriendly — disables features that need FAP on every client.");
-            w.Bullet("UseEwpForPersistence — route persistence through ExpandWorldPrefabs instead of FAP.");
-            w.Bullet("SortHammerByMod — one hammer tab per asset bundle.");
-            w.Bullet("VerboseLogging — detailed diagnostics in the log.");
-            w.Bullet("CustomPersistentPrefabs / BundleClutterAllOf / BundleNatureShader(AllOf) — per-bundle " +
-                "classification overrides.");
+            w.SubHeader("General");
+            w.Bullet("\"Admins only\" — only admins can place FAP pieces.");
+            w.Bullet("\"Auto-send presets to the server\" (Advanced) — sends your preset / EWP rule files to the " +
+                "server when you place a respawning chest or monster, or save a preset.");
+            w.Bullet("The other General settings (per-bundle tabs, logging, bundle overrides) sit under Show advanced.");
             w.AdminDivider();
 
-            w.SubHeader("[BuildMenu]");
-            w.Bullet("WindowWidth / WindowHeight / WindowScale / WindowPosX / WindowPosY — build menu size, zoom " +
-                "and position; written by dragging the window and its resize grip. Local, never server-forced.");
-            w.Bullet("SortVanillaFirst — vanilla pieces listed before modded ones.");
-            w.Bullet("HideAdminGatedPieces — hide pieces the player can't place.");
+            w.SubHeader("Persistence");
+            w.Bullet("\"Use EWP persistence\", its \"EWP: ...\" switches, \"Use FAP persistence\" and " +
+                "\"Use vanilla friendly\" — see the Persistence & EWP Respawns page.");
             w.AdminDivider();
 
-            w.SubHeader("[Performance]");
-            w.Bullet("EnableBlueprintMeshBake — enables the blueprint bake pipeline.");
-            w.Bullet("BakeExcludeTransparentPieces — keep glass out of combined meshes (recommended).");
-            w.Bullet("BakedLodLowDetailDistance — metres before a bake's 64m cube drops to its cheap geometry.");
-            w.Bullet("BakedLodCullDistance — metres before a bake stops drawing; 0 (default) means never.");
-            w.Bullet("BakedLodShadowProxy — shadows cast by the cheap geometry instead of the full-detail mesh.");
+            w.SubHeader("Build menu");
+            w.Bullet("\"Hide admin-only pieces\" — hide pieces you can't place.");
+            w.Bullet("\"Hide dev / test prefabs\" — keep developer and test leftovers out of the hammer.");
+            w.Bullet("\"Item stand tab\" — Horizontal, Vertical or Both.");
+            w.Bullet("\"Set default snap point\" (Shift + Q) — the key for picking a piece's default snap point.");
+            w.Bullet("The build menu's size and position are saved by the Fires UI, not here.");
             w.AdminDivider();
 
-            w.SubHeader("[Clutter] / [FxClear] / [UI] / [Sync]");
-            w.Bullet("Clutter: PaintRadius, PaintDensity — the clutter brush.");
-            w.Bullet("FxClear: Radius, WatchdogDurationSec, WatchdogTickIntervalSec — orphan-FX sweeper.");
-            w.Bullet("UI: ConfigWindowScale — size of the right-click config windows (0.7-2.5); also set by " +
-                "dragging a config window's corner.");
-            w.Bullet("Sync: AutoPushOnPlace — auto-push preset/EWP yaml to the server on placement.");
+            w.SubHeader("Hammer toggles");
+            w.Bullet("\"Stay where placed\", \"Keep effects saved\" and the other placement toggles — also " +
+                "flippable from the hammer's right-click menu.");
+            w.AdminDivider();
+
+            w.SubHeader("Compatibility");
+            w.Bullet("\"Keep size on area grab\" (default on) — pieces keep their size when grabbed as an area.");
+            w.AdminDivider();
+
+            w.SubHeader("Performance / Clutter / FX clear (Advanced)");
+            w.Bullet("Blueprint bake: the bake pipeline, keeping glass out of combined meshes, and the distances " +
+                "where a bake drops to cheap geometry or stops drawing.");
+            w.Bullet("Clutter brush radius and density.");
+            w.Bullet("FX clear radius and the orphan-FX sweeper timing.");
         }
 
         private static void BuildFileLayout(HelpContentWriter w)
@@ -710,7 +722,7 @@ namespace VerdantsAscent.Utilities
             w.AdminHeader("Compatibility Notes");
             w.SubHeader("Infinity Hammer");
             w.Paragraph("FAP and Infinity Hammer are made to coexist. The grid geometry is patched " +
-                "SearsCatalog-style — the vanilla methods themselves answer with the live column/row " +
+                "so the vanilla methods themselves answer with the live column/row " +
                 "count — so IH's selection, copy, and zoop always agree with what you clicked, at any " +
                 "grid size.");
             w.Bullet("ZOOP works on FAP-injected and bundle pieces: FAP feeds IH the piece dimensions " +
@@ -721,11 +733,6 @@ namespace VerdantsAscent.Utilities
                 "is muted from vanilla's tab-cycling entirely.");
             w.Bullet("FAP defers to IH for pieces IH places — FAP's placement toggles don't fight it.");
             w.Bullet("IH's own tabs are laid out by IH; FAP only supplies the grid.");
-            w.AdminDivider();
-
-            w.SubHeader("SearsCatalog");
-            w.Paragraph("If SearsCatalog is installed it takes over the build panel entirely and FAP's grid stands " +
-                "down. Both do the same job; running both would mean two mods fighting over one layout.");
             w.AdminDivider();
 
             w.SubHeader("ExpandWorld");

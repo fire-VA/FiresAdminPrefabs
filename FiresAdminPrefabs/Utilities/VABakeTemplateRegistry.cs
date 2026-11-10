@@ -28,7 +28,7 @@ namespace VerdantsAscent.Utilities
         // anywhere else.
         public static bool IsTemplate(GameObject go)
         {
-            if (go == null) return false;
+            if (go == null || _templateInstanceIds.Count == 0) return false;   // 1.1.402: no templates = no parent walk per ZNetView.Awake
             var t = go.transform;
             while (t != null)
             {

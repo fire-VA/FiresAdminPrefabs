@@ -126,6 +126,7 @@ namespace VerdantsAscent.Patches
                 }
             }
             rowNames.Clear();
+            VAInfinityToolsTab.AddRows(table, into);   // 1.1.317: IH's yaml tools for the held item + the grey hint row
             // 1.1.237 (the lead, build-menu crash): what FAP hands the menu at each tag rebuild.
             try { VaPieces.Log?.LogDebug($"[FAP] tag rows for '{table?.name}': {into.Count} row(s), {s_subKeys.Count} sub-filter row(s), tag ids " + string.Join(",", into.Select(t => BuildMenuTabs.TagIdFor(t.Key).ToString()).ToArray())); } catch { }
         }
@@ -151,6 +152,7 @@ namespace VerdantsAscent.Patches
 
         public void Fill(PieceTable table, int key, IList<Piece> into)
         {
+            if (VAInfinityToolsTab.IsOwnKey(key)) { VAInfinityToolsTab.FillRow(table, key, into); return; }   // 1.1.317
             var byCategory = PieceTableAccess.ByCategory(table);
             if (byCategory == null) return;
             Func<Piece, bool> filter = null;
@@ -179,6 +181,10 @@ namespace VerdantsAscent.Patches
                 if (IsShowable(piece) && VABuildMenuVisibility.PieceVisible(piece)) into.Add(piece);
         }
 
+        // 1.1.326: IH tools live only in the Infinity Tools row; IH drops them into whatever category their yaml tab names
+        // (with FAP's tabs that was the item stands), so the category rows leave them out.
+        private static bool IsShowable(Piece piece) => IsShowablePiece(piece) && !VAInfinityToolsTab.IsToolPiece(piece);
+
         private static bool IsRawBundleTab(string name)
         {
             if (ConfigManager.Instance != null && ConfigManager.Instance.configSortHammerByMod.Value) return false;
@@ -187,7 +193,7 @@ namespace VerdantsAscent.Patches
             return false;
         }
 
-        private static bool IsShowable(Piece piece) => piece != null && !piece.m_repairPiece && !piece.m_removePiece;
+        private static bool IsShowablePiece(Piece piece) => piece != null && !piece.m_repairPiece && !piece.m_removePiece;
 
         private static bool HasShowablePiece(List<Piece> pieces)
         {

@@ -143,7 +143,7 @@ namespace VerdantsAscent.Utilities
         // Reflection-wrapped calls. Both return null/false on failure
         // (missing method, runtime exception) so callers can fall
         // through to non-cache paths gracefully.
-        private static byte[] EncodeTextureToPNG(Texture2D tex)
+        internal static byte[] EncodeTextureToPNG(Texture2D tex)   // 1.1.331: internal (FapHammerMenu.IconPng)
         {
             var method = EncodeToPNG_Method;
             if (method == null || tex == null) return null;
@@ -482,10 +482,35 @@ namespace VerdantsAscent.Utilities
             try { return File.Exists(CachedIconPath(prefabName)); } catch { return false; }
         }
 
+        /// <summary>1.1.375: sets piece.m_icon from the icon cache. False when there is no usable PNG, and the caller renders. A caller that
+        /// registers pieces every launch (FiresIgloos, 49 ice pieces) calls this first, so it renders only once.</summary>
+        public static bool TryApplyCachedIcon(Piece piece)
+        {
+            if (piece == null || VaPieces.IsHeadless) return false;
+            string name = piece.gameObject.name;
+            var read = new CachedIconRead { Piece = piece, Name = name, Path = CachedIconPath(name, piece.gameObject) };
+            ReadCachedIconFiles(new List<CachedIconRead> { read });
+            bool ok = ApplyCachedIcon(read);
+            VaPieces.Log?.LogDebug($"[IconRender] TryApplyCachedIcon '{name}': {(ok ? "cache hit" : "no cached PNG, caller renders")}");
+            return ok;
+        }
+
         /// <summary>Renders <paramref name="visual"/> now as <paramref name="piece"/>'s icon (3/4 view from above at
         /// <paramref name="pitchDeg"/>, framed to its bounds), sets piece.m_icon and caches the PNG under the piece's
         /// prefab name. No-op on a dedicated server, headless, during logout/quit, or when nothing in it can be drawn.</summary>
-        public static void RenderIconFor(Piece piece, GameObject visual, float pitchDeg = 35f)
+        public static void RenderIconFor(Piece piece, GameObject visual, float pitchDeg = 35f) => RenderIconFor(piece, visual, pitchDeg, 0f);
+
+        /// <summary>1.1.330 ([ghost] for FiresIgloos' ice piece icons, Fire 10-29: a 2x1 wall came out clipped at the sides): as above
+        /// with an extra margin of <paramref name="padding"/> x the bounds on each side (0.15 = 15 %, clamped 0..1); the camera
+        /// pulls back by 1 + 2 x padding. Add-only.</summary>
+        public static void RenderIconFor(Piece piece, GameObject visual, float pitchDeg, float padding)
+        {
+            s_padding = Mathf.Clamp01(padding);
+            try { RenderIconForCore(piece, visual, pitchDeg); }
+            finally { s_padding = 0f; }
+        }
+
+        private static void RenderIconForCore(Piece piece, GameObject visual, float pitchDeg)
         {
             if (piece == null || visual == null || VaPieces.IsHeadless) return;
             var inst = EnsureInstance();
@@ -498,7 +523,7 @@ namespace VerdantsAscent.Utilities
             catch (Exception ex) { VaPieces.Log?.LogDebug($"[IconRender] RenderIconFor '{name}' threw {ex.GetType().Name}: {ex.Message}"); }
             finally { s_saveName = null; s_pitchDeg = 0f; }
             if (sprite != null) { piece.m_icon = sprite; s_explicitRenders++; }
-            VaPieces.Log?.LogDebug($"[IconRender] RenderIconFor '{name}' from '{visual.name}' at {pitchDeg:0} deg: {(sprite != null ? "rendered + cached" : "nothing drawn")} ({s_why ?? "-"})");
+            VaPieces.Log?.LogDebug($"[IconRender] RenderIconFor '{name}' from '{visual.name}' at {pitchDeg:0} deg{(s_padding > 0f ? $", padding {s_padding:0.00}" : "")}: {(sprite != null ? "rendered + cached" : "nothing drawn")} ({s_why ?? "-"})");
             s_why = null;
         }
 
@@ -543,6 +568,7 @@ namespace VerdantsAscent.Utilities
             foreach (var t in root.GetComponentsInChildren<Transform>(true)) if (!t.gameObject.activeSelf) t.gameObject.SetActive(true);
         }
         private static float s_pitchDeg;
+        private static float s_padding;   // 1.1.330: RenderIconFor's extra margin (fraction of the bounds per side), 0 = the usual framing
         private static int s_explicitRenders;
 
         // A pitched 3/4 view: the default view's compass heading, raised to the given angle above the horizon.
@@ -925,7 +951,7 @@ namespace VerdantsAscent.Utilities
 
         private static bool IsSafeToRender()
         {
-            if (!s_quitHooked) { s_quitHooked = true; Application.quitting += () => s_quitting = true; }
+            if (!s_quitHooked) { s_quitHooked = true; Application.quitting += () => { s_quitting = true; try { s_iconWrites.Wait(2000); } catch { } }; }
             if (VaPieces.IsHeadless) return false;
             // 1.1.231 (R-1013AO): nothing renders once logout or quit has begun.
             if (s_quitting || Game.instance == null) return false;
@@ -1073,7 +1099,7 @@ namespace VerdantsAscent.Utilities
                 {
                     lastProgressLogAtRendered = totalRendered;
                     int attempted = totalRendered + totalParticleOnly + totalEmpty + totalOtherNull + totalThrown;
-                    Debug.Log($"{VaPieces.PluginName}: VAPieceIconRenderer progress — rendered={totalRendered}, particle-only={totalParticleOnly}, empty={totalEmpty}, other-null={totalOtherNull}, threw={totalThrown}, attempted={attempted}, queue-left={_queue.Count}, elapsed={Time.realtimeSinceStartup - startTime:F1}s.");
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: VAPieceIconRenderer progress — rendered={totalRendered}, particle-only={totalParticleOnly}, empty={totalEmpty}, other-null={totalOtherNull}, threw={totalThrown}, attempted={attempted}, queue-left={_queue.Count}, elapsed={Time.realtimeSinceStartup - startTime:F1}s.");
                 }
 
                 yield return null;
@@ -1186,19 +1212,41 @@ namespace VerdantsAscent.Utilities
             _saveProcessing = false;
         }
 
+        // 1.1.375 (the lead 11-02: a 3.35 s frame blocked in File.WriteAllBytes, 94 ms of it CPU): PNG writes run one at a time on a worker.
+        // Encoding stays on the main thread (ImageConversion). Written to a temp file first, so a quit mid-write never leaves a torn PNG.
+        private static readonly object s_iconWriteLock = new object();
+        private static Task s_iconWrites = Task.CompletedTask;
+
+        private static void WriteIconOffThread(string path, byte[] png)
+        {
+            lock (s_iconWriteLock)
+                s_iconWrites = s_iconWrites.ContinueWith(_ =>
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(path));
+                        string tmp = path + ".tmp";
+                        File.WriteAllBytes(tmp, png);
+                        if (File.Exists(path)) File.Delete(path);
+                        File.Move(tmp, path);
+                        System.Threading.Interlocked.Increment(ref _cacheSaves);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Threading.Interlocked.Increment(ref _cacheSaveFailures);
+                        VaPieces.Log?.LogDebug($"[IconRender] icon write failed for {Path.GetFileName(path)}: {ex.Message}");
+                    }
+                }, TaskScheduler.Default);
+        }
+
         private void SavePendingIcon(PendingSave pending)
         {
             if (pending.tex == null || string.IsNullOrEmpty(pending.prefabName)) return;
             try
             {
-                if (!Directory.Exists(IconCacheDir)) Directory.CreateDirectory(IconCacheDir);
                 byte[] png = EncodeTextureToPNG(pending.tex);
                 if (png != null && png.Length > 0)
-                {
-                    string path = CachedIconPath(pending.prefabName);
-                    File.WriteAllBytes(path, png);
-                    _cacheSaves++;
-                }
+                    WriteIconOffThread(CachedIconPath(pending.prefabName), png);
                 else
                 {
                     _cacheSaveFailures++;
@@ -3411,7 +3459,7 @@ namespace VerdantsAscent.Utilities
             _lastFramedBounds = bounds;
             Vector3 center = bounds.center;
             float size = bounds.size.magnitude;
-            float distance = size * CameraDistanceFactor;
+            float distance = size * CameraDistanceFactor * (1f + 2f * s_padding);   // 1.1.330: RenderIconFor padding (0 = unchanged)
 
             // Three-quarter angled view matching the Unity inspector-preview look.
             Vector3 cameraDir = s_pitchDeg > 0f ? PitchedViewDirection(s_pitchDeg) : CameraViewDirection.normalized;

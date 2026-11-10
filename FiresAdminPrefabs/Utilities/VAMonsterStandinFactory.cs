@@ -41,6 +41,29 @@ namespace VerdantsAscent.Utilities
             return standin.name.Substring(NamePrefix.Length);
         }
 
+        // 1.1.384: the same stand-in as a spawner entry; the name routes the click to VAEnemySpawners.
+        private static readonly Dictionary<string, GameObject> _spawnerByPrefabName = new Dictionary<string, GameObject>(StringComparer.Ordinal);
+        public static GameObject GetOrCreateSpawner(VAMonsterRegistry.Entry entry, Piece.PieceCategory category)
+        {
+            if (entry == null || entry.Prefab == null) return null;
+            if (_spawnerByPrefabName.TryGetValue(entry.PrefabName, out var cached) && cached != null) return cached;
+            EnsureRoot();
+            var standin = new GameObject(VAEnemySpawners.NamePrefix + entry.PrefabName);
+            standin.transform.SetParent(_root.transform, worldPositionStays: false);
+            standin.SetActive(false);
+            CopyVisualsRecursive(entry.Prefab.transform, standin.transform);
+            EnsurePlaceholderIfEmpty(standin, entry.Prefab);
+            var piece = standin.AddComponent<Piece>();
+            piece.m_name = entry.DisplayName + " spawner";
+            piece.m_description = "Place a vanilla spawner for " + entry.PrefabName + "." + (entry.IsBoss ? "\n<color=red>Boss creature</color>" : string.Empty) + "\nValues come from the monster preset.";
+            piece.m_enabled = true; piece.m_category = category; piece.m_clipGround = true; piece.m_clipEverything = true; piece.m_allowRotatedOverlap = true;
+            piece.m_canBeRemoved = false; piece.m_resources = Array.Empty<Piece.Requirement>(); piece.m_icon = null;
+            var znv = standin.AddComponent<ZNetView>();
+            znv.m_persistent = false;
+            _spawnerByPrefabName[entry.PrefabName] = standin;
+            return standin;
+        }
+
         public static GameObject GetOrCreate(VAMonsterRegistry.Entry entry, Piece.PieceCategory category)
         {
             if (entry == null || entry.Prefab == null) return null;

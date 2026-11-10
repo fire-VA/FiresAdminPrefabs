@@ -96,7 +96,9 @@ namespace VerdantsAscent.Utilities
             try { instance = AccessTools.Property(type, "Instance")?.GetValue(null, null); }
             catch (Exception ex) { Unreadable(typeName, member, "Instance threw " + (ex.InnerException ?? ex).Message); return; }
             if (instance == null) { Unreadable(typeName, member, "no Instance"); return; }
-            object registry = AccessTools.Field(type, member)?.GetValue(instance) ?? AccessTools.Property(type, member)?.GetValue(instance, null);
+            // 1.1.399 (log sweep 11-07): plain reflection, which never logs a miss; AccessTools.Field warned on every launch
+            // because Jotunn 2.30 keeps Prefabs as a property.
+            object registry = type.GetField(member, AccessTools.all)?.GetValue(instance) ?? type.GetProperty(member, AccessTools.all)?.GetValue(instance, null);
             if (!(registry is IDictionary dictionary)) { Unreadable(typeName, member, registry == null ? "member not found" : $"is a {registry.GetType().Name}, not a dictionary"); return; }
             foreach (var key in dictionary.Keys) if (key is string name) into.Add(name);
         }

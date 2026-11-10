@@ -205,7 +205,7 @@ namespace VerdantsAscent.Compat
                 if ((UnityEngine.Object)registered == (UnityEngine.Object)null) return;
 
                 __result = registered;
-                Debug.Log($"{VaPieces.PluginName}: WackysDatabase asked for '{name}' before the hammer scan reached it — registered it now so the clone resolves.");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: WackysDatabase asked for '{name}' before the hammer scan reached it — registered it now so the clone resolves.");
             }
         }
 
@@ -214,6 +214,12 @@ namespace VerdantsAscent.Compat
         {
             [HarmonyPriority(Priority.Last)]
             private static void Postfix()
+            {
+                try { PostfixBody(); }   // 1.1.318 (audit M8)
+                catch (System.Exception e) { UnityEngine.Debug.LogError($"[FAP] WackyDatabase compat: ZNetScene.Awake pass failed: {e.Message}"); }
+            }
+
+            private static void PostfixBody()
             {
                 ResetCaches();
                 PublishCloneBlacklist();

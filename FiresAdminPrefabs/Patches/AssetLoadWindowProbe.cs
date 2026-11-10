@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using HarmonyLib;
@@ -21,7 +22,7 @@ namespace VerdantsAscent.Patches
         private static float s_armedAt;
         private static int s_disarmFrame = -1;
         private static int s_logged;
-        private const int MaxLines = 400;
+        private const int MaxLines = 1000;   // 1.1.308: was 400
 
         private static bool Active
         {
@@ -31,7 +32,8 @@ namespace VerdantsAscent.Patches
                 if ((s_disarmFrame >= 0 && Time.frameCount > s_disarmFrame) || Time.realtimeSinceStartup - s_armedAt > 60f)
                 {
                     s_armed = false;
-                    VaPieces.Log?.LogDebug($"[AssetLoadWindow] closed at frame {Time.frameCount} after {s_logged} logged load(s)");
+                    VaPieces.Log?.LogDebug($"[AssetLoadWindow] closed at frame {Time.frameCount} after {s_logged} distinct load(s) (cap {MaxLines}) + {s_soLogged} distinct CreateInstance(s)");
+                    Summarize();
                     return false;
                 }
                 return true;
@@ -40,14 +42,24 @@ namespace VerdantsAscent.Patches
 
         private static void Arm(string why)
         {
-            s_armed = true; s_armedAt = Time.realtimeSinceStartup; s_disarmFrame = -1; s_logged = 0;
+            s_armed = true; s_armedAt = Time.realtimeSinceStartup; s_disarmFrame = -1; s_logged = 0; s_soLogged = 0; s_seen.Clear(); s_lastFrame.Clear();
             VaPieces.Log?.LogDebug($"[AssetLoadWindow] armed at frame {Time.frameCount}: {why}");
         }
 
+        // 1.1.308 ([lead] 10-22: round_20261022-062337 spent all 400 lines in frame 251 on Core's CreateInstance('Recipe') and was
+        // silent when the error came at :3823): the same api + asset + caller logs once (repeats counted, summed when the window
+        // closes); CreateInstance lines still log (R2: the error followed a TextSettings CreateInstance) but do not use the load cap;
+        // the cap is 1000 loads; every line carries its frame.
+        private static readonly Dictionary<string, int> s_seen = new Dictionary<string, int>();
+        private static readonly Dictionary<string, int> s_lastFrame = new Dictionary<string, int>();
+        private static int s_soLogged;
+        private const int MaxSoLines = 1000;
+
         private static void Note(string api, string what)
         {
-            if (!Active || s_logged >= MaxLines) return;
-            s_logged++;
+            if (!Active) return;
+            bool so = api == "ScriptableObject.CreateInstance";
+            if (so ? s_soLogged >= MaxSoLines : s_logged >= MaxLines) return;
             string caller;
             try
             {
@@ -55,7 +67,26 @@ namespace VerdantsAscent.Patches
                 caller = string.Join(" < ", frames.Take(14).Select(f => { var m = f.GetMethod(); return m == null ? "?" : $"{m.DeclaringType?.FullName}.{m.Name}"; }));
             }
             catch (Exception ex) { caller = "stack failed: " + ex.Message; }
+            string key = api + "|" + what + "|" + caller;
+            s_lastFrame[key] = Time.frameCount;
+            if (s_seen.TryGetValue(key, out int n)) { s_seen[key] = n + 1; return; }   // a repeat: counted, summed at close
+            s_seen[key] = 1;
+            if (so) s_soLogged++; else s_logged++;
             VaPieces.Log?.LogDebug($"[AssetLoadWindow] {api} '{what}' frame {Time.frameCount} t={(Time.realtimeSinceStartup - s_armedAt) * 1000f:0} ms; caller: {caller}");
+        }
+
+        private static void Summarize()
+        {
+            int lines = 0;
+            foreach (var kv in s_seen)
+            {
+                if (kv.Value < 2) continue;
+                int bar = kv.Key.IndexOf('|'), bar2 = kv.Key.IndexOf('|', bar + 1);
+                string head = bar2 > 0 ? kv.Key.Substring(0, bar2) : kv.Key;
+                VaPieces.Log?.LogDebug($"[AssetLoadWindow] repeated {kv.Value - 1} more time(s) (last frame {s_lastFrame[kv.Key]}): {head.Replace("|", " '")}'");
+                if (++lines >= 200) break;
+            }
+            s_seen.Clear(); s_lastFrame.Clear();
         }
 
         // ── Arming: the scene load starts ─────────────────────────────────────────────────────────────────────────────

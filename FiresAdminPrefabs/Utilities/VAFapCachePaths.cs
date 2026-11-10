@@ -134,6 +134,22 @@ namespace VerdantsAscent.Utilities
                 if (!Directory.Exists(oldDir)) return;
                 if (Directory.Exists(newDir) && Directory.GetFileSystemEntries(newDir).Length > 0)
                 {
+                    // 1.1.399 (log sweep 11-07): an old folder with no files left is the shell of an earlier migration;
+                    // it moves to the same dated backup as a migrated one (nothing deleted), no warning.
+                    if (Directory.GetFiles(oldDir, "*", SearchOption.AllDirectories).Length == 0)
+                    {
+                        string shell = Path.Combine(Root, "_migrated_from_config_" + DateTime.Now.ToString("yyyyMMdd"), ManifestsFolderName + "_empty");
+                        if (Directory.Exists(shell)) shell += "_" + DateTime.Now.ToString("HHmmss");
+                        try { Directory.CreateDirectory(Path.GetDirectoryName(shell)); Directory.Move(oldDir, shell); }
+                        catch (Exception ex)
+                        {
+                            // never fall through to the outer catch: that would switch this session to the empty old folder
+                            Debug.LogWarning($"{VaPieces.PluginName}: [FAP Cache] the old '{oldDir}' is empty but couldn't be moved ({ex.Message}); using the new one. Move it out of config by hand.");
+                            return;
+                        }
+                        Debug.Log($"{VaPieces.PluginName}: [FAP Cache] the old '{oldDir}' held no files (left by an earlier migration); moved it to '{shell}'.");
+                        return;
+                    }
                     Debug.LogWarning($"{VaPieces.PluginName}: [FAP Cache] both '{oldDir}' and '{newDir}' exist; using the new one. Move the old folder out of config by hand.");
                     return;
                 }

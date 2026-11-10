@@ -54,7 +54,10 @@ An admin build suite for Valheim. FiresAdminPrefabs (FAP) turns the vanilla hamm
 - **Hammer toggles** under `[HammerToggles]`: clip into the ground or through everything, stop placed props from snapping to the ground, force persistence, suppress random rotation, swap broken variants for intact ones, and override effect timers.
 - **`[General] ServerEnforced`** forces the server's synced settings onto every client.
 - **Asset bundles:** drop bundles into `BepInEx/config/FiresAdminPrefabs/Assets/` and their prefabs join the hammer. Connecting players download only the files that differ (assets, manifests, shaders, textures and baked meshes), verified before they are used. Players are asked to reconnect after new assets arrive.
-- **Persistence and respawns:** with `[General] UseEwpForPersistence`, FAP writes ExpandWorldPrefabs rules so the server enforces persistence and respawn timers, and vanilla clients see it too. Use `fap_push_presets` or `[Sync] AutoPushOnPlace` to send your presets and rules to a dedicated server.
+- **Persistence and respawns** (the Persistence section of the settings):
+  - **Use EWP persistence** hands everything that respawns to ExpandWorldPrefabs, so the server enforces it and vanilla clients see it too. Under it, one switch per kind: effects and timed pieces, chests, monsters and item stands.
+  - **Use FAP persistence** is FAP's own respawner. It is only visible to other players using FAP, and it switches off when EWP persistence or vanilla friendly is turned on.
+- **Settings:** the Fires config window shows the build menu, hammer toggles, keybinds and persistence. Turn on **Advanced** for performance and compatibility options. Window sizes and positions are saved when you drag the handles, so they are not listed. Use `fap_push_presets` or `[Sync] AutoPushOnPlace` to send your presets and rules to a dedicated server.
 
 ## Admin commands
 
@@ -83,3 +86,11 @@ All commands start with `fap_` and run in the console (F5).
 ## Credits
 
 - The container-and-sign behaviour that lets **Missing Pieces** bundles load without that mod (`ExternalScripts/MissingPieces/CustomInteract.cs`) is adapted from [BentoG's MissingPieces](https://github.com/OrianaVenture/Valheim-MissingPieces) (WTFPL).
+
+## Screenshots
+
+<!-- ![fap_build_menu](HOSTED_URL/fap_build_menu.png) -->
+<!-- ![fap_build_placed](HOSTED_URL/fap_build_placed.png) -->
+<!-- ![fap_settings_persistence](HOSTED_URL/fap_settings_persistence.png) -->
+<!-- ![fap_hammer_toggles](HOSTED_URL/fap_hammer_toggles.png) -->
+<!-- ![fap_preset_window](HOSTED_URL/fap_preset_window.png) -->

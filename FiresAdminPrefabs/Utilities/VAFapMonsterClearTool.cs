@@ -56,7 +56,7 @@ namespace VerdantsAscent.Utilities
                  + "in a radius AND disarms the anchor markers that drive their respawn. "
                  + "Vanilla monsters and pickables in the area are untouched. After clearing, "
                  + "the area will stay quiet unless you explicitly place a new preset spawner "
-                 + $"there. Radius {radius:F0}m. Shift+Scroll resizes.";
+                 + $"there. Radius {radius:F0}m. Scroll = radius, Shift+Scroll = height.";
         }
 
         // Markers are zeroed before the destroy, so the EWP destroy rule no longer matches the ZDO.

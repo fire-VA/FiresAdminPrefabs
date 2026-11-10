@@ -176,12 +176,16 @@ namespace VerdantsAscent.Managers
             string fapRoot = VABlueprintHammerIntegration.BlueprintsDir;
             if (!Directory.Exists(fapRoot)) yield break;
             string[] files;
-            try { files = Directory.GetFiles(fapRoot); }
+            try { files = Directory.GetFiles(fapRoot, "*", SearchOption.AllDirectories); }   // 1.1.362: subfolders (FDM's bench moves files)
             catch { yield break; }
+            Array.Sort(files, (a, b) => Depth(a).CompareTo(Depth(b)) != 0 ? Depth(a).CompareTo(Depth(b)) : string.CompareOrdinal(a, b));
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var f in files)
             {
                 var ext = Path.GetExtension(f).ToLowerInvariant();
-                if (ext == ".blueprint" || ext == ".vbuild") yield return f;
+                if (ext != ".blueprint" && ext != ".vbuild") continue;
+                if (!seen.Add(Path.GetFileName(f))) { VaPieces.Log?.LogDebug($"[FAP] blueprint {f} skipped: same file name as one nearer the top"); continue; }
+                yield return f;
             }
         }
 
@@ -267,6 +271,8 @@ namespace VerdantsAscent.Managers
             return new string(hex);
         }
 
+        private static int Depth(string path) { int n = 0; foreach (char c in path) if (c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar) n++; return n; }
+
         private static IEnumerable<string> EnumerateCandidatePaths(string blueprintName)
         {
             foreach (var ext in new[] { ".blueprint", ".vbuild" })
@@ -279,6 +285,17 @@ namespace VerdantsAscent.Managers
                     yield return Path.Combine(root, fileName);
                 }
             }
+            // 1.1.362: then any subfolder, nearest the top first; a name clash = first found + one Debug line.
+            foreach (var ext in new[] { ".blueprint", ".vbuild" })
+                foreach (var root in EnumerateRoots())
+                {
+                    string[] found;
+                    try { found = Directory.GetFiles(root, blueprintName + ext, SearchOption.AllDirectories); }
+                    catch { continue; }
+                    Array.Sort(found, (a, b) => Depth(a).CompareTo(Depth(b)) != 0 ? Depth(a).CompareTo(Depth(b)) : string.CompareOrdinal(a, b));
+                    if (found.Length > 1) VaPieces.Log?.LogDebug($"[FAP] blueprint '{blueprintName}': {found.Length} files under {root}, using {found[0]}");
+                    foreach (var f in found) yield return f;
+                }
         }
 
         private static IEnumerable<string> EnumerateRoots()

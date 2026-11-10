@@ -107,13 +107,10 @@ namespace VerdantsAscent.Utilities
                 ? data.m_instanced
                 : prefab.GetComponentInChildren<InstanceRenderer>(includeInactive: true) != null;
 
-            float scaleMin = data != null ? data.m_scaleMin : DefaultScaleMin;
-            float scaleMax = data != null ? data.m_scaleMax : DefaultScaleMax;
             float maxTilt = data != null ? data.m_maxTilt : DefaultMaxTilt;
 
-            float brushScale = Mathf.Clamp(BrushScale, MinBrushScale, MaxBrushScale);
-            scaleMin *= brushScale;
-            scaleMax *= brushScale;
+            // 1.1.292 (Fire: Shift+wheel = scale again): the ONE range the ghost preview also reads (PaintScaleRange).
+            PaintScaleRange(prefab, out float scaleMin, out float scaleMax);
 
             // One byte-array entry per surviving sample so the clear brush
             // can act at sample granularity.
@@ -322,12 +319,31 @@ namespace VerdantsAscent.Utilities
         // Per-sample RPC payload (v2 schema): one entry per fire, packing
         // (X, Y, Z, Scale, RotY, ClutterType). Dead code today — Paint()
         // writes locally on the owner; kept for a future client→owner dispatch.
+        private const int MaxEntriesPerTerrainComp = 16384;
+        private const int MaxClutterTypeLength = 128;
+        private const float MaxClutterScale = 20f;
+        private const float RefuseLogSeconds = 60f;
+        private static float s_refuseLoggedAt = float.NegativeInfinity;
+
+        private static void RefuseLog(string message)
+        {
+            if (Time.realtimeSinceStartup - s_refuseLoggedAt < RefuseLogSeconds) return;
+            s_refuseLoggedAt = Time.realtimeSinceStartup;
+            Debug.LogWarning($"{VaPieces.PluginName}: {message}.");
+        }
+
         private static void OnRpcPaintClutter(TerrainComp tc, long sender, ZPackage pkg)
         {
             if (tc == null) return;
             var nview = tc.GetComponent<ZNetView>();
             if (nview == null || !nview.IsValid()) return;
             if (!nview.IsOwner()) return;
+            // Painting clutter is an admin tool: the server owner accepts admins only, a client owner nothing (it cannot check).
+            if (ZNet.instance == null || !ZNet.instance.IsServer() || !FiresCore.Sync.AdminSyncing.IsAdmin(sender))
+            {
+                RefuseLog($"clutter paint from {sender} refused (admin on the server only)");
+                return;
+            }
 
             float x = pkg.ReadSingle();
             float y = pkg.ReadSingle();
@@ -335,8 +351,19 @@ namespace VerdantsAscent.Utilities
             float scale = pkg.ReadSingle();
             float rotY = pkg.ReadSingle();
             string type = pkg.ReadString();
+            if (string.IsNullOrEmpty(type) || type.Length > MaxClutterTypeLength || ResolvePrefab(type) == null
+                || float.IsNaN(x) || float.IsNaN(y) || float.IsNaN(z) || !(scale > 0f && scale <= MaxClutterScale))
+            {
+                RefuseLog($"clutter paint from {sender} refused (type '{type}', scale {scale})");
+                return;
+            }
 
             var entries = LoadEntries(tc);
+            if (entries.Count >= MaxEntriesPerTerrainComp)
+            {
+                RefuseLog($"clutter paint from {sender} refused (this ground already holds {MaxEntriesPerTerrainComp} painted clutter)");
+                return;
+            }
             entries.Add(new ClutterEntry
             {
                 X = x, Y = y, Z = z, Scale = scale, RotY = rotY, ClutterType = type,
@@ -589,6 +616,25 @@ namespace VerdantsAscent.Utilities
             return true;
         }
 
+        // 1.1.292 (Fire): the clamped Shift+wheel brush scale and the exact per-sample scale range Paint picks from
+        // (clutter data [m_scaleMin, m_scaleMax] x BrushScale). The placement ghost is drawn at the mean of this range.
+        public static float ClampedBrushScale => Mathf.Clamp(BrushScale, MinBrushScale, MaxBrushScale);
+
+        public static void PaintScaleRange(GameObject prefab, out float scaleMin, out float scaleMax)
+        {
+            var data = ResolveClutterData(prefab);
+            float bs = ClampedBrushScale;
+            scaleMin = (data != null ? data.m_scaleMin : DefaultScaleMin) * bs;
+            scaleMax = (data != null ? data.m_scaleMax : DefaultScaleMax) * bs;
+        }
+
+        public static float PreviewScale(GameObject prefab)
+        {
+            PaintScaleRange(prefab, out float a, out float b);
+            return (a + b) * 0.5f;
+        }
+
+        public static GameObject ResolvePrefabPublic(string name) => ResolvePrefab(name);
         private static ClutterSystem.Clutter ResolveClutterData(GameObject prefab)
         {
             if (prefab == null) return null;
@@ -637,7 +683,7 @@ namespace VerdantsAscent.Utilities
                 int version = pkg.ReadInt();
                 if (version == 2)
                 {
-                    int count = pkg.ReadInt();
+                    int count = Math.Min(pkg.ReadInt(), MaxEntriesPerTerrainComp);   // a ground never replays more than the paint cap
                     for (int i = 0; i < count; i++)
                     {
                         entries.Add(new ClutterEntry
@@ -971,7 +1017,8 @@ namespace VerdantsAscent.Utilities
             [HarmonyPostfix]
             public static void Postfix(TerrainComp __instance)
             {
-                RestoreFromZDO(__instance);
+                try { RestoreFromZDO(__instance); }   // 1.1.318 (audit M6): a throw here also skipped FAT's BiomePaintPersistence Load postfix
+                catch (System.Exception e) { UnityEngine.Debug.LogError($"[FAP] clutter restore on TerrainComp.Load failed: {e.Message}"); }
             }
         }
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.EventSystems;
 using VerdantsAscent.Managers;
 
 namespace VerdantsAscent.Utilities
@@ -14,6 +15,30 @@ namespace VerdantsAscent.Utilities
     // While any FAP IMGUI window is open: an invisible uGUI blocker sits under each window's rect (top sorting order, so the
     // EventSystem sees UI there and nothing behind it gets the click), and the cursor stays free and visible. Keys are blocked
     // by Core's FiresInputBlock, which each window holds.
+    /// <summary>
+    /// 1.1.306 (Fire 10-21: "clicking and dragging the preset UI moves the build menu behind it"): Core's dock drag polls the raw
+    /// mouse and then asks the EventSystem what is on top; it stands down only for a Selectable / input field / pointer handler
+    /// (DockService.TryLiveHeaderDirect / OwnPointerControl). FAP's IMGUI blockers and its preset window's scrim were plain
+    /// Images, so a press on them dragged the build menu underneath. This sink IS a Selectable with the pointer handlers, so the
+    /// press, click, drag and scroll on a FAP window are that window's alone.
+    /// </summary>
+    public sealed class VAPointerSink : Selectable, IPointerClickHandler, IBeginDragHandler, IDragHandler, IEndDragHandler, IScrollHandler
+    {
+        internal static void On(GameObject go)
+        {
+            if (go == null || go.GetComponent<VAPointerSink>() != null) return;
+            var s = go.AddComponent<VAPointerSink>();
+            s.transition = Transition.None;
+            s.navigation = new Navigation { mode = Navigation.Mode.None };
+        }
+        public override void OnPointerDown(PointerEventData e) { e?.Use(); }
+        public void OnPointerClick(PointerEventData e) { e?.Use(); }
+        public void OnBeginDrag(PointerEventData e) { e?.Use(); }
+        public void OnDrag(PointerEventData e) { e?.Use(); }
+        public void OnEndDrag(PointerEventData e) { e?.Use(); }
+        public void OnScroll(PointerEventData e) { e?.Use(); }
+    }
+
     public static class VAImguiGuard
     {
         private sealed class Entry { public object Owner; public Func<Rect> Rect; public string Name; public RectTransform Blocker; }
@@ -22,6 +47,23 @@ namespace VerdantsAscent.Utilities
         private static Canvas _canvas;
 
         public static bool AnyOpen => _open.Count > 0;
+
+        /// <summary>
+        /// 1.1.306 (Fire 10-21: "we try and type into a preset UI and it triggers game inputs elsewhere"): Core's text-capture
+        /// watchdog RELEASES every FiresInputBlock token after 30 s with no field focused unless a screen is open in
+        /// ModUiRegistry (FiresInputBlock LateUpdate; logs "[FAP] text-capture gate RELEASED: held 30 s"). FAP's windows were
+        /// not registered, so a preset window left open half a minute lost its key block and the next typed keys reached the
+        /// build menu and the game. They are one registered screen now: open while any FAP window or prompt is up.
+        /// </summary>
+        internal static void RegisterWithCore()
+        {
+            try
+            {
+                FiresCore.Bridge.ModUiRegistry.Register("FiresAdminPrefabs.Windows",
+                    () => AnyOpen || VASwapPresetUi.IsOpen || VARightClickMenu.PromptOpen || VASwapFlow.Busy);
+            }
+            catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: [ImguiGuard] ModUiRegistry register failed: {ex.Message}"); }
+        }
 
         public static void Open(object owner, Func<Rect> rect, string name)
         {
@@ -33,6 +75,7 @@ namespace VerdantsAscent.Utilities
             var img = go.AddComponent<Image>();
             img.color = new Color(0f, 0f, 0f, 0f);
             img.raycastTarget = true;
+            VAPointerSink.On(go);   // 1.1.306
             var rt = img.rectTransform;
             rt.anchorMin = rt.anchorMax = Vector2.zero;
             rt.pivot = Vector2.zero;

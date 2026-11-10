@@ -369,15 +369,22 @@ namespace VerdantsAscent.Patches
         {
             try
             {
-                var entry = new Data.DataEntry(base64Data);
+                // 1.1.309 ([lead] 10-22: the rig + modpack run Expand World Data 1.79, which removed DataEntry(string) and
+                // ObjectParameters; 1.1.307 was built on EWD 1.68, so this method failed its type load on 1.79). The 1.79 API, as
+                // EWD's own DataHelper.Init does it: the base64 blob -> ZPackage -> DataEntry; resolve it against the piece
+                // (ObjectFunctions = prefab + no args + its ZDO) into a ResolvedDataEntry; write that onto the ZDO.
+                var entry = new Data.DataEntry(new ZPackage(base64Data));
                 if (entry.Floats != null)
                 {
                     entry.Floats.Remove(SupportFieldHash);
                     entry.Floats.Remove(WearNTearSupportFieldHash);
                 }
 
-                var parameters = new Data.ObjectParameters(prefabName ?? string.Empty, string.Empty, zdo);
-                entry.Write(parameters, zdo);
+                var functions = new Data.ObjectFunctions(prefabName ?? string.Empty, Array.Empty<string>(), zdo);
+                var resolved = new Data.ResolvedDataEntry();
+                resolved.Load(entry, functions, zdo);
+                resolved.Write(zdo);
+                VaPieces.Log?.LogDebug($"VABundleDataApplier - EWD data applied to '{prefabName}' (EWD 1.79 API)");
                 VAPre10ZdoUpgrade.Apply(zdo);
                 return true;
             }

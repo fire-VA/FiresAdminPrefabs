@@ -84,7 +84,7 @@ namespace VerdantsAscent.Patches
                     var host = VaPieces.Instance;
                     if (host == null) { args.Context?.AddString("hammer_measure: mod host not ready."); return; }
                     host.StartCoroutine(MeasureAllCoroutine(args.Context));
-                });
+                }, isCheat: true);
         }
 
         private static IEnumerator MeasureAllCoroutine(Terminal terminal)

@@ -40,7 +40,11 @@ namespace VerdantsAscent.Patches
         {
             var cfg = ConfigManager.Instance;
             why = null;
-            if (VAEwpSoftDep.IsActive && cfg?.configUseEwpForPersistence?.Value == true) return VAPersistMode.Ewp;
+            if (VAEwpSoftDep.IsActive && cfg?.configUseEwpForPersistence?.Value == true)   // 1.1.279: EWP on = EWP or nothing; FAP's own respawner does nothing
+            {
+                if (VAEwpSoftDep.For(cfg.configEwpEffects)) return VAPersistMode.Ewp;
+                why = "turn on [Persistence] EWP effects"; return VAPersistMode.None;
+            }
             if (cfg?.configVanillaFriendly?.Value == true) { why = "vanilla clients can't keep it: needs EWP"; return VAPersistMode.None; }
             if (cfg?.configFapRespawner?.Value != true) { why = "turn on [Persistence] FAP respawner, or use EWP"; return VAPersistMode.None; }
             return VAPersistMode.Fap;
@@ -121,7 +125,7 @@ namespace VerdantsAscent.Patches
                 zdo.Set(RespawnKey, 1);
                 if (noTtl) { zdo.Set(VAEffectTtlKeys.OverrideHash, true); VAEffectTtlOverride.Apply(inst); }
             }
-            VaPieces.Log?.LogInfo($"[FAP Respawn] respawned '{prefab.name}' at {pos:F1}");
+            VerdantsAscent.VaPieces.Log?.LogDebug($"[FAP Respawn] respawned '{prefab.name}' at {pos:F1}");
         }
     }
 }

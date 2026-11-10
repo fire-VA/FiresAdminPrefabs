@@ -300,7 +300,7 @@ namespace VerdantsAscent.Patches
                 var zdo = netViewValid ? netView.GetZDO() : null;
                 float delay = zdo != null ? zdo.GetFloat(KeyRespawnSeconds, 0f) : 0f;
                 string presetName = zdo != null ? zdo.GetString(KeyAppliedPresetName, string.Empty) : string.Empty;
-                bool ewpHandlesRespawn = VAEwpSoftDep.IsActive;
+                bool ewpHandlesRespawn = VAEwpSoftDep.For(VerdantsAscent.Managers.ConfigManager.Instance?.configEwpMonsters);   // 1.1.279: per-kind toggle
 
                 // One line per death answers "why did/didn't this respawn?" from a single grep.
                 VaPieces.Log?.LogDebug(   // 1.1.207: per death = Debug (Fire: Message-level defaults)

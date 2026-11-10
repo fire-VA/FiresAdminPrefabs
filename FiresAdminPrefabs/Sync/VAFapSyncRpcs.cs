@@ -51,6 +51,7 @@ namespace VerdantsAscent.Sync
         {
             var routedRpc = ZRoutedRpc.instance;
             if (routedRpc == null) return;
+            VerdantsAscent.Utilities.VAFapPrefabPurgeRpc.Register();
             if (ReferenceEquals(_registeredOn, routedRpc)) return;
 
             try
@@ -144,14 +145,14 @@ namespace VerdantsAscent.Sync
 
         private static void OnDeltaList(long sender, ZPackage pkg)
         {
-            if (IsServer()) return;
+            if (IsServer() || !IsFromServer(sender, "OnDeltaList")) return;
             ForwardReassembled("OnDeltaList", sender, pkg, payload =>
                 VAFapAssetSync.Client_HandleDeltaList(VAFapSyncManifest.Deserialize(payload).Entries));
         }
 
         private static void OnFileBegin(long sender, ZPackage pkg)
         {
-            if (IsServer()) return;
+            if (IsServer() || !IsFromServer(sender, "OnFileBegin")) return;
             Forward("OnFileBegin", sender, () =>
             {
                 string relPath = pkg.ReadString();
@@ -164,7 +165,7 @@ namespace VerdantsAscent.Sync
 
         private static void OnFileChunk(long sender, ZPackage pkg)
         {
-            if (IsServer()) return;
+            if (IsServer() || !IsFromServer(sender, "OnFileChunk")) return;
             Forward("OnFileChunk", sender, () =>
             {
                 string relPath = pkg.ReadString();
@@ -176,7 +177,7 @@ namespace VerdantsAscent.Sync
 
         private static void OnFileEnd(long sender, ZPackage pkg)
         {
-            if (IsServer()) return;
+            if (IsServer() || !IsFromServer(sender, "OnFileEnd")) return;
             Forward("OnFileEnd", sender, () =>
             {
                 string relPath = pkg.ReadString();
@@ -187,13 +188,13 @@ namespace VerdantsAscent.Sync
 
         private static void OnTransferDone(long sender, ZPackage pkg)
         {
-            if (IsServer()) return;
+            if (IsServer() || !IsFromServer(sender, "OnTransferDone")) return;
             Forward("OnTransferDone", sender, VAFapAssetSync.Client_HandleTransferDone);
         }
 
         private static void OnAdminPushAck(long sender, ZPackage pkg)
         {
-            if (IsServer()) return;
+            if (IsServer() || !IsFromServer(sender, "OnAdminPushAck")) return;
             ForwardReassembled("OnAdminPushAck", sender, pkg, payload =>
             {
                 var inner = new ZPackage(payload);
@@ -205,7 +206,7 @@ namespace VerdantsAscent.Sync
 
         private static void OnBakedIndex(long sender, ZPackage pkg)
         {
-            if (IsServer()) return;
+            if (IsServer() || !IsFromServer(sender, "OnBakedIndex")) return;
             ForwardReassembled("OnBakedIndex", sender, pkg, payload =>
                 VAFapAssetSync.Client_HandleBakedIndex(VAFapSyncManifest.Deserialize(payload).Entries));
         }
@@ -292,6 +293,23 @@ namespace VerdantsAscent.Sync
             return VAFapSyncChunker.SendToPeer(clientPeer, RPC_ADMIN_PUSH_ACK, inner.GetArray(), compress: false);
         }
 
+        // Client-side handlers act only on what the server sent. Without this any player could stream files onto another
+        // player's disk or replace their synced manifest. One warning per handler per minute.
+        private const float RefusalLogSeconds = 60f;
+        private static readonly Dictionary<string, float> s_refusalLoggedAt = new Dictionary<string, float>();
+
+        private static bool IsFromServer(long sender, string handler)
+        {
+            var routed = ZRoutedRpc.instance;
+            if (routed != null && sender == routed.GetServerPeerID()) return true;
+            float now = Time.realtimeSinceStartup;
+            if (!s_refusalLoggedAt.TryGetValue(handler, out float at) || now - at >= RefusalLogSeconds)
+            {
+                s_refusalLoggedAt[handler] = now;
+                Debug.LogWarning($"[FAP Sync] {handler} from {sender}, who is not the server; refused.");
+            }
+            return false;
+        }
         private static bool IsServer()
         {
             return ZNet.instance != null && ZNet.instance.IsServer();

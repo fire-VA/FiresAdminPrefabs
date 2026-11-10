@@ -219,6 +219,13 @@ namespace VerdantsAscent.Utilities
             EnsureRpc();
             var id = view.GetZDO().m_uid;
             if (ZNet.instance != null && ZNet.instance.IsServer()) { WriteAndBroadcast(id, p, "host"); return; }
+            // 1.1.305 (Fire 10-21): a server without FAP can't answer the request, so the player's own FAP does the edit itself
+            if (VerdantsAscent.Managers.VAFapServerPresence.IsClientOnly)
+            {
+                // 1.1.306 (Fire 10-21: own pieces only): the UI and the radius swapper both land here; a non-admin edits only lights they built
+                if (!VerdantsAscent.Managers.VAFapServerPresence.MayEditPiece(view.gameObject)) { VaPieces.Log?.LogDebug($"[FAP] light edit on {view.gameObject.name} ({id}) skipped: not an admin (server has no FAP and debugmode is off)"); return; }
+                WriteAndBroadcast(id, p, "client-only (server has no FAP)"); return;
+            }
             var pkg = new ZPackage();
             pkg.Write(id);
             pkg.Write(p != null ? JsonConvert.SerializeObject(p) : "");
@@ -275,14 +282,24 @@ namespace VerdantsAscent.Utilities
         public static class ZNet_Awake_VALight_Patch { [HarmonyPostfix] public static void Postfix() => EnsureRpc(); }
 
         // Every placed piece with a Light gets the state that caches its own values and applies the ZDO's.
-        [HarmonyPatch(typeof(Piece), "Awake")]
+        // 1.1.407: run by FapAwakeDispatch (FAP's ONE ZNetView.Awake / Piece.Awake postfix; [generator] audit row 4)
         public static class Piece_Awake_VALight_Patch
         {
-            [HarmonyPostfix]
-            public static void Postfix(Piece __instance)
+            private static readonly System.Collections.Generic.Dictionary<int, bool> s_hasLightByPrefab = new System.Collections.Generic.Dictionary<int, bool>();
+
+            public static void Run(Piece __instance)
             {
-                if (__instance == null || __instance.GetComponent<VALightState>() != null || !HasLight(__instance.gameObject)) return;
-                if (__instance.GetComponent<ZNetView>() == null) return;   // a hammer ghost / menu copy
+                if (__instance == null) return;
+                var nv = __instance.GetComponent<ZNetView>();
+                if (nv == null) return;   // a hammer ghost / menu copy
+                // 1.1.402 ([visual] audit via [lead] 11-08): GetComponentInChildren<Light>(true) walked every piece's whole hierarchy on every create.
+                // The answer is cached per prefab hash from the first live instance (inactive children included, as before); a ZNetView without a ZDO
+                // (no prefab hash) keeps the walk.
+                int hash = nv.IsValid() ? nv.GetZDO().GetPrefab() : 0;
+                bool has;
+                if (hash == 0) has = HasLight(__instance.gameObject);
+                else if (!s_hasLightByPrefab.TryGetValue(hash, out has)) s_hasLightByPrefab[hash] = has = HasLight(__instance.gameObject);
+                if (!has || __instance.GetComponent<VALightState>() != null) return;
                 __instance.gameObject.AddComponent<VALightState>();
             }
         }

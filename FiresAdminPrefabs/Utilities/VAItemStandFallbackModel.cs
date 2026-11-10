@@ -19,6 +19,7 @@ namespace VerdantsAscent.Utilities
         private static readonly Dictionary<ItemStand, (int hash, GameObject model)> _models = new Dictionary<ItemStand, (int, GameObject)>();
         private static readonly List<Component> _strip = new List<Component>();
         private static int _calls;
+        private static readonly HashSet<int> _undrawable = new HashSet<int>();   // 1.1.327: items already reported undrawable here
 
         private static void Prune()
         {
@@ -93,7 +94,13 @@ namespace VerdantsAscent.Utilities
                 Clear(__instance, current.model);
 
                 GameObject itemPrefab = ObjectDB.instance != null ? ObjectDB.instance.GetItemPrefab(itemHash) : null;
-                if (!HasWorldModel(itemPrefab)) return;
+                if (!HasWorldModel(itemPrefab))
+                {
+                    // 1.1.327 (a player: "some items ... are invisible to other players"): which item, and why, once per item on this client.
+                    if (_undrawable.Add(itemHash))
+                        VaPieces.Log?.LogDebug($"[FAP] item stand {__instance.name}: item hash {itemHash} {(itemPrefab == null ? "is NOT in this client's ObjectDB (a mod / bundle this client lacks)" : $"'{itemPrefab.name}' has no stand model and no world model")} - this client draws nothing for it");
+                    return;
+                }
                 Transform attach = __instance.GetAttach(null);
                 if (attach == null) return;
 

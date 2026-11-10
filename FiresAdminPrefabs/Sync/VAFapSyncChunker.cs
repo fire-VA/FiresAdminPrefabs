@@ -140,13 +140,25 @@ namespace VerdantsAscent.Sync
             }
         }
 
+        // Network payloads here are manifests and small requests (files stream separately), so a sender can never make this
+        // peer hold more than MaxPayloadBytes: compressed or reassembled, larger payloads are refused.
+        private const int MaxPayloadBytes = 64 * 1024 * 1024;
+        private const int MaxFragmentsPerPayload = MaxPayloadBytes / ChunkSize + 1;
+        private const int MaxPendingPayloadsPerSender = 4;
+
         internal static byte[] Inflate(byte[] data)
         {
             using (var input = new MemoryStream(data))
             using (var output = new MemoryStream())
             using (var deflate = new DeflateStream(input, CompressionMode.Decompress))
             {
-                deflate.CopyTo(output);
+                var buffer = new byte[81920];
+                int read;
+                while ((read = deflate.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    if (output.Length + read > MaxPayloadBytes) throw new InvalidDataException($"inflated payload over {MaxPayloadBytes / (1024 * 1024)} MB");
+                    output.Write(buffer, 0, read);
+                }
                 return output.ToArray();
             }
         }
@@ -294,7 +306,7 @@ namespace VerdantsAscent.Sync
             }
 
             if (failure == null && size >= StreamProgressMinBytes)
-                Debug.Log($"[FAP Sync] '{relPath}' sent — {VAFapAssetSync.FormatBytes(sentBytes)} in "
+                VerdantsAscent.VaPieces.Log?.LogDebug($"[FAP Sync] '{relPath}' sent — {VAFapAssetSync.FormatBytes(sentBytes)} in "
                     + $"{FormatDuration(seconds)} ({FormatRate(sentBytes, seconds)}, {(direct ? "direct" : "routed")} blocks).");
 
             if (peer.m_socket != null && peer.m_socket.IsConnected())
@@ -307,7 +319,7 @@ namespace VerdantsAscent.Sync
             string eta = perSec > 1.0
                 ? FormatDuration((float)((size - sent) / perSec)) + " left"
                 : "no estimate yet";
-            Debug.Log($"[FAP Sync] '{relPath}' {VAFapAssetSync.FormatBytes(sent)} of "
+            VerdantsAscent.VaPieces.Log?.LogDebug($"[FAP Sync] '{relPath}' {VAFapAssetSync.FormatBytes(sent)} of "
                 + $"{VAFapAssetSync.FormatBytes(size)} ({(100.0 * sent / Math.Max(1L, size)):F1}%), "
                 + $"{FormatRate(sent, elapsed)}, {eta}.");
         }
@@ -454,6 +466,11 @@ namespace VerdantsAscent.Sync
 
                 if (!_reassemblyCache.TryGetValue(cacheKey, out var fragments))
                 {
+                    if (PendingFor(sender) >= MaxPendingPayloadsPerSender)
+                    {
+                        Debug.LogWarning($"[FAP Sync] {sender} has {MaxPendingPayloadsPerSender} unfinished payloads already; refusing another.");
+                        return null;
+                    }
                     fragments = new SortedDictionary<int, byte[]>();
                     _reassemblyCache[cacheKey] = fragments;
                     _cacheExpirations.Add(new KeyValuePair<long, string>(
@@ -462,7 +479,20 @@ namespace VerdantsAscent.Sync
 
                 int index = package.ReadInt();
                 int count = package.ReadInt();
-                fragments[index] = package.ReadByteArray();
+                if (count <= 0 || count > MaxFragmentsPerPayload || index < 0 || index >= count)
+                {
+                    _reassemblyCache.Remove(cacheKey);
+                    Debug.LogWarning($"[FAP Sync] {sender} sent fragment {index} of {count} (at most {MaxFragmentsPerPayload}); discarding the payload.");
+                    return null;
+                }
+                byte[] fragment = package.ReadByteArray();
+                if (fragment == null || fragment.Length > ChunkSize)
+                {
+                    _reassemblyCache.Remove(cacheKey);
+                    Debug.LogWarning($"[FAP Sync] {sender} sent a {(fragment?.Length ?? 0)}-byte fragment (at most {ChunkSize}); discarding the payload.");
+                    return null;
+                }
+                fragments[index] = fragment;
 
                 if (fragments.Count < count) return null;
 
@@ -476,6 +506,14 @@ namespace VerdantsAscent.Sync
 
             compressed = (flags & FLAG_COMPRESSED) != 0;
             return payload;
+        }
+
+        private static int PendingFor(long sender)
+        {
+            string prefix = sender.ToString() + ":";
+            int n = 0;
+            foreach (var key in _reassemblyCache.Keys) if (key.StartsWith(prefix, StringComparison.Ordinal)) n++;
+            return n;
         }
 
         // The first DeflateStream in the process loads Mono's native zlib (MonoPosixHelper) and JITs the stream code. Run

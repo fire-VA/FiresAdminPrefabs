@@ -3,6 +3,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEngine;
 using FiresCore.Sync;
 using VerdantsAscent.Utilities;
@@ -45,8 +46,11 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configItemStandUseEwp;   // 1.1.168
         public ConfigEntry<string> configVanillaFriendlyEffectAllowlist;
         public ConfigEntry<bool> configVanillaFriendly;
+        public ConfigEntry<bool> configEnemySpawnersOnHammer, configIncludeBossesInEnemySpawners, configHideSpawnersFromShowAll;
+        public ConfigEntry<string> configShowAllHiddenCategories;
         public ConfigEntry<bool> configHideDevPrefabs;
         public ConfigEntry<bool> configFapRespawner;
+        public ConfigEntry<bool> configEwpEffects, configEwpChests, configEwpMonsters;   // 1.1.279: per-kind EWP persistence under the master switch
         public ConfigEntry<bool> configUseEwpForPersistence;
         public ConfigEntry<bool> configSortHammerByMod;
         public ConfigEntry<BundleNatureShaderMode> configBundleNatureShader;
@@ -72,8 +76,9 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configClientNonReadableRenderMeshes;
         public ConfigEntry<bool> configDediUnloadTextures;
         public ConfigEntry<bool> configLazyBundlesPreloadAll;
+        public ConfigEntry<bool> configLazyBundlesLazyNonPieces;
         public ConfigEntry<int> configLazyBundlesLookAheadZones;
-        public ConfigEntry<int> configLazyBundlesUnloadMinutes;
+        public ConfigEntry<bool> configLazyBundlesPrewarm;   // 1.1.403
         public ConfigEntry<bool> configBuildMenuNativeTrace;
         public ConfigEntry<bool> configTextureLibraryAtSpawn;   // 1.1.249
         public ConfigEntry<bool> configShowAdminPieceUnlocks;
@@ -89,6 +94,7 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<float> configFxClearRadius;
         public ConfigEntry<float> configFxClearDurationSec;
         public ConfigEntry<float> configFxClearTickIntervalSec;
+        public ConfigEntry<bool> configFxClearOrphanSweepOnLoad;   // 1.1.398
 
         // ────── UI ──────
         public ConfigEntry<float> configConfigWindowScale;
@@ -99,8 +105,13 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<float> configBuildMenuPosY;
         public ConfigEntry<bool> configSortVanillaFirst;
         public ConfigEntry<bool> configHideAdminGatedPieces;
+        public ConfigEntry<bool> configSpikeTriggerLayerFix;   // 1.1.350
+        public ConfigEntry<bool> configBundleCopiesUseGameShader;   // 1.1.356
+        public ConfigEntry<bool> configShowSpawnersWithHammer;   // 1.1.352
         public FiresCore.Input.KeyBinding configBuildMenuContextMenuKey;
         public FiresCore.Input.KeyBinding configSnapDefaultKey;
+        public BepInEx.Configuration.ConfigEntry<float> configSnapEdgeSpacing;
+        public BepInEx.Configuration.ConfigEntry<bool> configOffsetUsesCentre;
 
         // ────── Sync ──────
         public ConfigEntry<bool> configAutoPushOnPlace;
@@ -175,6 +186,16 @@ namespace VerdantsAscent.Managers
             configVanillaFriendly = config.Bind("General", "VanillaFriendly", false,
                 "When true, disables features that need this mod loaded on every client to display correctly (PS/Audio looping, scale sync, TimedDestruction cancel). The expanded hammer + placement configs still work; placed effects just won't loop or sync scale to vanilla clients. Pair with UseEwpForPersistence to get respawn-on-destroy behavior via ExpandWorldPrefabs instead.");
 
+            configEnemySpawnersOnHammer = config.Bind("General", "Enemy Spawners On Hammer", false,
+                "A Spawners row on the Monsters tab with a vanilla spawner per enemy. Placed spawners are vanilla objects with vanilla field values. Applies at the next world load.");
+            configIncludeBossesInEnemySpawners = config.Bind("General", "Include Bosses In Enemy Spawners", false,
+                "Bosses get a spawner too. Needs Enemy Spawners On Hammer.");
+            configHideSpawnersFromShowAll = config.Bind("HammerToggles", "Hide Spawners From Show All", true,
+                "Spawners only list in the Monsters tab; the search box still finds them.");
+            configShowAllHiddenCategories = config.Bind("HammerToggles", "Show All Hidden Categories", "",
+                "Tabs left out of Show All, comma separated tab names. The tabs and the search box still list them.");
+            configHideSpawnersFromShowAll.SettingChanged += (_, __) => { try { VerdantsAscent.Patches.VABuildUiCategoryTags.RequestBuildMenuRefresh(); } catch { } };
+            configShowAllHiddenCategories.SettingChanged += (_, __) => { try { VerdantsAscent.Patches.VABuildUiCategoryTags.RequestBuildMenuRefresh(); } catch { } };
             configHideDevPrefabs = config.Bind("Build Menu", "Hide dev prefabs", false,
                 "When true, dev / test prefabs (e.g. SeekerEgg_alwayshatch, *_dev, *_debug, *_test) are left out of the build menu. Off by default so admins can place anything; they always carry an amber caution badge in the grid. Local, applies the next time the menu refreshes.");
 
@@ -183,6 +204,9 @@ namespace VerdantsAscent.Managers
             configFapRespawner = config.Bind("Persistence", "FAP respawner", false,
                 "When true (and VanillaFriendly is off and EWP persistence isn't in use), pieces placed with 'Place with Persistence' - FX plus anything with a TTL or self-destroy, e.g. lavabomb_rock1 - keep running (their TTL is cancelled) and FAP itself re-creates them 2 s after they are destroyed. Hammer removal never respawns. Modded clients only: a vanilla client sees the piece expire. With EWP persistence on, EWP does the respawning instead.");
 
+            configEwpEffects = config.Bind("Persistence", "EWP effects", true, "With EWP persistence on: EWP brings back placed effects and self-destroying pieces.");
+            configEwpChests = config.Bind("Persistence", "EWP chests", true, "With EWP persistence on: EWP refills respawning chests.");
+            configEwpMonsters = config.Bind("Persistence", "EWP monsters", true, "With EWP persistence on: EWP respawns placed monsters.");
             configUseEwpForPersistence = config.Bind("General", "UseEwpForPersistence", false,
                 "When true (requires ExpandWorldPrefabs on the server), effect-eligible placements get tagged with FAP_persist=1 so EWP respawns them on destroy. The single universal rule in expand_prefabs_FAP.yaml + the shared FAP_Respawn data entry in data_FAP.yaml are written once at mod load by every side that runs FAP (client, host, or dedicated server); no client→server push needed. Independent of VanillaFriendly — VanillaFriendly only controls which tabs surface modded content; EWP persistence is its own thing and works in either mode.");
 
@@ -206,6 +230,9 @@ namespace VerdantsAscent.Managers
             configEnableBlueprintBake = config.Bind("Performance", "EnableBlueprintMeshBake", false,
                 "Shows the 'Bake to prefab...' action when you right-click a blueprint in the hammer. Baking is explicit and per-blueprint — nothing is baked just by placing one, and the fap_bake_diagnose / fap_bake_all commands work whether this is on or off. Baking combines the blueprint's static pieces into roughly one mesh per material and writes a .bakebundle into config/FiresAdminPrefabs/Assets with a .bakemanifest sidecar; the result appears on the Baked Meshes tab after a RELAUNCH, because bundles are registered at world load. Interactive pieces (doors, chests, fireplaces, signs, pickables, plants, item stands, wards) are kept aside and spawned as real objects when the baked piece is placed, so they still work; the combined geometry keeps its colliders but is invulnerable — no per-piece damage or salvage, and hammering any part removes the whole placement. Multiplayer: the server and every other client need that .bakebundle too (fap_push_bundle sends it), or the placement is a missing prefab to them. Local setting, not server-synced.");
 
+            configBundleCopiesUseGameShader = config.Bind("Performance", "Bundle copies use the game shader", true,
+                "Bundle materials that are copies of a game material (name ending _Copy) take the original's shader, maps and values, so bundle stone looks like game stone. Applies at load.");
+
             configBakeExcludeTransparent = config.Bind("Performance", "BakeExcludeTransparentPieces", true,
                 "When ON, blueprint pieces with transparent-queue materials (renderQueue >= 2500) — and FiresGlass windows by name — are kept OUT of the combined bake mesh and spawn as live pieces instead. Combining transparent geometry breaks per-piece depth sorting (glass panes draw through walls / in the wrong order once merged). Costs a few live objects per blueprint; visual correctness for stained glass. Applies to NEW bakes; re-bake existing blueprints to apply.");
 
@@ -226,25 +253,30 @@ namespace VerdantsAscent.Managers
             configInjectionSingleWalk = config.Bind("Performance", "InjectionSingleWalk", true,
                 "How bundle prefabs are checked as they join the world: missing scripts, vanilla singletons, EffectArea and Pickable heals, the network view. On: one walk of each prefab's hierarchy feeds every check. Off: the older way, a separate walk per check. Both make exactly the same repairs; the load log prints the time of each step either way, so the two can be compared, and Off is the fallback. Takes effect at the next world load.");
 
-            configDediSkipRenderMeshes = config.Bind("Performance", "DediSkipRenderMeshes", "ConsMassiveTower,CastleTowerMassive",
+            configDediSkipRenderMeshes = config.Bind("Performance", "DediSkipRenderMeshes", "*",   // 1.1.392: default "*" for new cfgs only, existing values untouched (lead A/B 11-05: dedi meshes 1,378 -> 544 MB, about -0.57 GB in world). 1.1.278: release default empty
+               
                 "Dedicated server only. Comma-separated bundle prefab names whose render meshes the server drops right after loading their bundle. '*' drops every bundle prefab's render mesh (colliders kept; a placed bake parent with no bake cache then never re-bakes on the server).) A server draws nothing, but a mesh loaded from a bundle still sits in its memory: the castle tower these two names share is 12.2 million vertices, about 800 MB on the server. Collision is separate (boxes and a small mesh) and is always kept, as is any mesh a collider uses, so players, building and support work exactly as before. Clients are never affected. Empty turns it off. Takes effect at the next server start.");
-configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPlaceholders", "ConsMassiveTower,CastleTowerMassive",
+configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPlaceholders", "",   // 1.1.278: release default empty
+               
                 "Comma-separated names of pieces that were REMOVED from the bundles. Worlds that already have one placed keep its save data, and without a prefab by that name the game would log 'Missing prefab hash' every frame near it. FAP registers an invisible, empty placeholder under each name that no loaded bundle provides, so those saves load quietly and the piece comes back if its bundle ever carries it again. Empty turns it off.");
-            configKeepDeadScriptSlotBundles = config.Bind("Compatibility", "KeepDeadScriptSlotBundles", "moregates",
+            configKeepDeadScriptSlotBundles = config.Bind("Compatibility", "KeepDeadScriptSlotBundles", "",   // 1.1.278: release default empty (was moregates)
+               
                 "Comma-separated bundle names whose prefabs load even with a dead (missing) script slot that no manifest names. A dead slot " +
                 "normally rejects its prefab, because the behaviour the script carried is gone. List a bundle only when its slots were already " +
                 "dead when it was built (its author deleted a script a prefab still used), so the prefab works as it did in its own mod. " +
                 "moregates: its bundle carries only Valheim's own scripts and SimpleMeshCombine, all present in Valheim 1.0.");
-            configClientLazyRenderMeshes = config.Bind("Performance", "ClientLazyRenderMeshes", "ConsMassiveTower,CastleTowerMassive",                "Clients only. Comma-separated bundle prefab names whose render-mesh DATA is unloaded right after their bundle loads and comes back from the bundle the first time one of them is built or loaded near you. The castle tower these two names share is 12.2 million vertices, about 1.6 GB per client, and most sessions never see one. Its look and its collision are unchanged (colliders are never touched); only the memory waits until a tower is there. Empty turns it off. Takes effect at the next game start.");
+            configClientLazyRenderMeshes = config.Bind("Performance", "ClientLazyRenderMeshes", "",   // 1.1.278: release default empty
+                               "Clients only. Comma-separated bundle prefab names whose render-mesh DATA is unloaded right after their bundle loads and comes back from the bundle the first time one of them is built or loaded near you. The castle tower these two names share is 12.2 million vertices, about 1.6 GB per client, and most sessions never see one. Its look and its collision are unchanged (colliders are never touched); only the memory waits until a tower is there. Empty turns it off. Takes effect at the next game start.");
 
             configLazyBundlesPreloadAll = config.Bind("LazyBundles", "PreloadAll", false,
                 "Clients only. When true, every FiresAdminPrefabs\\Assets bundle loads whole at game start (the old way: no stub, no wait, most memory). When false, building pieces from those bundles are listed on the Hammer at once but load only when you take one out, when one is about to appear, or when one is within LookAheadZones of you; items, creatures and other prefabs still load at start. Takes effect at the next game start.");
+            configLazyBundlesLazyNonPieces = config.Bind("LazyBundles", "LazyNonPieces", false,
+                "Clients only. When true, bundle prefabs that are not pieces and hold no item, creature, pickable, tree, rock or other gameplay part (effects, projectiles, props) also wait until something asks for them, for less memory. Applies at game start. Off loads them at game start.");
             configLazyBundlesLookAheadZones = config.Bind("LazyBundles", "LookAheadZones", 3,
                 new BepInEx.Configuration.ConfigDescription("Clients only. Pieces this many zones (64 m each) around you are loaded in the background before they come into view, so walking into a build does not wait for its bundle. Higher = fewer waits, more memory. Live.",
                     new BepInEx.Configuration.AcceptableValueRange<int>(1, 8)));
-            configLazyBundlesUnloadMinutes = config.Bind("LazyBundles", "UnloadMinutes", 10,
-                new BepInEx.Configuration.ConfigDescription("Clients only. A bundle piece nothing has used for this many minutes (none near you, none in hand) is unloaded again. 0 keeps everything once loaded. Live.",
-                    new BepInEx.Configuration.AcceptableValueRange<int>(0, 240)));
+            configLazyBundlesPrewarm = config.Bind("LazyBundles", "Prewarm", false,
+                "Clients only. These bundles are packed as one LZMA block, so the first piece loaded from one unpacks the whole file (seconds for a large bundle). When true, each lazy bundle is unpacked once in the background at game start, on Unity's loader thread, so that cost never lands in a frame while you play, but every bundle then holds its unpacked size in memory all session (several GB with large packs). Off (default, low memory) = a bundle unpacks only when a piece from it is first needed, a short hitch after loading in. Takes effect at the next game start.");
 
             configBuildMenuNativeTrace = config.Bind("Diagnostics", "BuildMenuNativeTrace", false,
                 "Crash hunt (10-13, ntdll 0xc0000005 while the build menu opens): every step of opening the build menu is written AND flushed to BepInEx\\FiresTests\\fat_native_trace.log (FAT's file when FAT is loaded, else fap_native_trace.log), so the last line after a hard crash names the step. Clients only. Turn off once the crash is found.");
@@ -260,7 +292,8 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
             configClientNonReadableRenderMeshes = config.Bind("Performance", "ClientNonReadableRenderMeshes", true,
                 "Clients only. The render meshes of pieces loaded from FiresAdminPrefabs\\Assets bundles drop their CPU-side copy once they are on the graphics card, which saves memory (the big building rips keep over a gigabyte of copies otherwise). Looks are unchanged; collision meshes and animated (skinned) meshes keep theirs, and the blueprint bake reads the others back from the graphics card. Off keeps every copy. Takes effect at the next game start.");
 
-            configBundleNatureShaderAllOf = config.Bind("General", "BundleNatureShaderAllOf", "biomeflora",
+            configBundleNatureShaderAllOf = config.Bind("General", "BundleNatureShaderAllOf", "",   // 1.1.278: release default empty (was biomeflora)
+               
                 "Comma-separated bundle filenames whose prefabs should ALL get the BundleNatureShader treatment, bypassing the per-prefab nature heuristic. Use for entirely-foliage bundles whose prefab names don't contain tree/bush/flower keywords (cacti, succulents, ferns named 'XYZ_BF'). Case-insensitive. Adding entries requires a world reload — flips of the BundleNatureShader mode itself are live, but this list controls which prefabs are eligible.");
 
             configCustomPersistentPrefabs = config.Bind("General", "CustomPersistentPrefabs", "",
@@ -273,10 +306,11 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
 
             configClutterPaintDensity = config.Bind("Clutter", "PaintDensity", 1f, new BepInEx.Configuration.ConfigDescription("Density multiplier for the clutter-paint brush. 1.0 = default spacing, 2.0 = twice as dense, 0.5 = sparser. Higher values look lusher but spawn more GameObjects per click. Live: flips take effect on next click.", new BepInEx.Configuration.AcceptableValueRange<float>(0.05f, 10f)));
 
-            configFxClearRadius = config.Bind("FxClear", "Radius", 4f, new BepInEx.Configuration.ConfigDescription("Radius (meters) of the FX-clear brush. When the FAP_FxClearTool stand-in piece (in the Effect tab) is selected and clicked, every ZNetView in the brush radius that's tagged with both fap_piece=1 and FAP_persist=1 has FAP_persist cleared to 0 and is destroyed. Shift+Scroll resizes live. Surgical scope: vanilla world objects and non-FAP placements are never touched.", new BepInEx.Configuration.AcceptableValueRange<float>(0.5f, 50f)));
+            configFxClearRadius = config.Bind("FxClear", "Radius", 4f, new BepInEx.Configuration.ConfigDescription("Radius (meters) of the FX-clear brush. When the FAP_FxClearTool stand-in piece (in the Effect tab) is selected and clicked, every ZNetView in the brush radius that's tagged with both fap_piece=1 and FAP_persist=1 has FAP_persist cleared to 0 and is destroyed. Scroll = radius, Shift+Scroll = height live. Surgical scope: vanilla world objects and non-FAP placements are never touched.", new BepInEx.Configuration.AcceptableValueRange<float>(0.5f, 50f)));
 
             configFxClearDurationSec = config.Bind("FxClear", "WatchdogDurationSec", 10f, new BepInEx.Configuration.ConfigDescription("How long after a clear click the watchdog keeps re-scanning the same area for FX that EWP respawned during the destroy/sync race window. Server sometimes processes our destroy before our FAP_persist clear-sync arrives, so EWP fires the respawn rule before the clear lands. Watchdog catches those late respawns. 10s is comfortable for typical LAN; bump to 20-30s if your server is under load.", new BepInEx.Configuration.AcceptableValueRange<float>(0f, 120f)));
 
+            configFxClearOrphanSweepOnLoad = config.Bind("FxClear", "RemoveOrphanStatusFxOnLoad", true, "Once per world load (server or host), removes saved status-effect FX (wet drops, frost, burning...) that were left behind by a creature and were never placed by anyone. FAP up to 1.1.397 could save these by mistake. Placed FX are never touched.");
             configFxClearTickIntervalSec = config.Bind("FxClear", "WatchdogTickIntervalSec", 0.5f, new BepInEx.Configuration.ConfigDescription("Interval between watchdog re-scans during the duration window. 0.5s catches respawns within half a second; lower = quicker catch but more CPU per click. Clamped to >= 0.1s.", new BepInEx.Configuration.AcceptableValueRange<float>(0.05f, 10f)));
 
             configConfigWindowScale = config.Bind("General", "ConfigWindowScale", 1.0f, new BepInEx.Configuration.ConfigDescription("Scale of the right-click configure windows (monster/container/clutter). Drag any corner of a config window to resize it; the chosen scale persists here. Range 0.7-2.5.", new BepInEx.Configuration.AcceptableValueRange<float>(0.5f, 3f)));
@@ -306,6 +340,10 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
             configHideAdminGatedPieces = config.Bind("BuildMenu", "HideAdminGatedPieces", true,
                 "When true, any piece whose recipe requires a cheat-sword (SwordCheat) is hidden from the hammer menu for non-admins. The recipe itself is the marker — any mod that gates a piece this way gets admin-only visibility automatically, no per-mod registration. Vanilla would otherwise still SHOW those pieces greyed out with the requirement listed, advertising content a player can never build. Admins are unaffected. Live: takes effect on the next menu refresh.");
 
+            // 1.1.350 (Fire 10-31, "only 3-4 spiked walls place"): see VAVanillaPieceManager.FixSpikeTriggerLayers.
+            configSpikeTriggerLayerFix = config.Bind("Hammer", "SpikeTriggerLayerFix", true,
+                "When true, the damage trigger boxes (Aoe 'HIT AREA') on Hammer pieces FAP adds, such as Ashlands_Fortress_Wall_Spikes and dvergrtown_wood_stakewall, are moved to the character_trigger layer, the layer vanilla's own piece_dvergr_sharpstakes uses. On their original layer the placement ray hits a placed spike's invisible trigger, so the next spike will not place beside it. Damage is unchanged. Needs a restart.");
+
             configBuildMenuContextMenuKey = new FiresCore.Input.KeyBinding(config, "BuildMenu", "ContextMenuKey", KeyCode.Mouse1,
                 defaultShift: true,
                 description: "Opens FiresAdminPrefabs' menu for the build menu piece or tab under the cursor (favorites, hide, move to tab, rename, and the rest). Default Shift + right click; Mouse1 is the right mouse button; Mouse2 (the middle button, e.g. with ContextMenuKey_Shift = false for a plain middle click) also works, and then a middle click on a piece opens this menu INSTEAD of vanilla's favourite toggle (the menu has a favourite entry). ContextMenuKey_Ctrl / _Shift / _Alt pick the modifiers to hold, and a modifier left off must not be held. A plain right click stays vanilla's: it closes the build menu. Live.");
@@ -314,8 +352,17 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 defaultShift: true,
                 description: "With a piece in hand, makes the snap point you cycled to YOUR default for that piece: the next time you take it out, it starts on that point. Pressing it again on the same point clears it. Per player and per piece, saved on this computer only (config\\FiresAdminPrefabs\\SnapDefaults). Default Shift + Q. SnapDefaultKey_Ctrl / _Shift / _Alt pick the modifiers. Live.");
 
+            configSnapEdgeSpacing = config.Bind("Hammer", "Snap edge point spacing", 1f,
+                "Pieces with no snap points of their own and a side over 2 m get a point this many metres apart along every edge. 0 = corners and centres only. Pieces with a side over 20 m never get edge points. Read when a piece loads: restart to apply.");
+            configOffsetUsesCentre = config.Bind("Hammer", "Offset rotation uses the piece centre", true,
+                "With Infinity Hammer frozen and an offset set, a piece's centre follows the circle instead of its origin, so pieces with an off-centre origin (grausten walls) make a smooth arc.");
+
             configAutoPushOnPlace = config.Bind("General", "AutoPushOnPlace", true,
                 "When ON, placing a respawning chest/monster (or saving/deleting a preset) automatically pushes FAP's preset yaml (config/data/data_FAP*.yaml) + EWP rule yaml (config/expand_world/expand_prefabs_FAP*.yaml) up to the connected server, debounced ~2s so bulk building doesn't spam. Only fires for admins connected to a REMOTE server (on a listen-host the files are already local). When OFF, push only via the 'fap_push_presets' console command or FiresRPGmaker's 'pushcfgs'. The server always admin-gates the inbound write, so this toggle only controls the client-side auto-trigger.");
+
+            // 1.1.352 (Fire 10-31: "give it a config toggle, "show spawners with hammer out""); 1.1.353: Fire's answer = default ON.
+            configShowSpawnersWithHammer = config.Bind("HammerToggles", "Show spawners with hammer out", true,
+                "When true, creature spawners and event zones you placed with the Hammer (they have no body of their own) show a box while you hold the Hammer, so you can see, hover and remove them. Nests and bone piles are left alone, they can already be removed. Changes apply at once.");
 
             configHammerForceClipGround = config.Bind("HammerToggles", "ForceClipGround", true,
                 "When true, every piece our mod injected into the Hammer is forced to clip into the\n" +
@@ -386,15 +433,14 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
 
             // 1.1.196 (Fire's hand test 10-09: area-grab scale still not applied): 1.1.192 flipped the default to true, but every
             // existing cfg kept its saved false. One-time migration: turn it on once; a later false by hand is kept.
-            var migrations = config.Bind("Internal", "AppliedMigrations", "",
-                "Bookkeeping for one-time settings migrations. Leave as is.");
+            var migrations = FapMigrations.Load(config);   // 1.1.279: was [Internal] AppliedMigrations (moved to the cache, never shown)
             // 1.1.199 (Fire: no dead keys): [General] BundleClutterAllOf is gone; drop it from existing cfg files once.
             try
             {
                 var orphansProp = typeof(ConfigFile).GetProperty("OrphanedEntries",
                     System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
                 if (orphansProp?.GetValue(config) is System.Collections.Generic.Dictionary<ConfigDefinition, string> orphans
-                    && orphans.Remove(new ConfigDefinition("General", "BundleClutterAllOf")))
+                    && (orphans.Remove(new ConfigDefinition("General", "BundleClutterAllOf")) | orphans.Remove(new ConfigDefinition("LazyBundles", "UnloadMinutes"))))   // 1.1.279: Unload Minutes removed (Fire: bundle pieces cannot reload in an open world)
                 {
                     config.Save();
                     UnityEngine.Debug.Log("FiresAdminPrefabs: removed the retired [General] BundleClutterAllOf from the cfg.");
@@ -409,12 +455,36 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 UnityEngine.Debug.Log("FiresAdminPrefabs: migrated [InfinityHammer] KeepAreaGrabScale to true (new default since 1.1.192; set it false again to opt out).");
             }
 
-            RegisterLiveReapplyHandlers();
-            SetupConfigWatcher(config);
+            // 1.1.279 (Fire 10-20: "nothing shipped is pre-filled"): a cfg still holding an old shipped pre-fill is cleared once
+            if (!migrations.Done("prefill-cleared"))
+            {
+                string Norm(string s) => string.Join(",", (s ?? "").Split(',').Select(x => x.Trim().ToLowerInvariant()).Where(x => x.Length > 0));
+                void Clear(ConfigEntry<string> e, string old) { if (e != null && Norm(e.Value) == Norm(old)) { e.Value = ""; UnityEngine.Debug.Log($"FiresAdminPrefabs: cleared the old pre-filled [{e.Definition.Section}] {e.Definition.Key}."); } }
+                Clear(configRemovedPrefabPlaceholders, "ConsMassiveTower,CastleTowerMassive");
+                Clear(configKeepDeadScriptSlotBundles, "moregates");
+                Clear(configBundleNatureShaderAllOf, "biomeflora");
+                Clear(configClientLazyRenderMeshes, "ConsMassiveTower,CastleTowerMassive");
+                Clear(configDediSkipRenderMeshes, "ConsMassiveTower,CastleTowerMassive");
+                migrations.Mark("prefill-cleared");
+            }
+            FapPersistenceOffIfOverridden();
+
+            RegisterLiveReapplyHandlers();            SetupConfigWatcher(config);
         }
 
         // Toggles that change which tab a piece belongs to all re-run the same
         // recategorize pass, so a flip lands without a world reload.
+        /// <summary>1.1.280 (Fire 10-20): "Use EWP persistence" or "Use vanilla friendly" switches "Use FAP persistence" OFF (the value,
+        /// not only the grey-out in FapConfigUi), at load and live.</summary>
+        private void FapPersistenceOffIfOverridden()
+        {
+            if (configFapRespawner == null || !configFapRespawner.Value) return;
+            string why = configUseEwpForPersistence?.Value == true ? "EWP persistence on" : configVanillaFriendly?.Value == true ? "vanilla friendly on" : null;
+            if (why == null) return;
+            configFapRespawner.Value = false;
+            UnityEngine.Debug.Log($"FiresAdminPrefabs: {why} -> FAP persistence switched off");
+        }
+
         private void RegisterLiveReapplyHandlers()
         {
             EventHandler recategorize = (_, __) => VAVanillaPieceManager.RecategorizeEligiblePieces();
@@ -423,6 +493,8 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
             configSortHammerByMod.SettingChanged += recategorize;
 
             configItemStandUseEwp.SettingChanged += (_, __) => VAItemStandEwp.Write();   // 1.1.181: write / remove the EWP refill script live
+            configUseEwpForPersistence.SettingChanged += (_, __) => { VAItemStandEwp.Write(); FapPersistenceOffIfOverridden(); };   // 1.1.279: item stands follow the EWP master switch
+            configVanillaFriendly.SettingChanged += (_, __) => FapPersistenceOffIfOverridden();
 
             configVanillaFriendlyEffectAllowlist.SettingChanged += (_, __) =>
             {

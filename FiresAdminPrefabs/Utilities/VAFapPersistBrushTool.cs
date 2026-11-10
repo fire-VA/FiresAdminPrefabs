@@ -26,7 +26,7 @@ namespace VerdantsAscent.Utilities
             "<color=#55dd77>Make Persistent Brush.</color> Click to make every FAP effect (FX / VFX tab) and every self-destroying "
             + "piece in the brush radius persistent, as if it had been placed with 'Place with Persistence': for pasted blueprints "
             + "and Infinity Hammer placements. Uses the current persistence mode (EWP respawn, or FAP's respawner); with neither "
-            + "available it changes nothing and says why. Shift+Scroll resizes (the FX brush radius).";
+            + "available it changes nothing and says why. Scroll = radius, Shift+Scroll = height (the FX brush radius).";
 
         private static readonly Dictionary<Piece.PieceCategory, GameObject> _standinsByCategory = new Dictionary<Piece.PieceCategory, GameObject>();
         private static Sprite _icon;
@@ -80,7 +80,7 @@ namespace VerdantsAscent.Utilities
                         }
                     }
                     made++;
-                    VaPieces.Log?.LogInfo($"[FAP Persist] brush made '{name}' at {zdo.GetPosition():F1} persistent (mode {mode})");
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"[FAP Persist] brush made '{name}' at {zdo.GetPosition():F1} persistent (mode {mode})");
                 }
                 catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: [FAP Persist] brush failed on '{netView.name}': {ex.Message}"); }
             }

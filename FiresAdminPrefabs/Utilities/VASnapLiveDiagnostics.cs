@@ -55,9 +55,23 @@ namespace VerdantsAscent.Utilities
             return _ghostRef != null && _manualSnapRef != null;
         }
 
+        // 1.1.352 (Fire 10-31 auto-snap "defaults to the centre", no fap_snaplive run): every local placement also samples once, at
+        // Debug, so the winning pair (or "no pair, ghost stays on the cursor") is in the log without a command.
+        private static bool s_forced;
+        private static void Say(string line) { if (s_forced) VaPieces.Log?.LogDebug("[SnapAtPlace] " + line); else Debug.Log(line); }
+
+        internal static void SampleAtPlace()
+        {
+            if (Enabled || !Resolve()) return;   // fap_snaplive already logs every second
+            s_forced = true;
+            float keep = _nextSample; _nextSample = 0f;
+            try { Sample(); } catch { }
+            finally { s_forced = false; _nextSample = keep; }
+        }
+
         public static void Sample()
         {
-            if (!Enabled || !Resolve()) return;
+            if (!(Enabled || s_forced) || !Resolve()) return;
             if (Time.realtimeSinceStartup < _nextSample) return;
             _nextSample = Time.realtimeSinceStartup + SampleIntervalSec;
 
@@ -84,7 +98,7 @@ namespace VerdantsAscent.Utilities
 
             if (ghostPoints.Count == 0 || targetPoints.Count == 0)
             {
-                Debug.Log(header + " — nothing to pair with.");
+                Say(header + " — nothing to pair with.");
                 return;
             }
 
@@ -108,14 +122,14 @@ namespace VerdantsAscent.Utilities
 
             if (bestGhost == null)
             {
-                Debug.Log(header + $" — NO pair within {PairMaxDistance}m, so the ghost stays on the cursor "
+                Say(header + $" — NO pair within {PairMaxDistance}m, so the ghost stays on the cursor "
                     + "(this is what reads as 'placing from the centre').");
                 return;
             }
 
             var gl = bestGhost.localPosition;
             var tl = bestTarget.localPosition;
-            Debug.Log(header + $" — winner: ghost[{bestGhostIdx}] '{bestGhost.name}' local "
+            Say(header + $" — winner: ghost[{bestGhostIdx}] '{bestGhost.name}' local "
                 + $"({gl.x:0.##},{gl.y:0.##},{gl.z:0.##}) -> target '{bestTarget.name}' local "
                 + $"({tl.x:0.##},{tl.y:0.##},{tl.z:0.##}) on '{bestTarget.parent?.name}' at {best:0.###}m.");
         }

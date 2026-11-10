@@ -174,14 +174,14 @@ namespace VerdantsAscent.Utilities
             if (fixedCount > 0 || authoredCount > 0)
             {
                 _repairedPrefabIds.Add(prefabId);
-                Debug.Log($"{VaPieces.PluginName}: ClutterShaderRepair — '{prefab.name}': {authoredCount} material(s) on their author's game shader, swapped {fixedCount} using donor '{donor.name}' (shader '{donor.shader.name}').");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: ClutterShaderRepair — '{prefab.name}': {authoredCount} material(s) on their author's game shader, swapped {fixedCount} using donor '{donor.name}' (shader '{donor.shader.name}').");
             }
             else
             {
                 // Mark as repaired even when nothing changed so we don't re-log
                 // every refresh.
                 _repairedPrefabIds.Add(prefabId);
-                Debug.Log($"{VaPieces.PluginName}: ClutterShaderRepair — '{prefab.name}': no repair needed (donor '{donor.name}', shader '{donor.shader.name}', {instanceRenderers.Length} InstanceRenderer(s)).");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: ClutterShaderRepair — '{prefab.name}': no repair needed (donor '{donor.name}', shader '{donor.shader.name}', {instanceRenderers.Length} InstanceRenderer(s)).");
             }
         }
 

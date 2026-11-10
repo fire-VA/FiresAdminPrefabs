@@ -42,6 +42,9 @@ namespace VerdantsAscent.Utilities
             return true;
         }
 
+        // 1.1.402: ZNetView.Awake asks this for every create; with no overrides at all it returns before any name work.
+        public static bool AnyOverrides => _byPrefab.Count > 0;
+
         public static bool TryGetShader(string prefabName, out string shaderName)
         {
             shaderName = null;

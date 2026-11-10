@@ -30,7 +30,7 @@ namespace VerdantsAscent.Utilities
                 return 0;
             }
 
-            Debug.Log($"{VaPieces.PluginName}: [MonsterSpawn] SpawnAt ENTER creature='{creaturePrefabName}' pos={pos} — registering destroy-watch.");
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: [MonsterSpawn] SpawnAt ENTER creature='{creaturePrefabName}' pos={pos} — registering destroy-watch.");
             VerdantsAscent.Patches.VAFapDestroyWatchPatch.WatchName(creaturePrefabName);
 
             int groupSize = VAMonsterConfigQueue.ResolveSpawnCount(creaturePrefabName);
@@ -51,7 +51,7 @@ namespace VerdantsAscent.Utilities
 
                     var instance = UnityEngine.Object.Instantiate(prefab, spawnPos, rot);
                     spawned++;
-                    Debug.Log($"{VaPieces.PluginName}: [MonsterSpawn] Instantiated '{creaturePrefabName}' #{spawned} id={instance.GetInstanceID()} active={instance.activeInHierarchy} at {spawnPos}");
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: [MonsterSpawn] Instantiated '{creaturePrefabName}' #{spawned} id={instance.GetInstanceID()} active={instance.activeInHierarchy} at {spawnPos}");
 
                     string presetForAnchor = null;
                     VAMonsterConfigQueue.TryGetQueuedPresetName(creaturePrefabName, out presetForAnchor);

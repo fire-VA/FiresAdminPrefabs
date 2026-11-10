@@ -43,11 +43,17 @@ namespace VerdantsAscent.Patches
         public static void Postfix(Piece __instance)
         {
             if (__instance == null) return;
+            if (!VAVanillaPieceManager.WasInjectedByUs(__instance.gameObject)) return;
+
+            // 1.1.398: a placed vanilla/mod prefab is saved on its own ZDO (its shared prefab stays
+            // transient). Runs for Infinity Hammer copies too: they were saved before 1.1.398 as well.
+            var placedView = __instance.GetComponent<ZNetView>();
+            if (placedView != null && placedView.IsValid() && placedView.IsOwner())
+                VAVanillaPieceManager.PersistPlacedZdo(placedView.GetZDO(), Utils.GetPrefabName(__instance.gameObject));
 
             // WasInjectedByUs is name-based and also matches an Infinity Hammer placement
             // of a FAP-injected prefab; IH owns those.
             if (VAInfinityHammerCompat.IsIhCopyPlacing) return;   // 1.1.206: only an IH copy, not an IH-held hammer
-            if (!VAVanillaPieceManager.WasInjectedByUs(__instance.gameObject)) return;
 
             var config = ConfigManager.Instance;
             var netView = __instance.GetComponent<ZNetView>();
@@ -288,11 +294,10 @@ namespace VerdantsAscent.Patches
 
     // ParticleSystem/AudioSource looping lives on instance components and reverts
     // on every Instantiate, so it is re-applied on each Awake of a flagged piece.
-    [HarmonyPatch(typeof(Piece), "Awake")]
+    // 1.1.407: run by FapAwakeDispatch (FAP's ONE ZNetView.Awake / Piece.Awake postfix; [generator] audit row 4)
     public static class Piece_Awake_VAEffectTtl_Patch
     {
-        [HarmonyPostfix]
-        public static void Postfix(Piece __instance)
+        public static void Run(Piece __instance)
         {
             if (__instance == null) return;
             if (!ConfigManager.Instance.configHammerEffectsOverrideTTL.Value) return;

@@ -56,7 +56,20 @@ namespace VerdantsAscent.Sync
             private static readonly Color BodyColor = new Color(0.92f, 0.92f, 0.92f, 1f);
             private static readonly Color BackdropColor = new Color(0.06f, 0.06f, 0.08f, 0.92f);
 
-            public bool Visible;
+            // 1.1.325 (UI audit P7): Visible drives enabled, so the host runs no OnGUI while the banner is hidden.
+            private static bool s_p7ClosedLogged;
+            private bool _visible;
+            public bool Visible
+            {
+                get => _visible;
+                set
+                {
+                    bool was = _visible;
+                    _visible = value;
+                    enabled = value;
+                    if (was && !value) if (!s_p7ClosedLogged) { s_p7ClosedLogged = true; VaPieces.Log?.LogDebug("[FAP] VAFapSyncReconnectPrompt closed: OnGUI off until reopened"); }
+                }
+            }
             public int FilesReceived;
             public long BytesReceived;
 

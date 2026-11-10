@@ -22,6 +22,7 @@ namespace VerdantsAscent.Managers
         private enum State { Unknown, ServerRunsFap, ClientOnly }
 
         private static State _state;
+        private static bool _hostLogged;   // 1.1.305
 
         public static bool IsClientOnly
         {
@@ -33,6 +34,58 @@ namespace VerdantsAscent.Managers
         }
 
         public static bool ServerRunsFap => _state == State.ServerRunsFap;
+
+        // 1.1.315 (Fire 10-23, popup "B"): replaces 1.1.305-1.1.307's "a server without FAP = open for everyone / own pieces only".
+        // ONE local admin answer for every FAP admin feature (dungeon blueprints, hammer right-click toggles, hopper menu, light
+        // presets, radius tools):
+        //   host / single player            -> admin                                          (source "host")
+        //   server WITHOUT FAP              -> admin only while debugmode is on (Player.m_debugMode, Core's vanilla-server rule)
+        //                                                                                     (source "debugmode")
+        //   server WITH FAP                 -> the server's admin list: Core's AdminSyncing.IsLocalAdmin() OR FAP's own
+        //                                      ConfigSync admin grant (a server may run FAP without Core; [generator] 10-23)
+        //                                                                                     (source "fap-server")
+        // The server still re-checks every admin RPC with AdminSyncing.IsAdmin(sender). One log line whenever the answer changes.
+        private static bool _lastAdmin;
+        private static string _lastSource;
+
+        public static bool LocalIsAdmin(out string source)
+        {
+            bool admin;
+            if (ZNet.instance != null && ZNet.instance.IsServer()) { source = "host"; admin = true; }
+            else if (IsClientOnly) { source = "debugmode"; admin = Player.m_debugMode; }
+            else
+            {
+                source = "fap-server";
+                admin = false;
+                try { admin = FiresCore.Sync.AdminSyncing.IsLocalAdmin(); } catch { }
+                if (!admin)
+                {
+                    try { var cs = VaPieces.Instance?.configSync; admin = cs != null && cs.IsAdmin; } catch { }
+                }
+            }
+            if (admin != _lastAdmin || source != _lastSource)
+            {
+                _lastAdmin = admin;
+                _lastSource = source;
+                Debug.Log($"[FAP] admin check: admin={admin} (source {source})");
+            }
+            return admin;
+        }
+
+        /// <summary>May the local player change THIS placed piece (hopper flag, live light preset)? Admins only (1.1.315).</summary>
+        public static bool MayEditPiece(GameObject go) => LocalIsAdmin(out _);
+
+        /// <summary>
+        /// May a radius tool (swapper, area clear / delete) change THIS piece? On a server with FAP the server's AdminOnlyMode
+        /// already gates the tool (the build menu); on a server without FAP the tool needs debugmode (1.1.315).
+        /// </summary>
+        public static bool ToolMayAffect(GameObject go)
+        {
+            if (!IsClientOnly) return true;
+            return LocalIsAdmin(out _);
+        }
+
+        public static bool LocalMayUseAdminFeatures() => LocalIsAdmin(out _);
 
         internal static void Hook(ConfigSync configSync)
         {
@@ -54,17 +107,24 @@ namespace VerdantsAscent.Managers
         private static void Decide()
         {
             var znet = ZNet.instance;
-            if (znet == null || znet.IsServer()) return;    // host or single player: FAP is on the server
+            if (znet == null) return;
+            if (znet.IsServer())   // host or single player: FAP is on the server, which is this machine, and the host is admin
+            {
+                if (!_hostLogged) { _hostLogged = true; Debug.Log("[FAP] single player / host: your own config rules (you are the server)"); }   // 1.1.305
+                return;
+            }
             var configSync = VaPieces.Instance != null ? VaPieces.Instance.configSync : null;
             if (configSync == null) return;
 
             if (!configSync.IsSourceOfTruth)
             {
                 _state = State.ServerRunsFap;
+                Debug.Log($"[FAP] server has FAP: server config rules (admin-only {(ConfigManager.Instance != null && ConfigManager.Instance.configAdminOnlyMode.Value ? "ON" : "OFF")})");   // 1.1.305
                 return;
             }
 
             _state = State.ClientOnly;
+            Debug.Log("[FAP] server has no FAP: your own config rules");   // 1.1.305
             Debug.Log($"{VaPieces.PluginName}: client-only: the server doesn't run FiresAdminPrefabs, so the admin gate is open "
                 + "(AdminOnlyMode only applies on servers that run it). Pieces other players could not see (bundle prefabs, "
                 + "stand-ins, bakes, blueprints) stay off the build menu, and asset sync and pushes to the server are off.");
@@ -96,6 +156,7 @@ namespace VerdantsAscent.Managers
             private static void Postfix(Player __instance)
             {
                 if (_state == State.Unknown && __instance != null && __instance == Player.m_localPlayer) Decide();
+                if (__instance != null && __instance == Player.m_localPlayer) VaPieces.OnLocalPlayerSpawned();   // 1.1.350: admin watcher per join
             }
         }
 

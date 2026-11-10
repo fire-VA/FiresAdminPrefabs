@@ -197,7 +197,7 @@ namespace VerdantsAscent.Managers
                 return null;
             }
 
-            string bundlePath = Path.Combine(AssetsDir, entry.sourceBundleFile);
+            string bundlePath = VAExternalBundleLoader.ResolveBundleFile(entry.sourceBundleFile);
             if (!File.Exists(bundlePath))
             {
                 err = RehostError.MissingBundle;
@@ -319,7 +319,11 @@ namespace VerdantsAscent.Managers
         {
             [HarmonyPriority(HarmonyLib.Priority.Last)]
             [HarmonyPostfix]
-            public static void Postfix() => LoadFromConfig();
+            public static void Postfix()   // 1.1.318 (audit M8)
+            {
+                try { LoadFromConfig(); }
+                catch (System.Exception e) { UnityEngine.Debug.LogError($"[FAP] shader library: ZNetScene.Awake load failed: {e.Message}"); }
+            }
         }
 
         // ──────────────────────────────────────────────────────────────

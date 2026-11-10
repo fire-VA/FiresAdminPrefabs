@@ -224,7 +224,7 @@ namespace VerdantsAscent.Utilities
             var preset = VAItemStandQueue.Current(global::Utils.GetPrefabName(__instance.gameObject));
             if (preset == null) return;
             bool hung = VAItemStandApplier.Apply(preset, stand);
-            Debug.Log($"{VaPieces.PluginName}: item stand preset '{preset.name}' stamped on {__instance.name}: {preset.Item} {(hung ? "hung" : "NOT hung")}{(preset.NoInteract ? ", decorative" : "")}");
+            VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: item stand preset '{preset.name}' stamped on {__instance.name}: {preset.Item} {(hung ? "hung" : "NOT hung")}{(preset.NoInteract ? ", decorative" : "")}");
         }
 
         // A preset stand gets the refill watcher (FAP's own refill; idle when the stand is on EWP's rule or has no timer).
@@ -291,7 +291,7 @@ namespace VerdantsAscent.Utilities
                 if (clear > 0f && Player.IsPlayerInRange(transform.position, clear)) return;
                 zdo.Set(VAItemStandApplier.KeyRefillAt, 0L);
                 bool hung = VAItemStandApplier.HangItem(VAItemStandApplier.FromZdo(zdo), _stand, _view);
-                Debug.Log($"{VaPieces.PluginName}: item stand '{zdo.GetString(VAItemStandApplier.KeyPreset)}' refilled with {zdo.GetString(VAItemStandApplier.KeyItem)}: {(hung ? "hung" : "NOT hung")}");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: item stand '{zdo.GetString(VAItemStandApplier.KeyPreset)}' refilled with {zdo.GetString(VAItemStandApplier.KeyItem)}: {(hung ? "hung" : "NOT hung")}");
             }
             catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: item stand refill: {ex.Message}"); }
         }
@@ -306,7 +306,8 @@ namespace VerdantsAscent.Utilities
         public static string DataFilePath => Path.Combine(VAChestPresetStore.DataDir, "data_FAP_itemstands.yaml");
 
         public static bool Installed => AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "ExpandWorldPrefabs");
-        public static bool Active => Installed && (VerdantsAscent.Managers.ConfigManager.Instance.configItemStandUseEwp?.Value ?? false);
+        public static bool Active => Installed && (VerdantsAscent.Managers.ConfigManager.Instance.configUseEwpForPersistence?.Value ?? false)   // 1.1.279: under the EWP master switch
+            && (VerdantsAscent.Managers.ConfigManager.Instance.configItemStandUseEwp?.Value ?? false);
 
         public static string DataName(VAItemStandPreset p) => "FAP_stand_" + (p?.name ?? "");
 

@@ -59,7 +59,7 @@ namespace VerdantsAscent.Utilities
 
             int prefabHash = prefab.name.GetStableHashCode();
             var zdo = ZDOMan.instance.CreateNewZDO(pos, prefabHash);
-            zdo.Persistent = nview.m_persistent;
+            zdo.Persistent = nview.m_persistent || VerdantsAscent.Managers.VAVanillaPieceManager.PersistsOnPlace(prefab.name);   // 1.1.398: shared prefab stays transient, the placement saves
             zdo.Distant = nview.m_distant;
             zdo.Type = nview.m_type;
             zdo.m_prefab = prefabHash;

@@ -45,10 +45,14 @@ namespace VerdantsAscent.Utilities
             [HarmonyPostfix]
             public static void Postfix()
             {
-                Resolve();
-                VAItemStandEwp.Write();   // 1.1.181: the EWP refill script matches the toggle and the presets from world start
-                if (s_refillDue != null && ConfigManager.Instance.configVerboseLogging.Value)
-                    Debug.Log($"{VaPieces.PluginName}: [FAP] Core LootRespawn.RefillDue subscribed (item stands refill from earlier sessions too)");
+                try   // 1.1.318 (audit M8): a throw no longer skips the later ZNet.Awake postfixes; ConfigManager null-safe
+                {
+                    Resolve();
+                    VAItemStandEwp.Write();   // 1.1.181: the EWP refill script matches the toggle and the presets from world start
+                    if (s_refillDue != null && ConfigManager.Instance?.configVerboseLogging?.Value == true)
+                        Debug.Log($"{VaPieces.PluginName}: [FAP] Core LootRespawn.RefillDue subscribed (item stands refill from earlier sessions too)");
+                }
+                catch (System.Exception e) { Debug.LogError($"{VaPieces.PluginName}: [FAP] ZNet.Awake loot subscribe failed: {e.Message}"); }
             }
         }
 
@@ -115,7 +119,7 @@ namespace VerdantsAscent.Utilities
                 var view = go != null ? go.GetComponent<ZNetView>() : null;
                 if (stand == null || view == null || !view.IsValid() || zdo.GetInt(ZDOVars.s_item) != 0) return;
                 bool hung = VAItemStandApplier.HangItem(VAItemStandApplier.FromZdo(zdo), stand, view);
-                Debug.Log($"{VaPieces.PluginName}: item stand '{zdo.GetString(VAItemStandApplier.KeyPreset)}' refilled by Core's timer: {(hung ? "hung" : "NOT hung")}");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: item stand '{zdo.GetString(VAItemStandApplier.KeyPreset)}' refilled by Core's timer: {(hung ? "hung" : "NOT hung")}");
             }
             catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: item stand refill (Core): {ex.Message}"); }
         }
@@ -144,7 +148,7 @@ namespace VerdantsAscent.Utilities
                     var preset = new VAChestPreset { name = zdo.GetString(VAChestConfigApplier.KeyAppliedPresetName), items = copy?.items ?? new List<VAItemEntry>(), itemAmount = copy?.itemAmount };
                     VAChestConfigApplier.PopulateInventory(preset, __instance);
                     zdo.Set(KeyFilled, true);
-                    Debug.Log($"{VaPieces.PluginName}: chest preset '{preset.name}' respawned by Core, filled with {__instance.GetInventory().NrOfItems()} item stack(s)");
+                    VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: chest preset '{preset.name}' respawned by Core, filled with {__instance.GetInventory().NrOfItems()} item stack(s)");
                 }
                 catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: Core-respawned chest fill: {ex.Message}"); }
             }

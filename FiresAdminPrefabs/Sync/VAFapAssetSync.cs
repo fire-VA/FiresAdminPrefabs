@@ -236,8 +236,18 @@ namespace VerdantsAscent.Sync
 
         private static string RootAbsolutePath(string relPath) => VAFapSyncManifest.AbsolutePath(relPath);   // 1.1.254: per-folder roots
 
-        private static string ConfigAbsolutePath(string relPath) =>
-            Path.Combine(Paths.ConfigPath, relPath.Replace('/', Path.DirectorySeparatorChar));
+        // Admin-pushed files land under the config folder only (IsAllowedInboundPath picks the folders; this keeps the resolved
+        // path inside the config folder whatever the string says). Null = refuse.
+        private static string ConfigAbsolutePath(string relPath)
+        {
+            try
+            {
+                string root = Path.GetFullPath(Paths.ConfigPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                string full = Path.GetFullPath(Path.Combine(root, relPath.Replace('/', Path.DirectorySeparatorChar)));
+                return full.StartsWith(root, StringComparison.OrdinalIgnoreCase) ? full : null;
+            }
+            catch (Exception) { return null; }
+        }
 
         // ================================================================
         //  Pull — server side
@@ -557,17 +567,10 @@ namespace VerdantsAscent.Sync
                 Debug.Log($"[FAP Sync] Server: TransferDone sent to {peer.m_uid}.");
         }
 
+        // A clean path inside a synced folder (VAFapSyncManifest.AbsolutePath's rules) AND a file the server's own manifest
+        // lists: a request can only ever be served a file the server would offer anyway.
         private static bool IsPathWithinSyncedFolders(string relPath)
-        {
-            if (string.IsNullOrEmpty(relPath)) return false;
-            if (relPath.IndexOf("..", StringComparison.Ordinal) >= 0) return false;
-            string normalized = relPath.Replace('\\', '/');
-            foreach (var folder in VAFapSyncManifest.SyncedFolders)
-            {
-                if (normalized.StartsWith(folder + "/", StringComparison.OrdinalIgnoreCase)) return true;
-            }
-            return false;
-        }
+            => VAFapSyncManifest.AbsolutePath(relPath) != null && LookupServerSha(relPath) != null;
 
         // ================================================================
         //  Pull — client side
@@ -685,100 +688,82 @@ namespace VerdantsAscent.Sync
 
         // FGN's bandwidth probe would be skewed by a concurrent transfer, so the sync
         // waits for it when FGN is installed and auto-tune is enabled.
+        // 1.1.410 ([wishbone]'s audit via [lead]; FGN 1.6.64): through FGN's PUBLIC FgnApi (Version >= 9) only:
+        // IsAutoTuneSettled = auto-tune off, or this session's probe finished. No FGN private field or cfg read.
+        // FGN older than API 9: the same short defensive wait as before when the probe could not be found.
         private static IEnumerator WaitForAutoTuneIfApplicable()
         {
             if (!Chainloader.PluginInfos.ContainsKey(VAGN_GUID))
                 yield break;
 
-            FieldInfo completedField = FindAutoTuneCompletedField();
-            if (completedField == null)
+            Func<bool> settled = BindFgnAutoTuneSettled(out string why);
+            if (settled == null)
             {
-                Debug.LogWarning("[FAP Sync] Could not locate AutoTuneProbe._probeCompletedThisSession; "
+                Debug.Log($"[FAP Sync] FGN auto-tune state not available ({why}); "
                     + $"proceeding after {AutoTuneFallbackWaitSec:F0}s defensive wait.");
                 float waited = 0f;
                 while (waited < AutoTuneFallbackWaitSec) { yield return null; waited += Time.deltaTime; }
                 yield break;
             }
 
-            if (!TryReadAutoTuneEnabledConfig())
+            // 1.1.411 ([lead]: "proof by absence is weak"): one Info line per session that the public API is in use
+            if (!s_saidFgnApi) { s_saidFgnApi = true; Debug.Log($"[FAP Sync] waiting on FGN auto-tune via FgnApi (API {s_fgnApiVersion})"); }
+            bool first;
+            try { first = settled(); } catch { first = true; }
+            if (first)
             {
                 if (VAFapLoadSummary.VerboseEnabled)
-                    Debug.Log("[FAP Sync] VAGN auto-tune disabled in config; proceeding immediately.");
+                    Debug.Log("[FAP Sync] FGN auto-tune off or already settled (FgnApi.IsAutoTuneSettled); proceeding immediately.");
                 yield break;
             }
 
             if (VAFapLoadSummary.VerboseEnabled)
-                Debug.Log("[FAP Sync] Waiting for VAGN auto-tune probe to complete (max "
+                Debug.Log("[FAP Sync] Waiting for FGN auto-tune to settle (FgnApi.IsAutoTuneSettled, max "
                     + $"{AutoTuneMaxWaitSec:F0}s) before sending manifest...");
             float elapsed = 0f;
             while (elapsed < AutoTuneMaxWaitSec)
             {
-                bool done;
-                try { done = (bool)completedField.GetValue(null); }
-                catch { done = false; }
-
-                if (done)
-                {
-                    if (VAFapLoadSummary.VerboseEnabled)
-                        Debug.Log($"[FAP Sync] VAGN auto-tune complete after {elapsed:F1}s; starting manifest exchange.");
-                    yield break;
-                }
-
                 float wait = AutoTunePollIntervalSec;
                 while (wait > 0f) { yield return null; wait -= Time.deltaTime; }
                 elapsed += AutoTunePollIntervalSec;
+
+                bool done;
+                try { done = settled(); } catch { done = true; }
+                if (done)
+                {
+                    if (VAFapLoadSummary.VerboseEnabled)
+                        Debug.Log($"[FAP Sync] FGN auto-tune settled after {elapsed:F1}s; starting manifest exchange.");
+                    yield break;
+                }
             }
 
-            Debug.LogWarning($"[FAP Sync] VAGN auto-tune did not complete within {AutoTuneMaxWaitSec:F0}s; "
+            Debug.LogWarning($"[FAP Sync] FGN auto-tune did not settle within {AutoTuneMaxWaitSec:F0}s; "
                 + "proceeding with sync anyway.");
         }
 
-        // FGN's assembly is named VAGhettoNetworking but its namespace is
-        // FiresGhettoNetworkMod, so the simple-name scan is the reliable lookup.
-        private static FieldInfo FindAutoTuneCompletedField()
+        // FgnApi lives in FGN's own assembly (named VAGhettoNetworking, namespace FiresGhettoNetworkMod.Api). Bound by name, quiet
+        // lookup, no compile reference: FAP works the same without FGN.
+        private static bool s_saidFgnApi;
+        private static int s_fgnApiVersion;
+
+        private static Func<bool> BindFgnAutoTuneSettled(out string why)
         {
+            why = null;
             try
             {
                 var assembly = Chainloader.PluginInfos[VAGN_GUID].Instance?.GetType()?.Assembly;
-                if (assembly == null) return null;
-
-                Type probeType = assembly.GetType("FiresGhettoNetworkMod.AutoTune.AutoTuneProbe", throwOnError: false)
-                    ?? assembly.GetType("VAGhettoNetworking.Networking.AutoTune.AutoTuneProbe", throwOnError: false);
-                if (probeType == null)
-                {
-                    foreach (var type in assembly.GetTypes())
-                    {
-                        if (type.Name == "AutoTuneProbe") { probeType = type; break; }
-                    }
-                }
-                return probeType?.GetField("_probeCompletedThisSession", BindingFlags.Static | BindingFlags.NonPublic);
+                if (assembly == null) { why = "FGN not loaded"; return null; }
+                var api = assembly.GetType("FiresGhettoNetworkMod.Api.FgnApi", throwOnError: false);
+                if (api == null) { why = "no FgnApi"; return null; }
+                var ver = api.GetField("Version", BindingFlags.Public | BindingFlags.Static);
+                int v = ver != null && ver.IsLiteral ? Convert.ToInt32(ver.GetRawConstantValue()) : 0;
+                if (v < 9) { why = $"FgnApi version {v}, IsAutoTuneSettled needs 9"; return null; }
+                s_fgnApiVersion = v;
+                var getter = api.GetProperty("IsAutoTuneSettled", BindingFlags.Public | BindingFlags.Static)?.GetGetMethod();
+                if (getter == null || getter.ReturnType != typeof(bool)) { why = "no IsAutoTuneSettled"; return null; }
+                return (Func<bool>)Delegate.CreateDelegate(typeof(Func<bool>), getter);
             }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"[FAP Sync] VAGN type lookup failed: {ex.Message}");
-                return null;
-            }
-        }
-
-        // Assumes enabled on any failure: waiting needlessly beats stomping the probe.
-        private static bool TryReadAutoTuneEnabledConfig()
-        {
-            try
-            {
-                if (!Chainloader.PluginInfos.TryGetValue(VAGN_GUID, out var info)) return true;
-                var config = info?.Instance?.Config;
-                if (config == null) return true;
-                foreach (var entry in config)
-                {
-                    if (string.Equals(entry.Key.Section, "Auto-Tune", StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(entry.Key.Key, "EnableClientAutoTune", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (entry.Value.BoxedValue is bool enabled) return enabled;
-                    }
-                }
-            }
-            catch { }
-            return true;
+            catch (Exception ex) { why = "bind threw: " + ex.Message; return null; }
         }
 
         public static void Client_HandleDeltaList(List<VAFapSyncManifest.ManifestEntry> delta)
@@ -844,9 +829,17 @@ namespace VerdantsAscent.Sync
                 return;
             }
 
+            // Only the file this client asked for, at a path inside its synced folders.
+            string target = RootAbsolutePath(relPath);
+            if (target == null || !string.Equals(relPath, _clientCurrentPath, StringComparison.OrdinalIgnoreCase))
+            {
+                Debug.LogWarning($"[FAP Sync] Client: refused FileBegin for '{relPath}' (asked for '{_clientCurrentPath}'{(target == null ? "; not a path inside the synced folders" : "")}).");
+                return;
+            }
+
             _clientWarnedOrphanChunks = false;
             _clientLastActivity = Time.realtimeSinceStartup;
-            _clientReceiver.Begin(RootAbsolutePath(relPath), relPath, expectedSha);
+            _clientReceiver.Begin(target, relPath, expectedSha);
             if (!_clientReceiver.IsActive)
                 OnClientFileFailed(relPath, "could not be opened for writing");
         }
@@ -882,7 +875,8 @@ namespace VerdantsAscent.Sync
             _clientLastActivity = Time.realtimeSinceStartup;
             long written = _clientReceiver.BytesWritten;
             bool wasActive = _clientReceiver.IsActive;
-            if (_clientReceiver.End(relPath, ok, RootAbsolutePath(relPath)))
+            string target = RootAbsolutePath(relPath);
+            if (target != null && _clientReceiver.End(relPath, ok, target))
             {
                 _clientBytesReceived += written;
                 _clientFilesReceived++;
@@ -1424,11 +1418,17 @@ namespace VerdantsAscent.Sync
             _serverBundleIndexReceived = true;
         }
 
+        // 1.1.310 ([lead] 10-22: fap_ewd_test's fixture bake was pushed to the IsoDedi and would register on every world load there):
+        // a test names its fixture prefab here for its run; a placed bake with that name is never pushed to the server. Add-only test
+        // hook, empty in normal play.
+        internal static readonly HashSet<string> TestNoPushPrefabs = new HashSet<string>(StringComparer.Ordinal);
+
         public static void Client_PushPlacedBakeIfServerLacksIt(string prefabName)
         {
             try
             {
                 if (_host == null || IsServer()) return;
+                if (prefabName != null && TestNoPushPrefabs.Contains(prefabName)) { VaPieces.Log?.LogDebug($"[FAP Push] '{prefabName}' is a test fixture - not pushed"); return; }
                 if (!_serverBundleIndexReceived || VAFapSyncRpcs.GetServerPeer() == null) return;
                 if (!AutoPushEnabled() || !IsLocalAdmin()) return;
 
@@ -1609,12 +1609,19 @@ namespace VerdantsAscent.Sync
                 _pendingBakedWrites = 0;
             }
 
-            _inboundReceiver.Begin(ConfigAbsolutePath(relPath), relPath, sha256);
+            string inboundTarget = ConfigAbsolutePath(relPath);
+            if (inboundTarget == null)
+            {
+                Debug.LogWarning($"[FAP Push] {sender} pushed '{relPath}', which resolves outside the config folder; refusing.");
+                _host.StartCoroutine(Server_AckCoroutine(sender, false, $"'{relPath}' is not a path this server accepts"));
+                return;
+            }
+            _inboundReceiver.Begin(inboundTarget, relPath, sha256);
             if (_inboundReceiver.IsActive)
             {
                 _inboundSender = sender;
                 _inboundLastActivity = Time.time;
-                Debug.Log($"[FAP Push] receiving '{relPath}' ({FormatBytes(size)}, {chunkCount} block(s)) from admin {sender}.");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"[FAP Push] receiving '{relPath}' ({FormatBytes(size)}, {chunkCount} block(s)) from admin {sender}.");
             }
             else
             {
@@ -1650,11 +1657,11 @@ namespace VerdantsAscent.Sync
 
             _inboundLastActivity = Time.time;
             long written = _inboundReceiver.BytesWritten;
-            if (_inboundReceiver.End(relPath, ok, ConfigAbsolutePath(relPath)))
+            if (ConfigAbsolutePath(relPath) is string inboundEnd && _inboundReceiver.End(relPath, ok, inboundEnd))
             {
                 _inboundCommitted++;
                 if (IsBakedArtifactPath(relPath)) _pendingBakedWrites++;
-                Debug.Log($"[FAP Push] wrote pushed file '{relPath}' ({FormatBytes(written)}) from admin {sender}.");
+                VerdantsAscent.VaPieces.Log?.LogDebug($"[FAP Push] wrote pushed file '{relPath}' ({FormatBytes(written)}) from admin {sender}.");
             }
             else
             {

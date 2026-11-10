@@ -149,11 +149,10 @@ namespace VerdantsAscent.Patches
 
     // 1.1.198: applies FAP's area-place scale to prefabs whose ZNetView ignores s_scaleHash, on load, for every FAP client.
     // Only ZDOs carrying FAP's marker are touched, so nothing vanilla or another mod scaled is affected.
-    [HarmonyPatch(typeof(ZNetView), "Awake")]
+    // 1.1.407: run by FapAwakeDispatch (FAP's ONE ZNetView.Awake / Piece.Awake postfix; [generator] audit row 4)
     public static class VAAreaScaleAwakePatch
     {
-        [HarmonyPostfix]
-        public static void Postfix(ZNetView __instance)
+        public static void Run(ZNetView __instance)
         {
             try
             {

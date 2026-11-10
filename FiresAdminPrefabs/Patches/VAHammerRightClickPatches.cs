@@ -16,6 +16,15 @@ namespace VerdantsAscent.Patches
         // ──────────────────────────────────────────────────────────────
         //  Piece menu — opened by VABuildUiContextMenu (VABuildUiPatches)
         // ──────────────────────────────────────────────────────────────
+        // 1.1.291 (Fire: Copy ID): the prefab ID to the system clipboard + "Copied <id>".
+        private static void CopyIdAction(string prefabName)
+        {
+            if (!VAVanillaPieceManager.IsAdminGateOpen()) return;
+            GUIUtility.systemCopyBuffer = prefabName;
+            Player.m_localPlayer?.Message(MessageHud.MessageType.Center, $"Copied {prefabName}");
+            VerdantsAscent.VaPieces.Log?.LogDebug($"[ContextMenu] Copy ID: {prefabName} on the clipboard");
+        }
+
         internal static void ShowPieceMenu(Piece piece)
         {
             var prefabName = piece.gameObject != null ? piece.gameObject.name : null;
@@ -23,9 +32,27 @@ namespace VerdantsAscent.Patches
             // 1.1.203: never on another tool's menu entries (Infinity Hammer's "_IH_Menu_*" blueprint / command pieces).
             if (prefabName.StartsWith("_IH_Menu_") || !HammerCategoryUI.IsOrganizable(Player.m_localPlayer?.m_buildPieces)) return;
 
+            // 1.1.303 (Fire: preset-aware Radius Swapper): while the swapper is picking FROM / TO, this menu is the swapper's preset
+            // picker for the piece (every opener of FAP's piece menu lands here: the key path, the EventSystem right click, the MMB).
+            if (VASwapFlow.InPick && VASwapFlow.TryShowPresetPicker(piece)) return;
+
+            // 1.1.291 (Fire: Radius Swapper): on the swapper tool FAP's context menu (opened by its configured
+            // [BuildMenu] ContextMenuKey, never a hardcoded click) holds only "Setup swap preset", which opens the preset UI.
+            if (VARadiusSwapTool.IsStandinName(prefabName))
+            {
+                if (!VAVanillaPieceManager.IsAdminGateOpen()) return;
+                VARightClickMenu.Show(new List<VARightClickMenu.Item>
+                {
+                    new VARightClickMenu.Item("Setup swap preset", () => VASwapPresetUi.Open()),
+                });
+                return;
+            }
+
             bool isFavorite = VAHammerTabOrganizer.IsFavorite(prefabName);
             var items = new List<VARightClickMenu.Item>
             {
+                // 1.1.291 (Fire): "Copy ID" puts the piece's prefab name on the clipboard (paste it into the swap preset fields).
+                new VARightClickMenu.Item("Copy ID", () => CopyIdAction(prefabName), disabled: !VAVanillaPieceManager.IsAdminGateOpen()),
                 new VARightClickMenu.Item(
                     isFavorite ? $"* Remove from Favorites  ({prefabName})"
                                : $"* Add to Favorites  ({prefabName})",
@@ -37,6 +64,9 @@ namespace VerdantsAscent.Patches
                     "Move to tab...",
                     () => OpenMoveSubmenu(prefabName)),
             };
+
+            // 1.1.297 (Fire: sound per placed piece): "Edit sound preset" left the build menu; it is on the world right-click menu of a
+            // placed piece now (VASoundContextProvider in Utilities\VASoundPresetUi.cs).
 
             // "Pre-bake mesh" entry on registered blueprint stubs (only when bake
             // config is on). Runs the combine work up front so later placement hits
@@ -78,6 +108,17 @@ namespace VerdantsAscent.Patches
                     VAFapRespawner.MenuLabel(optedIn),
                     () => VerdantsAscent.Utilities.VAFapPersistentOptIn.Toggle(prefabName),
                     disabled: !usable && !optedIn));
+            }
+
+            // 1.1.351 (Fire 10-31: "event zones should be placeable and configurable with presets"): event + radius, queued for every
+            // placement of that zone until changed. Off while VanillaFriendly (a client without FAP keeps the prefab's own event + size).
+            if (VAEventZonePresets.IsEventZonePrefab(prefabName))
+            {
+                bool vf = ConfigManager.Instance?.configVanillaFriendly?.Value ?? false;
+                items.Add(new VARightClickMenu.Item(
+                    vf ? "Event zone preset... <color=#888>(off: VanillaFriendly)</color>"
+                       : $"Event zone preset... <color=#8f8>({VAEventZonePresets.Describe(prefabName)})</color>",
+                    () => VAEventZonePresets.OpenMenu(prefabName), disabled: vf));
             }
 
             // Per-piece distance render override, picked from a preset list and
@@ -288,8 +329,7 @@ namespace VerdantsAscent.Patches
         }
 
         // Submenu listing every currently-hidden prefab name; click an entry to
-        // unhide it. Restored pieces reappear on the next world reload (live-
-        // mutating the PieceTable mid-session is race-prone).
+        // unhide it. 1.1.282: restored pieces come back live (VAHammerTabOrganizer.UnhidePrefab).
         private static void OpenRestoreHiddenSubmenu()
         {
             var hidden = VAHammerTabOrganizer.GetHiddenPrefabs();
@@ -314,7 +354,7 @@ namespace VerdantsAscent.Patches
                             if (player != null)
                             {
                                 player.Message(MessageHud.MessageType.TopLeft,
-                                    $"Unhid '{capturedName}'. Reappears on next world reload.");
+                                    $"Unhid '{capturedName}'.");   // 1.1.282: back live, no reload
                             }
                         }
                     }));
@@ -851,7 +891,7 @@ namespace VerdantsAscent.Patches
             if (entry == null) return;
 
             bool isAdmin;
-            try { isAdmin = FiresCore.Sync.AdminSyncing.IsLocalAdmin(); }
+            try { isAdmin = VerdantsAscent.Managers.VAFapServerPresence.LocalMayUseAdminFeatures(); }   // 1.1.305
             catch { isAdmin = false; }
             if (!isAdmin) return;
 
@@ -872,11 +912,11 @@ namespace VerdantsAscent.Patches
             if (entry == null) return;
 
             bool isAdmin;
-            try { isAdmin = FiresCore.Sync.AdminSyncing.IsLocalAdmin(); }
+            try { isAdmin = VerdantsAscent.Managers.VAFapServerPresence.LocalMayUseAdminFeatures(); }   // 1.1.305
             catch { isAdmin = false; }
             if (!isAdmin) return;
 
-            if (!VerdantsAscent.Utilities.VAEwpSoftDep.IsActive)
+            if (!VerdantsAscent.Patches.VAEwpDetector.IsEwpInstalled)   // 1.1.281: was IsActive (installed AND on), so with the setting off it claimed 'not installed' and could never be turned on
             {
                 items.Add(new VARightClickMenu.Item(
                     "    EWP persistence  <color=#888>(Expand World Prefabs not installed)</color>", null, disabled: true));
@@ -974,7 +1014,7 @@ namespace VerdantsAscent.Patches
         private static void UnhideTabAction(string hiddenTabName)
         {
             if (VAHammerTabOrganizer.UnhideTab(hiddenTabName))
-                ShowToast($"Un-hid '{hiddenTabName}' (world reload to apply)");
+                ShowToast($"Un-hid '{hiddenTabName}'");   // 1.1.282: back live, no reload
             else
                 ShowToast($"Failed to un-hide '{hiddenTabName}' — see log");
         }
@@ -1092,7 +1132,8 @@ namespace VerdantsAscent.Patches
         // Names listed before the sweep note falls back to a count.
         private const int MaxNamesInRebakeNote = 8;
 
-        private static System.Collections.IEnumerator PreBakeCoroutine(string cacheKey, VABlueprintLoader.Blueprint bp)
+        // 1.1.283: internal (fap_live_test reuses it), was private
+        internal static System.Collections.IEnumerator PreBakeCoroutine(string cacheKey, VABlueprintLoader.Blueprint bp)
         {
             var scene = ZNetScene.instance;
             if (scene == null) yield break;
@@ -1119,12 +1160,11 @@ namespace VerdantsAscent.Patches
                 Utilities.VAFapBlueprintMeshBaker.BakeFromBlueprintPrefabsCoroutine(
                     bp, scene, cacheKey, EmitThrottled));
 
-            // Final notification (bypasses throttle). The new prefab only becomes
-            // available on the Baked Meshes tab after a relaunch (RegisterAll runs
-            // at world load).
-            ShowToast(VAFapBlueprintBakeCache.Has(cacheKey)
-                ? $"Bake complete: '{cacheKey}'. Relaunch the game to use the new prefab in the Baked Meshes tab."
-                : $"Bake FAILED for '{cacheKey}' — check log.");
+            // Final notification (bypasses throttle). 1.1.289 (Fire: names fap_push_bundle); 1.1.288; 1.1.287; 1.1.286: one short line for bake and re-bake; other players
+            // and the server only load a bake at their next world load, so the relaunch note stays.
+            ShowToast(!VAFapBlueprintBakeCache.Has(cacheKey)
+                ? $"Bake FAILED for '{cacheKey}' — check log."
+                : "Bake complete. Please use fap_push_bundle and relaunch client and server for multiplayer syncing.");
         }
 
         // Bakes every registered blueprint into a fresh bundle, replacing any existing bake. Runs
@@ -1233,7 +1273,8 @@ namespace VerdantsAscent.Patches
 
         // Every registered blueprint that has pieces, paired with its bake cache key, once per key.
         // Keys are compared ignoring case because bundle file names collide that way on Windows.
-        private static List<(string CacheKey, VABlueprintLoader.Blueprint Blueprint)> CollectBakeableBlueprints(out int emptyBlueprints)
+        // 1.1.283: internal (fap_live_test reuses it), was private
+        internal static List<(string CacheKey, VABlueprintLoader.Blueprint Blueprint)> CollectBakeableBlueprints(out int emptyBlueprints)
         {
             emptyBlueprints = 0;
             var bakeable = new List<(string CacheKey, VABlueprintLoader.Blueprint Blueprint)>();

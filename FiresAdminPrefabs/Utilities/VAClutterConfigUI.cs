@@ -30,6 +30,7 @@ namespace VerdantsAscent.Utilities
         private const float MinW = 460f, MaxW = 1200f, MinH = 480f, MaxH = 1200f, Grip = 18f;
 
         private static VAClutterConfigUI _instance;
+        private static bool s_p7ClosedLogged;   // 1.1.325 (UI audit P7)
         private static ConfigEntry<float> s_opacity, s_w, s_h, s_x, s_y;
 
         public static void EnsureCreated()
@@ -38,6 +39,7 @@ namespace VerdantsAscent.Utilities
             var go = new GameObject("FAP_ClutterConfigUI");
             DontDestroyOnLoad(go);
             _instance = go.AddComponent<VAClutterConfigUI>();
+            _instance.enabled = false;   // 1.1.325 (UI audit P7): starts closed; OpenInternal turns it on
         }
 
         public static void Open(string clutterPrefabName)
@@ -93,6 +95,7 @@ namespace VerdantsAscent.Utilities
             s_h = cfg.Bind("ClutterConfigUI", "Height", 760f, "The clutter config window's height.");
             s_x = cfg.Bind("ClutterConfigUI", "X", -1f, "The window's left edge (-1 = centred; drag the title row).");
             s_y = cfg.Bind("ClutterConfigUI", "Y", -1f, "The window's top edge (-1 = centred).");
+            VerdantsAscent.Managers.FapConfigUi.Apply(cfg);   // 1.1.279: window geometry is saved, never shown
         }
 
         private void OpenInternal(string clutterPrefabName)
@@ -108,6 +111,7 @@ namespace VerdantsAscent.Utilities
             // Capture input (vanilla + other-mod hotkeys) for as long as the window is open.
             FiresCore.Input.FiresInputBlock.Acquire(this); VAImguiGuard.Open(this, () => _rect, "ClutterConfig");
             _open = true;
+            enabled = true;   // 1.1.325 (UI audit P7)
 
             string activeName = VAClutterPresetStore.GetActiveNameFor(_clutterPrefab);
             LoadPresetIntoForm(activeName);
@@ -119,6 +123,8 @@ namespace VerdantsAscent.Utilities
             _open = false;
             FiresCore.Input.FiresInputBlock.Release(this); VAImguiGuard.Close(this);
             SaveLayout();
+            enabled = false;   // 1.1.325 (UI audit P7): no Update/OnGUI while closed; Open() is the only way back
+            if (!s_p7ClosedLogged) { s_p7ClosedLogged = true; VaPieces.Log?.LogDebug("[FAP] VAClutterConfigUI closed: OnGUI off until reopened"); }
         }
 
         private void SaveLayout()
@@ -147,7 +153,7 @@ namespace VerdantsAscent.Utilities
             GUILayout.Label($"Configure clutter: {_clutterPrefab}", FiresRoundedSkin.Title);
             GUILayout.FlexibleSpace();
             GUILayout.Label("Opacity", FiresRoundedSkin.Label, GUILayout.Width(62f));
-            s_opacity.Value = GUILayout.HorizontalSlider(s_opacity.Value, 0.4f, 1f, FiresRoundedSkin.Slider, FiresRoundedSkin.SliderThumb, GUILayout.Width(110f));
+            s_opacity.Value = CoreImguiWidgets.OpacitySlider(s_opacity.Value, 0.4f, 1f, 110f);   // 1.1.293: Core slim slider, old slider on older Core
             if (GUILayout.Button("x", FiresRoundedSkin.ButtonSmall, GUILayout.Width(28f))) CloseInternal();
             GUILayout.EndHorizontal();
             GUILayout.Space(4f);
@@ -271,7 +277,16 @@ namespace VerdantsAscent.Utilities
         // A bool row: one NavSel (ON) / NavItem (OFF) button that flips on click.
         private static bool Toggle(string label, bool value, string hint)
         {
-            if (GUILayout.Button($"{label}: {(value ? "ON" : "OFF")}", value ? FiresRoundedSkin.NavSel : FiresRoundedSkin.NavItem, GUILayout.Height(28f)))
+            if (CoreImguiWidgets.HasPill)
+            {
+                // 1.1.293: label left + Core pill switch, like the config window; old ON/OFF button on older Core.
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(label, FiresRoundedSkin.Label, GUILayout.Width(210f));
+                GUILayout.FlexibleSpace();
+                value = CoreImguiWidgets.Pill(value);
+                GUILayout.EndHorizontal();
+            }
+            else if (GUILayout.Button($"{label}: {(value ? "ON" : "OFF")}", value ? FiresRoundedSkin.NavSel : FiresRoundedSkin.NavItem, GUILayout.Height(28f)))
                 value = !value;
             GUILayout.Label(hint, FiresRoundedSkin.Desc);
             return value;

@@ -78,6 +78,31 @@ namespace VerdantsAscent.Utilities
             }
         }
 
+        // 1.1.291 (Radius Swapper): a removal inside an open Scope is recorded too (WEC UndoHelper.AddRemoveAction), so one undo
+        // brings the swapped-out pieces back as well as removing the new ones. Add-only; false when WEC or the method is missing.
+        private static MethodInfo _addRemoveAction;
+        private static bool _removeResolved;
+
+        public static bool RecordRemove(ZDO zdo)
+        {
+            if (zdo == null || _depth <= 0) return false;
+            EnsureResolved();
+            if (!_available) return false;
+            if (!_removeResolved)
+            {
+                _removeResolved = true;
+                try { _addRemoveAction = _beginAction.DeclaringType.GetMethod("AddRemoveAction", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(ZDO) }, null); }
+                catch { _addRemoveAction = null; }
+            }
+            if (_addRemoveAction == null) return false;
+            try { _addRemoveAction.Invoke(null, new object[] { zdo }); return true; }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"{VaPieces.PluginName}: VAUndoBridge.RecordRemove threw: {ex.Message}");
+                return false;
+            }
+        }
+
         private static void EnsureResolved()
         {
             if (_resolved) return;

@@ -47,19 +47,42 @@ namespace VerdantsAscent.Sync
                 ? VerdantsAscent.Utilities.VAFapCachePaths.ManifestsDir
                 : Path.Combine(RootDir, folder);
 
-        // "<Folder>/rest" -> absolute path, through FolderPath.
+        // "<Folder>/rest" -> absolute path, through FolderPath. Wire paths come from other peers, so a path is accepted only
+        // when it names a file INSIDE one of the synced folders: no rooted path, drive or stream colon, "." / ".." segment,
+        // empty segment, control character or over-long path, and the resolved full path must still lie under that folder.
+        // Anything else returns null; every caller treats null as "refuse".
+        private const int MaxRelPathLength = 240;
+
         public static string AbsolutePath(string relPath)
         {
+            if (!IsSafeRelPath(relPath, out string folder, out string rest)) return null;
+            string baseDir = Path.GetFullPath(FolderPath(folder));
+            string full;
+            try { full = Path.GetFullPath(Path.Combine(baseDir, rest.Replace('/', Path.DirectorySeparatorChar))); }
+            catch (Exception) { return null; }
+            string root = baseDir.EndsWith(Path.DirectorySeparatorChar.ToString()) ? baseDir : baseDir + Path.DirectorySeparatorChar;
+            return full.StartsWith(root, StringComparison.OrdinalIgnoreCase) ? full : null;
+        }
+
+        // "<SyncedFolder>/<one or more clean segments>", forward or back slashes.
+        public static bool IsSafeRelPath(string relPath, out string folder, out string rest)
+        {
+            folder = rest = null;
+            if (string.IsNullOrEmpty(relPath) || relPath.Length > MaxRelPathLength) return false;
             string rel = relPath.Replace('\\', '/');
-            int slash = rel.IndexOf('/');
-            if (slash > 0)
-            {
-                string folder = rel.Substring(0, slash);
-                foreach (var f in SyncedFolders)
-                    if (string.Equals(f, folder, StringComparison.Ordinal))
-                        return Path.Combine(FolderPath(f), rel.Substring(slash + 1).Replace('/', Path.DirectorySeparatorChar));
-            }
-            return Path.Combine(RootDir, rel.Replace('/', Path.DirectorySeparatorChar));
+            if (rel.StartsWith("/", StringComparison.Ordinal) || rel.IndexOf(':') >= 0 || Path.IsPathRooted(rel)) return false;
+            foreach (char ch in rel) if (ch < ' ' || ch == '*' || ch == '?' || ch == '"' || ch == '<' || ch == '>' || ch == '|') return false;
+            string[] parts = rel.Split('/');
+            if (parts.Length < 2) return false;
+            foreach (var part in parts) if (part.Length == 0 || part == "." || part == ".." || part.Trim().Length == 0) return false;
+            foreach (var f in SyncedFolders)
+                if (string.Equals(f, parts[0], StringComparison.Ordinal))
+                {
+                    folder = f;
+                    rest = rel.Substring(f.Length + 1);
+                    return true;
+                }
+            return false;
         }
 
         // Absolute path -> "<Folder>/rest" when it sits inside a synced folder, else null.
