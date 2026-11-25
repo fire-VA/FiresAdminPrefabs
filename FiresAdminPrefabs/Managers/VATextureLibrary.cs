@@ -55,9 +55,15 @@ namespace VerdantsAscent.Managers
                 return;
             }
 
+            // 1.1.438 ([ghost], lead 11-19 perf audit FAP#1): this used to LoadAllAssets<Texture2D>() on EVERY loaded bundle (other
+            // mods' and FAP's lazy ones too), synchronously, and keep all of them (HandTest log: 3609 textures across 82 bundles), which
+            // pulled every bundle texture into RAM and undid the lazy bundles. Now it only reads each bundle's asset NAMES (no asset
+            // loads) into a name -> (bundle, path) index; TryGetTexture loads the one texture a material asks for, from the first
+            // bundle that has it (the same first-bundle-wins order as before). A name no bundle file carries still falls back to
+            // the textures already in memory (embedded / game textures), exactly as before.
             try
             {
-                int textures = 0;
+                int names = 0;
                 int bundles = 0;
                 foreach (var bundle in AssetBundle.GetAllLoadedAssetBundles())
                 {
@@ -65,26 +71,23 @@ namespace VerdantsAscent.Managers
                     if (bundle.isStreamedSceneAssetBundle) continue;
                     bundles++;
 
-                    Texture2D[] all;
-                    try { all = bundle.LoadAllAssets<Texture2D>(); }
+                    string[] paths;
+                    try { paths = bundle.GetAllAssetNames(); }
                     catch { continue; }
-                    if (all == null) continue;
+                    if (paths == null) continue;
 
-                    foreach (var t in all)
+                    foreach (var path in paths)
                     {
-                        if (t == null) continue;
-                        if (string.IsNullOrEmpty(t.name)) continue;
-                        if (!_texturesByName.ContainsKey(t.name))
-                        {
-                            _texturesByName[t.name] = t;
-                            textures++;
-                        }
+                        if (string.IsNullOrEmpty(path) || !IsTextureFile(path)) continue;
+                        string key = System.IO.Path.GetFileNameWithoutExtension(path);   // asset names are lower-case; texture names are not
+                        if (string.IsNullOrEmpty(key)) continue;
+                        if (!_index.TryGetValue(key, out var list)) { list = new List<KeyValuePair<AssetBundle, string>>(1); _index[key] = list; names++; }
+                        list.Add(new KeyValuePair<AssetBundle, string>(bundle, path));
                     }
                 }
 
                 _scannedBundles = bundles;
-                _cachedTextures = textures;
-                Debug.Log($"{VaPieces.PluginName}: VATextureLibrary built — {textures} unique texture(s) cached across {bundles} bundle(s) (at spawn: {AtSpawn}, frame {Time.frameCount}).");
+                Debug.Log($"{VaPieces.PluginName}: VATextureLibrary built — {names} texture name(s) indexed across {bundles} bundle(s), nothing loaded; each texture loads when a material asks for it (at spawn: {AtSpawn}, frame {Time.frameCount}).");
             }
             catch (Exception ex)
             {
@@ -99,9 +102,49 @@ namespace VerdantsAscent.Managers
             if (!_built) Build();
             if (_texturesByName.TryGetValue(name, out texture) && texture != null) return true;
 
+            // 1.1.438: a bundle copy (loaded now, on first ask) keeps priority over loose files and in-memory game textures
+            if (TryLoadIndexed(name, out texture)) return true;
+            if (_loose.TryGetValue(name, out texture) && texture != null) { _texturesByName[name] = texture; return true; }
+
             IndexGameTextures();
             return _texturesByName.TryGetValue(name, out texture) && texture != null;
         }
+
+        // 1.1.438: name -> every (bundle, asset path) carrying a texture FILE of that name, in loaded-bundle order.
+        private static readonly Dictionary<string, List<KeyValuePair<AssetBundle, string>>> _index =
+            new Dictionary<string, List<KeyValuePair<AssetBundle, string>>>(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> _indexMissed = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, Texture2D> _loose = new Dictionary<string, Texture2D>(StringComparer.Ordinal);
+        private static int _loadedOnDemand;
+
+        private static readonly string[] TextureExtensions = { ".png", ".jpg", ".jpeg", ".tga", ".psd", ".tif", ".tiff", ".exr", ".hdr", ".bmp", ".gif", ".dds" };
+
+        private static bool IsTextureFile(string path)
+        {
+            foreach (var ext in TextureExtensions)
+                if (path.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static bool TryLoadIndexed(string name, out Texture2D texture)
+        {
+            texture = null;
+            if (_indexMissed.Contains(name) || !_index.TryGetValue(name, out var list)) return false;
+            foreach (var entry in list)
+            {
+                if (entry.Key == null) continue;   // bundle unloaded since the index was built
+                Texture2D t = null;
+                try { t = entry.Key.LoadAsset<Texture2D>(entry.Value); } catch { }
+                if (t == null || string.IsNullOrEmpty(t.name)) continue;
+                if (!_texturesByName.ContainsKey(t.name)) { _texturesByName[t.name] = t; _loadedOnDemand++; _cachedTextures++; }
+                if (string.Equals(t.name, name, StringComparison.Ordinal)) { texture = _texturesByName[t.name]; return true; }
+            }
+            _indexMissed.Add(name);   // only case-different copies: never walk this list again
+            return false;
+        }
+
+        /// <summary>1.1.438: how many bundle textures were actually loaded (on demand) — for the load / RAM comparison.</summary>
+        public static int LoadedOnDemand => _loadedOnDemand;
 
         // Bundles routinely name a texture they do not ship, because it is the GAME's. 'wildfire06' is named
         // 56 times across five Balrond manifests and lives on vanilla's own wraith_smoke and
@@ -128,6 +171,7 @@ namespace VerdantsAscent.Managers
                 {
                     if (texture == null || string.IsNullOrEmpty(texture.name)) continue;
                     if (_texturesByName.ContainsKey(texture.name)) continue;
+                    if (_index.ContainsKey(texture.name) && !_indexMissed.Contains(texture.name)) continue;   // 1.1.438: a bundle file of that name still wins (loaded on its first ask)
                     _texturesByName[texture.name] = texture;
                     added++;
                 }
@@ -144,6 +188,10 @@ namespace VerdantsAscent.Managers
         public static void Invalidate()
         {
             _texturesByName.Clear();
+            _index.Clear();
+            _indexMissed.Clear();
+            _loose.Clear();
+            _loadedOnDemand = 0;
             _built = false;
             _gameTexturesIndexed = false;
             _scannedBundles = 0;
@@ -156,8 +204,10 @@ namespace VerdantsAscent.Managers
         public static bool RegisterLooseTexture(string name, Texture2D tex)
         {
             if (string.IsNullOrEmpty(name) || tex == null) return false;
-            if (_texturesByName.ContainsKey(name)) return false;
-            _texturesByName[name] = tex;
+            // 1.1.438: a bundle texture file of the same name still wins (it is no longer pre-loaded, so check the index, not the cache)
+            // (the index ignores case because bundle asset names are lower-case; textures are named after their file)
+            if (_texturesByName.ContainsKey(name) || _loose.ContainsKey(name) || _index.ContainsKey(name)) return false;
+            _loose[name] = tex;
             _cachedTextures++;
             return true;
         }

@@ -2597,16 +2597,27 @@ namespace VerdantsAscent.Utilities
         }
 
         // True when another live component on c's GameObject has a [RequireComponent] that c satisfies.
+        // 1.1.439 ([lead] 11-20 capture: ProcessQueue > GC.Alloc 68,145 calls / 3 MB per frame): GetComponents<Component>() built a NEW
+        // array for every pending component on every pass (up to 8) of every proxy strip: thousands of arrays per icon on a big piece.
+        // One reused list (main thread only; the strip never nests) gives the same components in the same order with no garbage.
+        private static readonly List<Component> s_siblings = new List<Component>(32);
         private static bool IsRequiredBySibling(Component c)
         {
             var type = c.GetType();
-            foreach (var other in c.GetComponents<Component>())
+            c.GetComponents(s_siblings);
+            try
             {
-                if (other == null || ReferenceEquals(other, c)) continue;
-                foreach (var req in RequiredTypes(other.GetType()))
-                    if (req.IsAssignableFrom(type)) return true;
+                for (int i = 0; i < s_siblings.Count; i++)
+                {
+                    var other = s_siblings[i];
+                    if (other == null || ReferenceEquals(other, c)) continue;
+                    var reqs = RequiredTypes(other.GetType());
+                    for (int r = 0; r < reqs.Length; r++)
+                        if (reqs[r].IsAssignableFrom(type)) return true;
+                }
+                return false;
             }
-            return false;
+            finally { s_siblings.Clear(); }
         }
 
         private static readonly Dictionary<Type, int> _requireDepth = new Dictionary<Type, int>();

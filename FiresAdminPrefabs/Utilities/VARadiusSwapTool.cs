@@ -257,17 +257,18 @@ namespace VerdantsAscent.Utilities
             var wnt = toPrefab != null ? toPrefab.GetComponent<WearNTear>() : null;
             bool infinite = health >= InfiniteHealth || (wnt != null && health > wnt.m_health * 10f);
             int n = 0;
-            foreach (var kv in floats)
+            for (int i = 0; i < floats.Count; i++)   // 1.0.30: GetData hands back FastIterableKeyValues (Count + indexer, no enumerator)
             {
+                var kv = floats[i];
                 if ((kv.Key == HealthHash || kv.Key == SupportHash) && !infinite) continue;
                 to.Set(kv.Key, kv.Value); n++;
             }
-            foreach (var kv in vecs) { to.Set(kv.Key, kv.Value); n++; }
-            foreach (var kv in quats) { to.Set(kv.Key, kv.Value); n++; }
-            foreach (var kv in ints) { to.Set(kv.Key, kv.Value); n++; }
-            foreach (var kv in longs) { to.Set(kv.Key, kv.Value); n++; }
-            foreach (var kv in strings) { to.Set(kv.Key, kv.Value); n++; }
-            foreach (var kv in bytes) { to.Set(kv.Key, kv.Value); n++; }
+            for (int i = 0; i < vecs.Count; i++) { var kv = vecs[i]; to.Set(kv.Key, kv.Value); n++; }
+            for (int i = 0; i < quats.Count; i++) { var kv = quats[i]; to.Set(kv.Key, kv.Value); n++; }
+            for (int i = 0; i < ints.Count; i++) { var kv = ints[i]; to.Set(kv.Key, kv.Value); n++; }
+            for (int i = 0; i < longs.Count; i++) { var kv = longs[i]; to.Set(kv.Key, kv.Value); n++; }
+            for (int i = 0; i < strings.Count; i++) { var kv = strings[i]; to.Set(kv.Key, kv.Value); n++; }
+            for (int i = 0; i < bytes.Count; i++) { var kv = bytes[i]; to.Set(kv.Key, kv.Value); n++; }
             if (infinite) VaPieces.Log?.LogDebug($"[Swapper] invulnerable FROM piece (health {health:G3}): health + support carried over");
             return n;
         }

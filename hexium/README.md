@@ -1,5 +1,7 @@
 # FiresAdminPrefabs
 
+**Requires Valheim 1.0.30 or newer.**
+
 ## What's new in 1.1.434
 
 - The FiresGlass windows are part of this mod now; windows you placed stay.

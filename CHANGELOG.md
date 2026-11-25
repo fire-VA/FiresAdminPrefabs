@@ -1,3 +1,9 @@
+## 1.1.445
+Requires Valheim 1.0.30 or newer.
+- Works with Valheim 1.0.30.
+- Less memory at world load: piece textures load only when a piece needs them.
+- Less background work for item stands and piece icons; dedicated servers skip icon work.
+
 ## 1.1.434
 
 ### New

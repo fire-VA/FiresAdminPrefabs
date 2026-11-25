@@ -501,7 +501,7 @@ namespace VerdantsAscent.Utilities
                 bool inIrInstances = InstanceRenderer.Instances.Contains(ir);
                 int irLayer = ir.gameObject.layer;
                 string irLayerName = LayerMask.LayerToName(irLayer);
-                Debug.Log($"{VaPieces.PluginName}: [PaintDiag] '{prefab.name}' — container.activeInHierarchy={contActive}, ir.gameObject.activeInHierarchy={irActive}, ir.enabled={irEnabled}, ir.inInstancesList={inIrInstances}, ir.layer={irLayer}('{irLayerName}'), m_scale={ir.m_scale}, mesh='{meshName}' tris={meshTris} verts={meshVerts} bounds={meshBounds.size}, material='{matName}' shader='{shaderName}' enableInstancing={instOn}, useLod={ir.m_useLod} lod=[{ir.m_lodMinDistance}..{ir.m_lodMaxDistance}], frustumCull={ir.m_frustumCull}, shadowCasting={ir.m_shadowCasting}.");
+                Debug.Log($"{VaPieces.PluginName}: [PaintDiag] '{prefab.name}' — container.activeInHierarchy={contActive}, ir.gameObject.activeInHierarchy={irActive}, ir.enabled={irEnabled}, ir.inInstancesList={inIrInstances}, ir.layer={irLayer}('{irLayerName}'), m_scale={ir.m_scale}, mesh='{meshName}' tris={meshTris} verts={meshVerts} bounds={meshBounds.size}, material='{matName}' shader='{shaderName}' enableInstancing={instOn}, useLod={ir.m_useLod} lod=[{ir.m_lodMinDistance}..{ir.m_lodMaxDistance}], shadowCasting={ir.m_shadowCasting}.");
             }
 
             float spacing = InstancedSpacingBase / density;

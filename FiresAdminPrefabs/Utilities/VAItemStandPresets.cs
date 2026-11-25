@@ -151,6 +151,7 @@ namespace VerdantsAscent.Utilities
                 zdo.Set(KeyPreset, "");
                 try { MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center, $"Item stand preset '{preset.name}': {preset.Item} can't hang on this stand"); } catch { }
             }
+            else VAItemStandPatches.EnsureRefill(stand);   // 1.1.438: the watcher now goes only on preset stands
             return hung;
         }
 
@@ -228,10 +229,27 @@ namespace VerdantsAscent.Utilities
         }
 
         // A preset stand gets the refill watcher (FAP's own refill; idle when the stand is on EWP's rule or has no timer).
+        // 1.1.438 ([ghost], lead 11-19 perf audit FAP#2): only PRESET stands get it (it was every ItemStand in the world, each
+        // reading the ZDO 4 times a second). A stand gets it when it loads with the preset key, when this peer stamps a preset
+        // (Apply), and when a preset is hung by another peer (every preset hang sends SetVisualItem to everybody), so an owner
+        // hand-over still finds the watcher there.
         [HarmonyPatch(typeof(ItemStand), "Awake"), HarmonyPostfix]
-        private static void ItemStand_Awake_Postfix(ItemStand __instance)
+        private static void ItemStand_Awake_Postfix(ItemStand __instance) => EnsureRefill(__instance);
+
+        [HarmonyPatch(typeof(ItemStand), "RPC_SetVisualItem"), HarmonyPostfix]
+        private static void ItemStand_RPC_SetVisualItem_Postfix(ItemStand __instance) => EnsureRefill(__instance);
+
+        internal static void EnsureRefill(ItemStand stand)
         {
-            if (__instance != null && __instance.GetComponent<VAItemStandRefill>() == null) __instance.gameObject.AddComponent<VAItemStandRefill>();
+            try
+            {
+                if (stand == null || stand.GetComponent<VAItemStandRefill>() != null) return;
+                var view = stand.GetComponent<ZNetView>();
+                var zdo = view != null && view.IsValid() ? view.GetZDO() : null;
+                if (zdo == null || string.IsNullOrEmpty(zdo.GetString(VAItemStandRefill.HashPreset))) return;
+                stand.gameObject.AddComponent<VAItemStandRefill>();
+            }
+            catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: item stand refill watcher: {ex.Message}"); }
         }
 
         [HarmonyPatch(typeof(ItemStand), nameof(ItemStand.Interact)), HarmonyPrefix]
@@ -260,6 +278,14 @@ namespace VerdantsAscent.Utilities
         private ItemStand _stand;
         private ZNetView _view;
 
+        // 1.1.438: the keys read 4 times a second are hashed once (ZDO string reads hash the key on every call).
+        internal static readonly int HashPreset = VAItemStandApplier.KeyPreset.GetStableHashCode();
+        private static readonly int HashEwp = VAItemStandApplier.KeyEwp.GetStableHashCode();
+        private static readonly int HashCore = VAItemStandApplier.KeyCore.GetStableHashCode();
+        private static readonly int HashRespawn = VAItemStandApplier.KeyRespawn.GetStableHashCode();
+        private static readonly int HashRespawnMax = VAItemStandApplier.KeyRespawnMax.GetStableHashCode();
+        private static readonly int HashRefillAt = VAItemStandApplier.KeyRefillAt.GetStableHashCode();
+
         private void Awake()
         {
             _stand = GetComponent<ItemStand>();
@@ -273,11 +299,11 @@ namespace VerdantsAscent.Utilities
             {
                 if (_view == null || !_view.IsValid() || !_view.IsOwner() || ZNet.instance == null) return;
                 var zdo = _view.GetZDO();
-                if (string.IsNullOrEmpty(zdo.GetString(VAItemStandApplier.KeyPreset)) || zdo.GetBool(VAItemStandApplier.KeyEwp) || zdo.GetBool(VAItemStandApplier.KeyCore)) return;
-                float min = zdo.GetFloat(VAItemStandApplier.KeyRespawn), max = zdo.GetFloat(VAItemStandApplier.KeyRespawnMax);
+                if (string.IsNullOrEmpty(zdo.GetString(HashPreset)) || zdo.GetBool(HashEwp) || zdo.GetBool(HashCore)) return;
+                float min = zdo.GetFloat(HashRespawn), max = zdo.GetFloat(HashRespawnMax);
                 if (min <= 0f) return;
                 long now = ZNet.instance.GetTime().Ticks;
-                long at = zdo.GetLong(VAItemStandApplier.KeyRefillAt);
+                long at = zdo.GetLong(HashRefillAt);
                 if (zdo.GetInt(ZDOVars.s_item) != 0) { if (at != 0) zdo.Set(VAItemStandApplier.KeyRefillAt, 0L); return; }
                 if (at == 0)
                 {

@@ -1203,6 +1203,10 @@ namespace VerdantsAscent.Managers
         // component reference between scan and now.
         private static void QueueIconRenders()
         {
+            // 1.1.437 ([ghost], lead 11-18, Fire's VADN-FAT-1118 dedi log "Queued 2295 pieces for icon render"): with no graphics device
+            // (dedicated server, -nographics bot) VAPieceIconRenderer.Enqueue returns at its first lines, so nothing was ever queued there and
+            // the count was false. No walk, no line; the stand-in summary still prints
+            if (VaPieces.IsHeadless) { EmitStandinSummary(); return; }
             if (ConfigManager.Instance?.configRedrawSharedIcons?.Value == true) VAPieceIconRenderer.RedrawSharedIcons(new List<GameObject>(_eligibleByName.Values), GetHammerPieceTable()?.m_pieces);   // [saddles] 11-09
             int queued = 0;
             foreach (var prefab in _eligibleByName.Values)
