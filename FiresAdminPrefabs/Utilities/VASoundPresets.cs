@@ -380,6 +380,7 @@ namespace VerdantsAscent.Utilities
             try
             {
                 StopPreview();
+                OverrideWatch.Clear();   // 1.1.417
                 foreach (var c in _clones.Values) if (c != null) UnityEngine.Object.Destroy(c);
                 _clones.Clear();
                 _detect.Clear(); s_soundByPrefab.Clear();
@@ -390,7 +391,7 @@ namespace VerdantsAscent.Utilities
         // ---- per placed piece (1.1.297) ----
         // The override lives on THAT piece's ZDO: string key "fap_sound" = compact JSON { sourceKey: { field: value, ... } } holding only
         // the fields that differ from vanilla. Every client applies it in ZNetView.Awake (like VAFapPieceShaderOverridePatch /
-        // VAAreaScaleAwakePatch) and again whenever the ZDO's data revision moves (SoundWatch, on pieces with sound only), so a Save
+        // VAAreaScaleAwakePatch) and again whenever the ZDO's data revision moves (1.1.417: OverrideWatch, edited pieces only), so a Save
         // shows for everyone live. Hierarchy sources are written on the instance. Effect entries (fuel added, door open / close) point
         // the INSTANCE's own EffectList entry (Instantiate deep-copies it) at a clone of the original effect with the values; clones are
         // shared by content (prefab + entry + values), so a thousand identical doors use one clone and nothing grows per piece.
@@ -464,12 +465,12 @@ namespace VerdantsAscent.Utilities
             var sources = Sources(prefabName);
             string json = Compact(values, sources);
             if (!nv.IsOwner()) nv.ClaimOwnership();
-            nv.GetZDO().Set(ZdoKey, json);   // Set raises the data revision: other clients' SoundWatch re-applies
+            nv.GetZDO().Set(ZdoKey, json);   // Set raises the data revision: other clients' OverrideWatch re-applies (after the routed notice below)
             string stamp = json.Length == 0 ? "" : (MatchingTemplate(json, sources, presetName) ?? "");
             nv.GetZDO().Set(ZdoNameKey, stamp);   // 1.1.303: the template name stamp (fap_sound_name)
-            var watch = nv.GetComponent<SoundWatch>();
             string applied = ApplyToInstance(nv) ?? "";
-            if (watch != null) watch.Applied = applied;
+            OverrideWatch.Track(nv, applied);   // 1.1.417: this piece now has (or just lost) an override: on the short list
+            OverrideWatch.Announce(nv);          // 1.1.417: every other client re-checks this piece (routed RPC; replaces per-piece polling)
             message = json.Length == 0 ? "Saved: this piece is vanilla again." : "Saved to this piece.";
             VaPieces.Log?.LogInfo($"[SoundPresets] {prefabName} {nv.GetZDO().m_uid}: {(json.Length == 0 ? "override cleared" : $"{ZdoKeyName} = {json.Length} chars")}{(stamp.Length > 0 ? $", template '{stamp}'" : "")}");
             return true;
@@ -628,25 +629,145 @@ namespace VerdantsAscent.Utilities
             }
         }
 
-        // Re-applies when this piece's ZDO data revision moves and the fap_sound string changed (another admin's Save).
-        internal sealed class SoundWatch : MonoBehaviour
+        // 1.1.417 ([ghost], lead 11-12, profiler-proven Tools\Rig\results\samepose_20261111\WRITEUP_samepose_20261112.md: FAP's per-piece SoundWatch
+        // MonoBehaviour was ~7 ms of Fire's town frame: 23,942 Update calls a frame, bodies 1.64 ms + Unity's per-component dispatch 5.52 ms).
+        // NO component per piece any more. Only pieces that HAVE a fap_sound override are watched, on ONE flat list:
+        //   - joined at load (OnPieceAwake) when the piece's ZDO already carries an override;
+        //   - joined where an override is written (SaveToPiece, the only writer of fap_sound in FAP);
+        //   - joined on every other client by a global routed RPC "FAP_SoundChanged" (ZDOID) that SaveToPiece sends, so a piece that had NO override
+        //     and gets one from another admin is picked up (a peer without this FAP ignores a global routed RPC it has no handler for).
+        // ONE manager pass at 2 Hz walks that short list: data revision moved and the fap_sound string differs from what was applied -> re-apply.
+        // A piece whose override is gone (cleared, applied as vanilla) leaves the list. Dead pieces leave by swap-remove. No allocations on the pass.
+        // Census (Debug, 60 s): pieces watched, re-applies, RPCs. The watched count is the number of edited pieces in range (tens), not every piece
+        // with a sound (tens of thousands in a town).
+        internal static class OverrideWatch
         {
-            internal ZNetView NView;
-            internal string Applied = "";
-            private uint _rev;
-            private float _next;
+            private struct Entry { public ZNetView NView; public uint Rev; public string Applied; }
+            private static readonly List<Entry> s_list = new List<Entry>();
+            private static readonly HashSet<int> s_ids = new HashSet<int>();
+            private static GameObject s_host;
+            private static float s_next, s_nextReport;
+            private static int c_reapplied, c_rpcs, c_joined;
+            private static ZRoutedRpc s_rpcOn;
+            private const string RpcName = "FAP_SoundChanged";
 
-            private void Update()
+            internal static void Track(ZNetView nv, string applied)
             {
-                if (Time.time < _next) return;
-                _next = Time.time + 0.5f + UnityEngine.Random.value * 0.2f;
-                if (NView == null || !NView.IsValid()) return;
-                var zdo = NView.GetZDO();
-                if (zdo.DataRevision == _rev) return;
-                _rev = zdo.DataRevision;
-                string json = zdo.GetString(ZdoKey, "");
-                if (json == Applied) return;
-                Applied = ApplyToInstance(NView) ?? "";
+                if (nv == null || !nv.IsValid()) return;
+                EnsureHost();
+                int id = nv.GetInstanceID();
+                uint rev = nv.GetZDO().DataRevision;
+                if (s_ids.Contains(id))
+                {
+                    for (int i = 0; i < s_list.Count; i++)
+                        if (s_list[i].NView == nv) { var e = s_list[i]; e.Applied = applied ?? ""; e.Rev = rev; s_list[i] = e; return; }
+                }
+                s_ids.Add(id);
+                s_list.Add(new Entry { NView = nv, Rev = rev, Applied = applied ?? "" });
+                c_joined++;
+            }
+
+            // a piece another client changed: join with revision 0, so the next pass checks it (and again whenever its data arrives later)
+            private static void TrackForCheck(ZNetView nv)
+            {
+                if (nv == null || !nv.IsValid()) return;
+                EnsureHost();
+                int id = nv.GetInstanceID();
+                if (s_ids.Contains(id))
+                {
+                    for (int i = 0; i < s_list.Count; i++) if (s_list[i].NView == nv) { var e = s_list[i]; e.Rev = 0; s_list[i] = e; return; }
+                }
+                s_ids.Add(id);
+                s_list.Add(new Entry { NView = nv, Rev = 0, Applied = null });   // null = never applied here: any string differs
+                c_joined++;
+            }
+
+            internal static void Announce(ZNetView nv)
+            {
+                try
+                {
+                    if (nv == null || !nv.IsValid() || ZRoutedRpc.instance == null) return;
+                    ZRoutedRpc.instance.InvokeRoutedRPC(ZRoutedRpc.Everybody, RpcName, nv.GetZDO().m_uid);
+                }
+                catch (Exception ex) { VaPieces.Log?.LogDebug($"[SoundPresets] change announce skipped: {ex.Message}"); }
+            }
+
+            internal static void RegisterRpc()
+            {
+                var r = ZRoutedRpc.instance;
+                if (r == null || r == s_rpcOn) return;   // ZRoutedRpc is made per session; register once per instance
+                r.Register<ZDOID>(RpcName, OnChanged);
+                s_rpcOn = r;
+            }
+
+            private static void OnChanged(long sender, ZDOID id)
+            {
+                try
+                {
+                    c_rpcs++;
+                    if (ZNetScene.instance == null || id.IsNone()) return;
+                    var zdo = ZDOMan.instance != null ? ZDOMan.instance.GetZDO(id) : null;
+                    var nv = zdo != null ? ZNetScene.instance.FindInstance(zdo) : null;
+                    if (nv != null) TrackForCheck(nv);   // not loaded here: its override is applied at load (OnPieceAwake) when it comes into range
+                }
+                catch (Exception ex) { VaPieces.Log?.LogDebug($"[SoundPresets] change notice skipped: {ex.Message}"); }
+            }
+
+            private static void EnsureHost()
+            {
+                if (s_host != null) return;
+                s_host = new GameObject("FAP_SoundOverrideWatch");
+                UnityEngine.Object.DontDestroyOnLoad(s_host);
+                s_host.hideFlags = HideFlags.HideAndDontSave;
+                s_host.AddComponent<Host>();
+            }
+
+            internal static void Clear()
+            {
+                s_list.Clear(); s_ids.Clear(); s_rpcOn = null;
+            }
+
+            private sealed class Host : MonoBehaviour
+            {
+                private void Update()
+                {
+                    float now = Time.time;
+                    if (now < s_next) return;
+                    s_next = now + 0.5f;   // 2 Hz
+                    for (int i = s_list.Count - 1; i >= 0; i--)
+                    {
+                        var e = s_list[i];
+                        if (e.NView == null || !e.NView.IsValid()) { Drop(i); continue; }
+                        var zdo = e.NView.GetZDO();
+                        uint rev = zdo.DataRevision;
+                        if (rev == e.Rev) continue;
+                        e.Rev = rev;
+                        string json = zdo.GetString(ZdoKey, "");
+                        if (e.Applied == null || json != e.Applied)
+                        {
+                            try { e.Applied = ApplyToInstance(e.NView) ?? ""; c_reapplied++; }
+                            catch (Exception ex) { VaPieces.Log?.LogWarning($"[SoundPresets] re-apply failed: {ex.Message}"); e.Applied = json; }
+                        }
+                        if (json.Length == 0 && e.Applied.Length == 0) { Drop(i); continue; }   // vanilla again: nothing left to watch
+                        s_list[i] = e;
+                    }
+                    if (now >= s_nextReport)
+                    {
+                        s_nextReport = now + 60f;
+                        if (c_joined + c_reapplied + c_rpcs > 0)
+                            VaPieces.Log?.LogDebug($"[SoundPresets] override watch, last 60 s: {s_list.Count} edited piece(s) watched (no component per piece), {c_joined} joined, {c_reapplied} re-applied, {c_rpcs} change notice(s)");
+                        c_joined = c_reapplied = c_rpcs = 0;
+                    }
+                }
+
+                private static void Drop(int i)
+                {
+                    var nv = s_list[i].NView;
+                    if ((object)nv != null) s_ids.Remove(nv.GetInstanceID());   // a destroyed view still answers its instance id (managed field)
+                    int last = s_list.Count - 1;
+                    s_list[i] = s_list[last];
+                    s_list.RemoveAt(last);
+                }
             }
         }
 
@@ -664,10 +785,10 @@ namespace VerdantsAscent.Utilities
                 if (!string.IsNullOrEmpty(prefabName) && _detect.ContainsKey(prefabName)) s_soundByPrefab[hash] = has;   // only once detection is cached (scene up)
             }
             if (!has) return;
-            var w = nv.gameObject.GetComponent<SoundWatch>() ?? nv.gameObject.AddComponent<SoundWatch>();
-            w.NView = nv;
+            // 1.1.417: no component per piece. A piece with an override is applied now and joins the one short watch list; a piece without one
+            // costs nothing more (a later override from any admin reaches it through SaveToPiece's routed notice).
             string json = ReadOverrideJson(nv);
-            if (json.Length > 0) { w.Applied = ApplyToInstance(nv) ?? ""; }
+            if (json.Length > 0) OverrideWatch.Track(nv, ApplyToInstance(nv) ?? "");
         }
 
         // ---- preview ----
@@ -805,6 +926,7 @@ namespace VerdantsAscent.Utilities
                 try   // 1.1.318 (audit M8)
                 {
                     _detect.Clear(); s_soundByPrefab.Clear();
+                    OverrideWatch.Clear(); OverrideWatch.RegisterRpc();   // 1.1.417: the short watch list + the change notice, per session
                     if (VaPieces.Instance != null) VaPieces.Instance.StartCoroutine(BeginSession());
                 }
                 catch (System.Exception e) { UnityEngine.Debug.LogError($"[FAP] sound presets: ZNetScene.Awake session start failed: {e.Message}"); }
@@ -816,7 +938,7 @@ namespace VerdantsAscent.Utilities
             [HarmonyPatch(typeof(Player), nameof(Player.OnSpawned)), HarmonyPostfix]
             private static void PlayerSpawned(Player __instance)
             {
-                if (__instance == Player.m_localPlayer) OnPlayerSpawned();
+                if (__instance == Player.m_localPlayer) { OverrideWatch.RegisterRpc(); OnPlayerSpawned(); }   // 1.1.417: ZRoutedRpc is up by now (once per session)
             }
 
             // 1.1.297: every placed piece with sound, on load / spawn, for everyone (same hook as VAFapPieceShaderOverridePatch).

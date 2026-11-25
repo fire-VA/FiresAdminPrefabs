@@ -138,9 +138,17 @@ namespace VerdantsAscent.Utilities
                             break;
                         }
                         var t = System.Diagnostics.Stopwatch.StartNew();
-                        var open = AssetBundle.LoadFromFileAsync(_path);
+                        string openPath = VABundleLz4Cache.OpenPath(_path);   // 1.1.414: its verified LZ4 copy when there is one
+                        var open = AssetBundle.LoadFromFileAsync(openPath);
                         yield return open;
                         _bundle = open.assetBundle;
+                        if (_bundle == null && !string.Equals(openPath, _path, System.StringComparison.OrdinalIgnoreCase))
+                        {
+                            VABundleLz4Cache.CopyFailedToOpen(_path, openPath);
+                            var shipped = AssetBundle.LoadFromFileAsync(_path);
+                            yield return shipped;
+                            _bundle = shipped.assetBundle;
+                        }
                         if (_bundle == null) { Debug.LogWarning($"{VaPieces.PluginName}: {_name} chunks: could not open '{_path}'"); _missingWarned = true; break; }
                         var load = _bundle.LoadAllAssetsAsync<GameObject>();
                         yield return load;

@@ -1,4 +1,4 @@
-using BepInEx.Configuration;
+﻿using BepInEx.Configuration;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -110,7 +110,7 @@ namespace VerdantsAscent.Managers
         public ConfigEntry<bool> configShowSpawnersWithHammer;   // 1.1.352
         public FiresCore.Input.KeyBinding configBuildMenuContextMenuKey;
         public FiresCore.Input.KeyBinding configSnapDefaultKey;
-        public BepInEx.Configuration.ConfigEntry<float> configSnapEdgeSpacing;
+        public BepInEx.Configuration.ConfigEntry<bool> configRedrawSharedIcons;
         public BepInEx.Configuration.ConfigEntry<bool> configOffsetUsesCentre;
 
         // ────── Sync ──────
@@ -352,8 +352,8 @@ configRemovedPrefabPlaceholders = config.Bind("Compatibility", "RemovedPrefabPla
                 defaultShift: true,
                 description: "With a piece in hand, makes the snap point you cycled to YOUR default for that piece: the next time you take it out, it starts on that point. Pressing it again on the same point clears it. Per player and per piece, saved on this computer only (config\\FiresAdminPrefabs\\SnapDefaults). Default Shift + Q. SnapDefaultKey_Ctrl / _Shift / _Alt pick the modifiers. Live.");
 
-            configSnapEdgeSpacing = config.Bind("Hammer", "Snap edge point spacing", 1f,
-                "Pieces with no snap points of their own and a side over 2 m get a point this many metres apart along every edge. 0 = corners and centres only. Pieces with a side over 20 m never get edge points. Read when a piece loads: restart to apply.");
+            configRedrawSharedIcons = config.Bind("Hammer", "Redraw shared icons", true, "Pieces added to the Hammer that came with the same picture as another piece get their own icon, drawn from their model.");
+            // 1.1.431 ([ghost], Fire 11-16): [Hammer] Snap edge point spacing removed: FAP adds corners + centres only (VASnapGeometry).
             configOffsetUsesCentre = config.Bind("Hammer", "Offset rotation uses the piece centre", true,
                 "With Infinity Hammer frozen and an offset set, a piece's centre follows the circle instead of its origin, so pieces with an off-centre origin (grausten walls) make a smooth arc.");
 

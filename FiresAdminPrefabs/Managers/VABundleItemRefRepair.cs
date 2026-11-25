@@ -33,7 +33,8 @@ namespace VerdantsAscent.Managers
             { "Pickable_MeteoriteNew_bal", "FlametalOre" }, { "Pickable_Mint_bal", "Mint_bal" },
             { "Pickable_MountainCaveCrystal_bal", "Crystal" }, { "Pickable_Mugwort_bal", "Mugwort_bal" },
             { "Pickable_MushroomFarm_bal", "Mushroom" }, { "Pickable_Mushroom_Darkbul_bal", "Darkbul_bal" },
-            { "Pickable_Mushroom_Random_bal", "Moss_bal" }, { "Pickable_Mushroom_blueFarm_bal", "MushroomBlue" },
+            { "Pickable_Mushroom_Random_bal", "Moss_bal" }, { "Pickable_Mushroom_Random_Farm_bal", "Moss_bal" },   // 1.1.434: the farm twin = its sibling's item (Balrond VegetationDropFix gives the sibling Moss_bal x1)
+            { "Pickable_Mushroom_blueFarm_bal", "MushroomBlue" },
             { "Pickable_Mushroom_blueNew_bal", "MushroomBlue" }, { "Pickable_Mushroom_blue_bal", "MushroomBlue" },
             { "Pickable_Mushroom_grayFarm_bal", "GrayMushroom_bal" }, { "Pickable_Mushroom_grayNew_bal", "GrayMushroom_bal" },
             { "Pickable_Mushroom_yellowFarm_bal", "MushroomYellow" }, { "Pickable_Mushroom_yellow_bal", "MushroomYellow" },

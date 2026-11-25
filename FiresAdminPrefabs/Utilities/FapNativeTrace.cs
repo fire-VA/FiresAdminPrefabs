@@ -28,6 +28,18 @@ namespace VerdantsAscent.Utilities
         internal static bool On => !VaPieces.IsDedicatedServer && (ConfigManager.Instance?.configBuildMenuNativeTrace?.Value ?? true);
         internal static bool InWindow => On && Time.unscaledTime < s_windowUntil;
 
+        // 1.1.423 ([ghost], lead 11-12; Fire: FAP as clean as possible on frame time): [Diagnostics] BuildMenuNativeTrace (default false) now also
+        // decides whether these hooks exist at all. Off = Prepare() false = none of this class's equip / build-menu / Hud hooks is applied, so
+        // UpdatePieceBuildStatusAll / UpdatePieceList / UpdateAvailablePiecesList run without our wrapper. Turn it on and restart to trace.
+        // An unbound key (ConfigManager not up yet) = off here, never "on by default".
+        private static bool Prepare()
+        {
+            bool on = !VaPieces.IsDedicatedServer && (ConfigManager.Instance?.configBuildMenuNativeTrace?.Value ?? false);
+            if (!s_prepareSaid) { s_prepareSaid = true; VaPieces.Log?.LogInfo($"[Startup] Build menu trace {(on ? "ON: hooks applied" : "off, not patched")} ([Diagnostics] BuildMenuNativeTrace; restart after turning it on)"); }
+            return on;
+        }
+        private static bool s_prepareSaid;
+
         internal static void OpenWindow() { s_windowUntil = Time.unscaledTime + 5f; s_buttons = 0; }
 
         public static void Step(string step, string detail = null)

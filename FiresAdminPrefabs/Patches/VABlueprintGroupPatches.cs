@@ -222,8 +222,38 @@ namespace VerdantsAscent.Patches
             private static float _holdStartTime = -1f;
             private static bool _wasHolding;
 
+            // 1.1.414 ([saddles] 11-10, [worldgen]'s trace of Fire's 30 s "not ready" spawn wait): while this hold returns false, vanilla's
+            // FindSpawnPoint never runs, and FindSpawnPoint is what points ZNet's reference position at the spawn (Game.cs:610 / :639 / :661 / :664,
+            // 10-28 decompile). The reference stayed at 0,0,0, so the zones around the world origin loaded and the real spawn area loaded only after
+            // the hold ended. Each held frame now sets the reference to the point FindSpawnPoint would choose, in its order (:607-664): the logout
+            // point if there is one and this is not a respawn after death, else the custom spawn point (bed), else the start location's icon + 2 m up,
+            // else 0,0,0. Only SetReferencePosition: no respawn timer, no spawn, no profile change; vanilla's FindSpawnPoint takes over unchanged
+            // after the hold, and sets the same point again. Gated on m_requestRespawn exactly as vanilla gates FindSpawnPoint (:808).
+            private static readonly AccessTools.FieldRef<Game, PlayerProfile> s_profile = AccessTools.FieldRefAccess<Game, PlayerProfile>("m_playerProfile");
+            private static readonly AccessTools.FieldRef<Game, bool> s_requestRespawn = AccessTools.FieldRefAccess<Game, bool>("m_requestRespawn");
+            private static readonly AccessTools.FieldRef<Game, bool> s_afterDeath = AccessTools.FieldRefAccess<Game, bool>("m_respawnAfterDeath");
+            private static bool _saidReference;
+
+            private static void PointReferenceAtSpawn(Game game)
+            {
+                if (game == null || ZNet.instance == null || ZoneSystem.instance == null || !s_requestRespawn(game)) return;
+                PlayerProfile profile = s_profile(game);
+                if (profile == null) return;
+                Vector3 point;
+                if (!s_afterDeath(game) && profile.HaveLogoutPoint()) point = profile.GetLogoutPoint();                  // :607-610
+                else if (profile.HaveCustomSpawnPoint()) point = profile.GetCustomSpawnPoint();                          // :636-639
+                else if (ZoneSystem.instance.GetLocationIcon(game.m_StartLocation, out Vector3 pos)) point = pos + Vector3.up * 2f;   // :658-661
+                else point = Vector3.zero;                                                                                // :664
+                ZNet.instance.SetReferencePosition(point);
+                if (!_saidReference)
+                {
+                    _saidReference = true;
+                    VaPieces.Log?.LogDebug($"reference position pointed at spawn during bake hold ({point.x:0}, {point.z:0})");
+                }
+            }
+
             [HarmonyPrefix]
-            public static bool Prefix()
+            public static bool Prefix(Game __instance)
             {
                 bool isHost;
                 try { isHost = ZNet.instance != null && ZNet.instance.IsServer(); }
@@ -259,6 +289,8 @@ namespace VerdantsAscent.Patches
                     ReleaseHold();
                     return true;
                 }
+                try { PointReferenceAtSpawn(__instance); }
+                catch (Exception ex) { Debug.LogWarning($"[{VaPieces.PluginName}] could not point the reference position at the spawn during the bake hold: {ex.Message}"); }
                 return false;
             }
 

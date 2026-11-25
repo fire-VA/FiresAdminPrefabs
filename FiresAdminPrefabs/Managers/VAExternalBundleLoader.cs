@@ -137,6 +137,7 @@ namespace VerdantsAscent.Managers
         private sealed class PendingBundle
         {
             public string Path;
+            public string OpenedPath;   // 1.1.414: the file actually opened (VABundleLz4Cache's verified LZ4 copy, or Path); labels, manifests and lazy stamps stay on Path
             public AssetBundleCreateRequest CreateRequest;
             public AssetBundleRequest AssetRequest;
             public AssetBundle Bundle;
@@ -229,9 +230,29 @@ namespace VerdantsAscent.Managers
                     Debug.LogWarning($"{VaPieces.PluginName}: bundle '{name}' is in Assets and in a mod; using the mod's ({modCopy}). Remove the loose file.");
                 else byName[name] = file;
             }
+            PickPlatformTwins(byName);   // 1.1.433
             var files = new string[byName.Count];
             byName.Values.CopyTo(files, 0);
             return files;
+        }
+
+        // 1.1.433 ([ghost], the FiresGlass move: [visual] builds "firesglass" for Windows and "firesglass_linux" for Linux): a bundle and its
+        // "<name>_linux" twin hold the same assets built per platform, and Unity refuses to load the second (same content). When both are present
+        // only this platform's one loads (Linux = the _linux file, anything else = the plain one); a lone file loads as before.
+        private const string LinuxTwinSuffix = "_linux";
+
+        private static void PickPlatformTwins(Dictionary<string, string> byName)
+        {
+            bool linux = SystemInfo.operatingSystemFamily == OperatingSystemFamily.Linux;
+            foreach (var name in new List<string>(byName.Keys))
+            {
+                if (!name.EndsWith(LinuxTwinSuffix, StringComparison.OrdinalIgnoreCase)) continue;
+                string plain = name.Substring(0, name.Length - LinuxTwinSuffix.Length);
+                if (!byName.ContainsKey(plain)) continue;
+                string drop = linux ? plain : name;
+                byName.Remove(drop);
+                VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: bundle '{drop}' skipped: its platform twin '{(linux ? name : plain)}' is the one for this {(linux ? "Linux" : "non-Linux")} system");
+            }
         }
 
         // A bundle file by name: a mod's copy, else Assets.
@@ -261,6 +282,7 @@ namespace VerdantsAscent.Managers
             }
 
             Debug.Log($"{VaPieces.PluginName}: VAExternalBundleLoader scanning '{AssetsDir}' — {files.Length} file(s) present (async).");
+            VABundleLz4Cache.ScanAll();   // 1.1.414: queues LZMA bundles (root + Near) for a one-time LZ4 copy on the menu
 
             foreach (var path in files)
             {
@@ -275,13 +297,14 @@ namespace VerdantsAscent.Managers
                 _acceptedFileCount++;
 
                 AssetBundleCreateRequest createRequest = null;
-                try { createRequest = AssetBundle.LoadFromFileAsync(path); }
+                string openPath = VABundleLz4Cache.OpenPath(path);
+                try { createRequest = AssetBundle.LoadFromFileAsync(openPath); }
                 catch (Exception ex)
                 {
                     Debug.LogWarning($"{VaPieces.PluginName}: LoadFromFileAsync threw on '{Path.GetFileName(path)}': {ex.Message}");
                 }
                 if (createRequest != null)
-                    _pendingBundles.Add(new PendingBundle { Path = path, CreateRequest = createRequest, ManifestTask = StartManifestRead(BundleLabel(path)) });
+                    _pendingBundles.Add(new PendingBundle { Path = path, OpenedPath = openPath, CreateRequest = createRequest, ManifestTask = StartManifestRead(BundleLabel(path)) });
             }
 
             if (VaPieces.Instance != null) VaPieces.Instance.StartCoroutine(DriveAsyncLoad());
@@ -463,7 +486,14 @@ namespace VerdantsAscent.Managers
             {
                 pending.Bundle = pending.CreateRequest != null
                     ? pending.CreateRequest.assetBundle
-                    : AssetBundle.LoadFromFile(pending.Path);
+                    : AssetBundle.LoadFromFile(pending.OpenedPath ?? pending.Path);
+                // 1.1.414: a cached LZ4 copy that does not open is dropped and the shipped file opens instead, as before the cache
+                if (pending.Bundle == null && pending.OpenedPath != null && !string.Equals(pending.OpenedPath, pending.Path, StringComparison.OrdinalIgnoreCase))
+                {
+                    VABundleLz4Cache.CopyFailedToOpen(pending.Path, pending.OpenedPath);
+                    pending.OpenedPath = pending.Path;
+                    pending.Bundle = AssetBundle.LoadFromFile(pending.Path);
+                }
             }
             catch (Exception ex)
             {
@@ -708,6 +738,7 @@ namespace VerdantsAscent.Managers
                 foreach (var smr in prefab.GetComponentsInChildren<SkinnedMeshRenderer>(true)) if (smr.sharedMesh != null) keep.Add(smr.sharedMesh);
                 if (deferred.Contains(prefab.name))
                     foreach (var mf in prefab.GetComponentsInChildren<MeshFilter>(true)) if (mf.sharedMesh != null) keep.Add(mf.sharedMesh);
+                KeepParticleMeshes(prefab, keep);   // 1.1.432
             }
 
             var done = new HashSet<Mesh>();
@@ -718,7 +749,7 @@ namespace VerdantsAscent.Managers
                 foreach (var mf in prefab.GetComponentsInChildren<MeshFilter>(true))
                 {
                     var mesh = mf.sharedMesh;
-                    if (mesh == null || !mesh.isReadable || keep.Contains(mesh) || !done.Add(mesh)) continue;
+                    if (mesh == null || !mesh.isReadable || keep.Contains(mesh) || IsSharedPrimitive(mesh) || !done.Add(mesh)) continue;
                     try { vertices += mesh.vertexCount; mesh.UploadMeshData(markNoLongerReadable: true); }
                     catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: could not drop the CPU copy of mesh '{mesh.name}' in '{bundleLabel}': {ex.Message}"); }
                 }
@@ -727,9 +758,40 @@ namespace VerdantsAscent.Managers
             _nonReadableMeshes += done.Count;
             _nonReadableVertices += vertices;
             VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: '{bundleLabel}': {done.Count} render mesh(es), {vertices:N0} vertices, dropped their CPU copy; "
-                + $"{keep.Count} kept readable (collision, skinned, deferred). All bundles so far: {_nonReadableMeshes} mesh(es), {_nonReadableVertices:N0} vertices "
+                + $"{keep.Count} kept readable (collision, skinned, deferred, particle). All bundles so far: {_nonReadableMeshes} mesh(es), {_nonReadableVertices:N0} vertices "
                 + "(Performance > ClientNonReadableRenderMeshes)");
         }
+
+        // 1.1.432 ([generator], lead 11-16, Fire's client log: 117 x Unity "No mesh data available for mesh Sphere on particle system shockwave /
+        // Distortion Shockwave / Dome / Ring ...", right after these drops): a particle system reads its mesh on the CPU, both the renderer's mesh
+        // particles (ParticleSystemRenderer in Mesh mode) and a Mesh-shaped emitter, so a mesh it uses must stay readable. Without this, a mesh that
+        // a MeshFilter in the same bundle also used lost its CPU copy, and the particles could neither emit from nor draw it.
+        private static readonly Mesh[] s_particleMeshBuffer = new Mesh[8];
+        private static void KeepParticleMeshes(GameObject prefab, HashSet<Mesh> keep)
+        {
+            foreach (var psr in prefab.GetComponentsInChildren<ParticleSystemRenderer>(true))
+            {
+                if (psr.mesh != null) keep.Add(psr.mesh);
+                int n = Mathf.Min(psr.meshCount, s_particleMeshBuffer.Length);
+                if (n > 0) { psr.GetMeshes(s_particleMeshBuffer); for (int i = 0; i < n; i++) if (s_particleMeshBuffer[i] != null) keep.Add(s_particleMeshBuffer[i]); }
+                Array.Clear(s_particleMeshBuffer, 0, s_particleMeshBuffer.Length);
+            }
+            foreach (var ps in prefab.GetComponentsInChildren<ParticleSystem>(true))
+            {
+                var shape = ps.shape;
+                if (shape.mesh != null) keep.Add(shape.mesh);
+                if (shape.meshRenderer != null) { var mf = shape.meshRenderer.GetComponent<MeshFilter>(); if (mf != null && mf.sharedMesh != null) keep.Add(mf.sharedMesh); }
+                if (shape.skinnedMeshRenderer != null && shape.skinnedMeshRenderer.sharedMesh != null) keep.Add(shape.skinnedMeshRenderer.sharedMesh);
+            }
+        }
+
+        // 1.1.432: Unity's built-in primitives are ONE shared mesh for the whole game (every bundle's and vanilla's particle systems use the same
+        // "Sphere"), so a per-bundle keep set cannot protect them: one bundle's MeshFilter dropped its CPU copy and the next bundle's particle systems
+        // warned. They are tiny (Sphere 515, Capsule 550, Plane 121, Cylinder 88, Cube 24, Quad 4 vertices), so they always keep it. [ghost] review:
+        // name AND a tiny vertex count, so a bundle's own large mesh that happens to be named "Plane" / "Sphere" still drops its CPU copy.
+        private const int SharedPrimitiveMaxVertices = 1024;
+        private static readonly HashSet<string> s_sharedPrimitiveNames = new HashSet<string>(StringComparer.Ordinal) { "Sphere", "Cube", "Capsule", "Cylinder", "Plane", "Quad" };
+        private static bool IsSharedPrimitive(Mesh mesh) => mesh != null && mesh.vertexCount <= SharedPrimitiveMaxVertices && s_sharedPrimitiveNames.Contains(mesh.name);
 
         private static string BundleLabel(string path)
         {
@@ -1309,6 +1371,7 @@ namespace VerdantsAscent.Managers
                 HealArmorMaterialWithoutBodyTextures(prefab);
                 healTicks += Lap(ref mark);
                 VABundleAssetRouter.Apply(prefab, hierarchy);
+                VAFiresGlass.Setup(prefab);   // 1.1.433: the FiresGlass windows' collider / Piece / icon (no-op for every other prefab)
                 routerTicks += Lap(ref mark);
                 scene.m_prefabs.Add(prefab);
                 sceneNames.Add(prefab.name);

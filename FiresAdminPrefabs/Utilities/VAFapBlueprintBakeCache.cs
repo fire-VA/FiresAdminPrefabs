@@ -93,6 +93,7 @@ namespace VerdantsAscent.Utilities
         {
             if (string.IsNullOrEmpty(blueprintName) || cached == null) return;
             _byName[blueprintName] = cached;
+            VAFarBakeSource.BakeChanged(blueprintName);   // 1.1.426: EBM's far tier re-reads this bake
 
             try
             {
@@ -116,6 +117,7 @@ namespace VerdantsAscent.Utilities
         {
             if (string.IsNullOrEmpty(blueprintName) || cached == null) return;
             _byName[blueprintName] = cached;
+            VAFarBakeSource.BakeChanged(blueprintName);   // 1.1.426
         }
 
         // Drops one blueprint and destroys its Meshes so a re-bake starts clean. Any
@@ -129,6 +131,7 @@ namespace VerdantsAscent.Utilities
                     if (part?.CombinedMesh != null) UnityEngine.Object.Destroy(part.CombinedMesh);
             }
             _byName.Remove(blueprintName);
+            VAFarBakeSource.BakeChanged(blueprintName);   // 1.1.426: its meshes are gone; EBM re-asks
             return true;
         }
     }

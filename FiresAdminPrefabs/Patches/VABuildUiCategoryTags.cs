@@ -228,8 +228,14 @@ namespace VerdantsAscent.Patches
                     ? "(destroyed)"
                     : $"{piece.gameObject.name} (category {(int)piece.m_category}{(piece.m_repairPiece ? ", repair" : "")}{(piece.m_removePiece ? ", remove" : "")})");
             }
-            Debug.LogWarning($"{VaPieces.PluginName}: build menu row '{name}' {what}. Its list holds {pieces.Count} entr{(pieces.Count == 1 ? "y" : "ies")}: "
-                + $"{string.Join(", ", described)}{(pieces.Count > described.Count ? ", ..." : "")}.");
+            // 1.1.426 ([2ic]'s sweep of Fire's run_3: 12 player-visible Warnings at the first hammer open). A row whose list holds ONLY tool actions
+            // (repair / remove: vanilla files category-All pieces such as piece_repair into every category's list) is an empty tab: expected,
+            // e.g. a mod tab with nothing buildable for this player. That is a Debug line. A destroyed entry is a real problem and stays a Warning.
+            bool anyDestroyed = false;
+            foreach (var piece in pieces) if (piece == null) { anyDestroyed = true; break; }
+            string line = $"{VaPieces.PluginName}: build menu row '{name}' {what}. Its list holds {pieces.Count} entr{(pieces.Count == 1 ? "y" : "ies")}: "
+                + $"{string.Join(", ", described)}{(pieces.Count > described.Count ? ", ..." : "")}.";
+            if (anyDestroyed) Debug.LogWarning(line); else VaPieces.Log?.LogDebug(line);
         }
 
     }

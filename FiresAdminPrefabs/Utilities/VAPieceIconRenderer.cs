@@ -328,6 +328,13 @@ namespace VerdantsAscent.Utilities
             {
                 KickFlush();
             }
+
+            // 1.1.429 ([ghost], lead 11-16, fix A): in a world that is still loading (Game + ZNetScene up, the loading screen showing) the
+            // flush starts now instead of at player spawn, so cache reads and the cold-cache render drain ride the loading screen
+            // (ProcessQueue then runs at FapInitBudget's 40 ms/frame there). The rig log had the spawn gate fire at :9910 and the loading
+            // screen close at :9958, so the old gate left the whole 111 s drain for play. KickFlush dedupes; the spawn gate still kicks too.
+            if (!_playerReady && !s_quitting && Game.instance != null && ZNetScene.instance != null && FapInitBudget.Loading)
+                KickFlush();
         }
 
         // Fired by PlayerSpawnGate.RunWhenLocalReady once the local
@@ -765,6 +772,49 @@ namespace VerdantsAscent.Utilities
             return false;
         }
 
+        // [saddles] 11-09 (player report, Fire: the marked pieces have the wrong icon). A piece that arrives with an icon was never drawn (Enqueue returns at m_icon != null),
+        // so a family of pieces whose prefabs all point at one sprite (the repeated cube, wedge and step in the black marble rows) shows that one picture for all of them.
+        // [Icons] Redraw shared icons: a FAP-added piece whose sprite is also used by another piece on the Hammer is drawn from its own model. The old sprite is kept for a
+        // render that fails or comes back empty. Pieces the game already had on the Hammer are never changed. Runs from cached PNGs after the first time.
+        private static readonly HashSet<Piece> s_redraw = new HashSet<Piece>();
+        private static bool s_checkEmpty;
+
+        public static int RedrawSharedIcons(IEnumerable<GameObject> addedByFap, IEnumerable<GameObject> hammer)
+        {
+            if (VaPieces.IsHeadless) return 0;
+            var instance = EnsureInstance();
+            if (instance == null) return 0;
+            var seen = new HashSet<GameObject>();
+            var users = new Dictionary<int, int>();
+            void Count(GameObject go)
+            {
+                if (go == null || !seen.Add(go)) return;
+                var icon = go.GetComponent<Piece>()?.m_icon;
+                if (icon == null) return;
+                users.TryGetValue(icon.GetInstanceID(), out int n);
+                users[icon.GetInstanceID()] = n + 1;
+            }
+            foreach (var go in addedByFap) Count(go);
+            if (hammer != null) foreach (var go in hammer) Count(go);
+
+            int redrawn = 0;
+            foreach (var go in addedByFap)
+            {
+                var piece = go != null ? go.GetComponent<Piece>() : null;
+                var icon = piece != null ? piece.m_icon : null;
+                if (icon == null || VALazyBundles.IsStub(go) || VALazyBundles.IsReleased(go)) continue;
+                if (!users.TryGetValue(icon.GetInstanceID(), out int n) || n < 2) continue;
+                VaPieces.Log?.LogDebug($"[IconRedraw] '{go.name}': its icon '{icon.name}' is shared with {n - 1} other piece(s); drawing it from its own model");
+                instance._reloadPrevious[piece] = icon;
+                s_redraw.Add(piece);
+                piece.m_icon = null;
+                Enqueue(piece);
+                redrawn++;
+            }
+            Debug.Log($"{VaPieces.PluginName}: [IconRedraw] {redrawn} piece(s) with an icon shared with another piece are being drawn from their own model.");
+            return redrawn;
+        }
+
         // Console-command target. Clears the cache, nulls out m_icon on every
         // FAP-managed Piece, and re-queues each for fresh render. Bypasses
         // Enqueue's gate-one-shot — runs after the gate already fired in-world,
@@ -949,9 +999,29 @@ namespace VerdantsAscent.Utilities
         private static readonly HarmonyLib.AccessTools.FieldRef<Game, bool> GameShuttingDown =
             HarmonyLib.AccessTools.FieldRefAccess<Game, bool>("m_shuttingDown");
 
-        private static bool IsSafeToRender()
+        // 1.1.429 ([ghost], lead 11-16 RigPerf-Full arrival: 22 post-load [Hitch] rows of 25-212 ms were ProcessQueue on a cold icon cache,
+        // "0 cache hit(s), 4442 cache miss(es)", the whole 111 s drain after the loading screen): the queue may also drain BEHIND the loading
+        // screen. The stage is far above the world and needs no player (IsSafeForExplicitRender, :584); the 1.1.231/1.1.232 guards stay:
+        // nothing renders once logout / quit / shutdown began, and lazy stubs / released pieces are skipped at the dequeue (:1086).
+        // 1.1.429 ([2ic] MUST 1): the quit hook (R-1013AO) installs on every render path, the loading-screen one included
+        private static void EnsureQuitHook()
         {
             if (!s_quitHooked) { s_quitHooked = true; Application.quitting += () => { s_quitting = true; try { s_iconWrites.Wait(2000); } catch { } }; }
+        }
+
+        private static bool IsSafeForQueueRender()
+        {
+            EnsureQuitHook();
+            if (VaPieces.IsHeadless || s_quitting || Game.instance == null) return false;
+            try { if (GameShuttingDown(Game.instance)) return false; } catch { }
+            if (ZNetScene.instance == null) return false;
+            if (FapInitBudget.Loading) return true;
+            return IsSafeToRender();
+        }
+
+        private static bool IsSafeToRender()
+        {
+            EnsureQuitHook();
             if (VaPieces.IsHeadless) return false;
             // 1.1.231 (R-1013AO): nothing renders once logout or quit has begun.
             if (s_quitting || Game.instance == null) return false;
@@ -990,13 +1060,14 @@ namespace VerdantsAscent.Utilities
             int totalParticleOnly = 0;  // has particles, no mesh — intentional skip (particle path disabled)
             int totalEmpty = 0;         // no mesh AND no particles — prefab has nothing renderable
             int totalOtherNull = 0;     // had mesh content but RenderIcon still returned null (unexpected)
+            int totalRefused = 0;       // 1.1.426: the prefab ships missing meshes/materials (MissingRenderAssets): refused on purpose, old icon kept
             int totalThrown = 0;
             float startTime = Time.realtimeSinceStartup;
             int lastProgressLogAtRendered = 0;
 
             // 1. Wait for safe-to-render.
             int waitFrames = 0;
-            while (!IsSafeToRender())
+            while (!IsSafeForQueueRender())
             {
                 yield return null;
                 waitFrames++;
@@ -1006,24 +1077,39 @@ namespace VerdantsAscent.Utilities
                 Debug.Log($"{VaPieces.PluginName}: VAPieceIconRenderer waited {waitFrames} frame(s) for safe-to-render gate before starting queue drain (queue depth: {_queue.Count}).");
             }
             // Half-second slack so the spawn-finalization frame isn't
-            // contending with our first heavy render.
-            for (int i = 0; i < SpawnSlackFrames; i++) yield return null;
+            // contending with our first heavy render (1.1.429: only when the drain starts in play; behind the loading screen nothing shows).
+            if (!FapInitBudget.Loading) for (int i = 0; i < SpawnSlackFrames; i++) yield return null;
 
-            const float FrameBudgetMs = 6f;
-            const int MaxPerFrame = 4;
+            // 1.1.429 (A + B, lead 11-16): behind the loading screen FapInitBudget's 40 ms/frame (Fire's rule: a longer load beats post-load
+            // hitches); in play ONE render per frame, only on a frame that already made 60 fps (one render runs whole, 25-212 ms on the rig,
+            // so the old 6 ms / 4-per-frame check before each render could not cap it). Was 6 ms / 4 per frame everywhere.
+            const float PlayFrameBudgetMs = 2f, CheapFrameSec = 1f / 60f;
+            const int PlayMaxPerFrame = 1, LoadingMaxPerFrame = 64;
             const int ProgressLogInterval = 500;
+            int loadingRenders = 0, playRenders = 0, playSkippedFrames = 0, forcedRenders = 0, skipRun = 0;
+            const int MaxSkipRun = 30;   // [2ic] MUST 2: a PC that never makes 60 fps still renders one icon every 31st frame (no blank icons)
 
             while (_queue.Count > 0)
             {
                 // Mid-flight teleport / scene change? Pause until the
                 // player is safe to write to again. Prevents renders
                 // racing with player-spawn finalization on teleport.
-                if (!IsSafeToRender())
+                if (!IsSafeForQueueRender())
                 {
                     yield return null;
                     continue;
                 }
 
+                bool loading = FapInitBudget.Loading;
+                bool forced = false;
+                if (!loading && Time.unscaledDeltaTime > CheapFrameSec)
+                {
+                    if (skipRun < MaxSkipRun) { skipRun++; playSkippedFrames++; yield return null; continue; }
+                    forced = true;
+                }
+                skipRun = 0;
+                float FrameBudgetMs = loading ? FapInitBudget.LoadingBudgetMs : PlayFrameBudgetMs;
+                int MaxPerFrame = loading ? LoadingMaxPerFrame : PlayMaxPerFrame;
                 float frameStartMs = Time.realtimeSinceStartup * 1000f;
                 int rendersThisFrame = 0;
 
@@ -1060,7 +1146,10 @@ namespace VerdantsAscent.Utilities
                         }
                         else
                         {
+                            s_checkEmpty = s_redraw.Contains(piece);
+                            s_why = null;   // 1.1.426: the reason below is this render's, never a stale one
                             sprite = RenderIcon(pieceObject);
+                            s_checkEmpty = false;
                         }
                     }
                     catch (System.Exception ex)
@@ -1070,6 +1159,7 @@ namespace VerdantsAscent.Utilities
                         threw = true;
                     }
 
+                    if (s_redraw.Remove(piece)) VaPieces.Log?.LogDebug($"[IconRedraw] '{pieceObject.name}': {(sprite != null ? "drawn" : "kept its old icon: " + s_why)}");
                     if (sprite == null && _reloadPrevious.TryGetValue(piece, out var previous) && previous != null)
                         piece.m_icon = previous;   // fap_reload_icons never blanks an icon it could not re-render
                     _reloadPrevious.Remove(piece);
@@ -1087,9 +1177,14 @@ namespace VerdantsAscent.Utilities
                             if (hasParticles) totalParticleOnly++;
                             else totalEmpty++;
                         }
+                        // 1.1.426 ([2ic] sweep, Fire run_3 "UNEXPECTED: other-null=11"): all 11 were RenderIcon REFUSING on purpose because the
+                        // prefab itself has missing meshes or materials (MissingRenderAssets, :1355; e.g. ashwood_*_alt 5/9 meshes missing,
+                        // Trailership 5/91). That is the prefab's state, not a render failure, so it gets its own bucket.
+                        else if (s_why != null && s_why.StartsWith("refused", System.StringComparison.Ordinal)) totalRefused++;
                         else totalOtherNull++;
                     }
                     rendersThisFrame++;
+                    if (loading) loadingRenders++; else { playRenders++; if (forced) forcedRenders++; }
                 }
 
                 // Progress log every ProgressLogInterval successful renders so the
@@ -1110,7 +1205,9 @@ namespace VerdantsAscent.Utilities
             // see, not the original startQueueDepth (which can be
             // tiny because FlushPendingPaced kicks ProcessQueue on
             // the first miss when only 1 item is in the queue).
-            int totalAttempted = totalRendered + totalParticleOnly + totalEmpty + totalOtherNull + totalThrown;
+            int totalAttempted = totalRendered + totalParticleOnly + totalEmpty + totalOtherNull + totalThrown + totalRefused;
+            // 1.1.429: where the drain ran (the proof line for A + B)
+            VaPieces.Log?.LogInfo($"[IconRender] queue drained: {loadingRenders} item(s) behind the loading screen ({FapInitBudget.LoadingBudgetMs:0} ms/frame), {playRenders} in play (1 per frame, frames under 16.7 ms only; {playSkippedFrames} slow frame(s) skipped, {forcedRenders} forced after {MaxSkipRun} slow frames in a row),{Time.realtimeSinceStartup - startTime:F1} s");
 
             // Verbose keeps the per-wave breakdown; the default path folds
             // every wave into the one debounced 🖼 ICONS DONE banner.
@@ -1120,7 +1217,8 @@ namespace VerdantsAscent.Utilities
                     $"{VaPieces.PluginName}: VAPieceIconRenderer queue drain complete — " +
                     $"rendered={totalRendered}/{totalAttempted} in {Time.realtimeSinceStartup - startTime:F1}s. " +
                     $"INTENTIONAL SKIPS: particle-only={totalParticleOnly} (fx_/vfx_/sfx_ — fall back to vanilla shield), " +
-                    $"empty={totalEmpty} (no mesh, no particles — nothing to render). " +
+                    $"empty={totalEmpty} (no mesh, no particles — nothing to render), " +
+                    $"refused={totalRefused} (the prefab itself has missing meshes/materials; old icon kept; names in the Debug [IconRender] refuse lines). " +
                     $"UNEXPECTED: other-null={totalOtherNull} (had mesh but render still failed — investigate if non-zero), " +
                     $"threw={totalThrown}. " +
                     $"(startQueueDepth at coroutine launch was {startQueueDepth}; the queue grew while draining.)");
@@ -1304,7 +1402,7 @@ namespace VerdantsAscent.Utilities
             if (prefab == null || _iconCamera == null) return null;
             // 1.1.228: a lazy stub has no mesh; its icon comes from the cache, or from the real prefab once realized.
             if (prefab == null || string.IsNullOrEmpty(prefab.name) || VALazyBundles.IsStub(prefab) || VALazyBundles.IsReleased(prefab)) { s_why = "unnamed, a lazy stub or released"; return null; }
-            if (!(s_saveName != null ? IsSafeForExplicitRender() : IsSafeToRender())) { s_why = "not safe to render now (logout/quit or no player)"; return null; }
+            if (!(s_saveName != null ? IsSafeForExplicitRender() : IsSafeForQueueRender())) { s_why = "not safe to render now (logout/quit, or no player in play)"; return null; }   // 1.1.429: the queue gate (also behind the loading screen)
             string missing = MissingRenderAssets(prefab);
             if (missing != null && s_saveName == null) { s_refusedRenders++; s_why = "refused: " + missing; VaPieces.Log?.LogDebug($"[IconRender] refuse '{prefab.name}' (#{prefab.GetInstanceID()}, scene '{prefab.scene.name}'): {missing}"); return null; }
             if (s_saveName != null) s_why = "content: " + ContentCensus(prefab);
@@ -1330,6 +1428,13 @@ namespace VerdantsAscent.Utilities
                         int dropped = DisableBrokenRenderers(renderTarget, out int left);
                         if (dropped > 0) s_why += $"; {dropped} broken renderer(s) left out, {left} drawn";
                         if (left == 0) { s_why += "; nothing drawable left"; NetworkObjectHelper.SafeDestroyImmediate(renderTarget); renderTarget = null; return null; }
+                    }
+                    // 1.1.427: vanilla's empty MeshFilters (LOD "low" slots, destruction chunks) are now let through MissingRenderAssets; the
+                    // proxy leaves those renderers out so they can't draw anything odd, the same pass the explicit render uses
+                    else if (renderTarget != null)
+                    {
+                        DisableBrokenRenderers(renderTarget, out int leftAuto);
+                        if (leftAuto == 0) { s_why = "refused: nothing drawable after leaving out empty renderers"; NetworkObjectHelper.SafeDestroyImmediate(renderTarget); renderTarget = null; return null; }
                     }
                 }
                 else if (HasParticleContent(prefab))
@@ -1403,7 +1508,7 @@ namespace VerdantsAscent.Utilities
                 }
 
                 if (tex == null) { s_why += "; the capture returned nothing"; return null; }
-                if (s_saveName != null)
+                if (s_saveName != null || s_checkEmpty)
                 {
                     int drawn = 0;
                     var px = tex.GetPixels32();
@@ -3146,10 +3251,22 @@ namespace VerdantsAscent.Utilities
             foreach (var r in prefab.GetComponentsInChildren<Renderer>(true))
             {
                 if (r == null || !r.enabled || r is ParticleSystemRenderer) continue;
+                // 1.1.427: a renderer with no mesh draws nothing, so its materials don't matter either
+                var rmf = r is MeshRenderer ? r.GetComponent<MeshFilter>() : null;
+                if (rmf != null && rmf.sharedMesh == null) continue;
+                if (r is SkinnedMeshRenderer rsk && rsk.sharedMesh == null) continue;
                 renderers++;
                 foreach (var m in r.sharedMaterials) if (m == null || m.shader == null) { noMat++; break; }
             }
-            return noMesh == 0 && noMat == 0 ? null : $"{noMesh}/{meshes} mesh(es) missing, {noMat}/{renderers} renderer(s) with a missing material";
+            // 1.1.427 (Fire 11-12: "all ashwood or black marble variants should in fact have an icon, check the 1.0 unity rip"). The rip shows
+            // vanilla SHIPS empty MeshFilters: ashwood_wall_beam_26_alt (in the game's Pieces assets) has m_Mesh {fileID: 0}
+            // on 5 of its 8 MeshFilters (the "low" LOD slot of New / Worn / Broken and the two Destruction chunks), exactly run_3's "5/9 mesh(es)
+            // missing". Those renderers draw nothing in the game either, so a null mesh is NOT a released asset (that case is IsReleased /
+            // IsStub above, 1.1.233's reason for this check). Refuse only when nothing has a mesh, or a renderer that does draw has a missing
+            // material (Trailership, the Lox calf pick: still refused, their materials really are gone).
+            if (meshes > 0 && noMesh == meshes) return $"{noMesh}/{meshes} mesh(es) missing (nothing to draw)";
+            if (noMat > 0) return $"{noMesh}/{meshes} mesh(es) empty, {noMat}/{renderers} drawing renderer(s) with a missing material";
+            return null;
         }
 
         private static bool HasMeshContent(GameObject prefab)

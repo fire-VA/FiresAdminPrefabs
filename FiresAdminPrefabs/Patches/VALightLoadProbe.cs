@@ -10,6 +10,7 @@ namespace VerdantsAscent.Patches
     [HarmonyPatch(typeof(ZNetView), nameof(ZNetView.LoadFields))]
     internal static class VALightLoadProbe
     {
+        private static bool Prepare() => VerdantsAscent.Utilities.FapDiagnosticKeys.On(VerdantsAscent.Utilities.FapDiagnosticKeys.LightLoadProbe);   // 1.1.422: [Diagnostics] Light Load Probe, OFF = not patched
         private static readonly HashSet<ZDOID> s_logged = new HashSet<ZDOID>();
 
         [HarmonyPostfix]

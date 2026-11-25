@@ -8,15 +8,17 @@ namespace VerdantsAscent.Managers.Snapping
     //   one point (bottom centre): machines, crafting stations + extensions, cartography table, tables
     //   ships, carts: origin
     //   bounds under 0.1 m: origin, top centre, bottom centre (bottom centre first); no bounds at all: origin
-    //   otherwise: 8 corners (bottom left first), bottom centre, top centre, centre;
-    //   any side over 2 m and none over 20 m: also one point per spacing along all 12 edges (config, 0 = none)
+    //   otherwise: 8 corners (bottom left first), bottom centre, top centre, centre
+    // 1.1.431 ([ghost], Fire 11-16, Arbby: "the ice waterfall thing" has hundreds of snap points; Fire: FAP only ADDS corners + a centre to pieces
+    // that lack them): no more points along the edges (they made 100-231 points on 10-20 m pieces: AshlandsTree6 231, rock2_ice_bal 191,
+    // BlackIce_Core_outer 119). The [Hammer] Snap edge point spacing key is gone. Saved snap defaults are kept by position (VASnapDefaults), so a
+    // default saved on an edge point falls back to Auto.
     // Bottom left in piece space = x min, y min, z min of the bounds. A point appended last in child order would still cycle after the
     // piece's others; a piece given points here has no others, so index 0 is what the first cycle press selects. Start stays Auto.
     internal static class VASnapGeometry
     {
         private const string SnapTag = "snappoint";
-        private const float TinySide = 0.1f, LargeSide = 2f, HugeSide = 20f;
-        private const int ReportOver = 200;
+        private const float TinySide = 0.1f;
         private static readonly HashSet<int> _done = new HashSet<int>();
         private static readonly HashSet<string> _madeHere = new HashSet<string>(StringComparer.Ordinal);
 
@@ -33,7 +35,6 @@ namespace VerdantsAscent.Managers.Snapping
                 for (int i = 0; i < points.Count; i++) AddPoint(prefab, points[i], $"Snap point {i + 1}");
                 _madeHere.Add(prefab.name);
                 VaPieces.Log?.LogDebug($"[Snap] {prefab.name}: {points.Count} point(s), {why}");
-                if (points.Count > ReportOver) VaPieces.Log?.LogDebug($"[Snap] {prefab.name}: over {ReportOver} points");
             }
             catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: [Snap] {prefab.name}: no snap points added: {ex.Message}"); }
         }
@@ -68,16 +69,7 @@ namespace VerdantsAscent.Managers.Snapping
             for (int y = 0; y < 2; y++)
                 foreach (var (x, z) in new[] { (0, 0), (0, 1), (1, 1), (1, 0) }) list.Add(Corner(b, x, y, z));
             list.Add(bottom); list.Add(top); list.Add(b.center);
-
-            float spacing = ConfigManager.Instance?.configSnapEdgeSpacing?.Value ?? 1f;
-            if (longest > HugeSide) { why = $"over {HugeSide} m ({longest:0.#}): corners + centres only"; return list; }
-            if (longest > LargeSide && spacing > 0f)
-            {
-                AddEdges(list, b, spacing);
-                why = $"large ({longest:0.#} m): corners, centres, edges every {spacing} m";
-                return list;
-            }
-            why = "corners + centres";
+            why = $"corners + centres ({longest:0.#} m)";
             return list;
         }
 
@@ -105,19 +97,6 @@ namespace VerdantsAscent.Managers.Snapping
 
         private static Vector3 Corner(Bounds b, int x, int y, int z) =>
             new Vector3(x == 0 ? b.min.x : b.max.x, y == 0 ? b.min.y : b.max.y, z == 0 ? b.min.z : b.max.z);
-
-        private static void AddEdges(List<Vector3> list, Bounds b, float spacing)
-        {
-            for (int y = 0; y < 2; y++) for (int z = 0; z < 2; z++) Edge(list, Corner(b, 0, y, z), Corner(b, 1, y, z), spacing);
-            for (int x = 0; x < 2; x++) for (int z = 0; z < 2; z++) Edge(list, Corner(b, x, 0, z), Corner(b, x, 1, z), spacing);
-            for (int x = 0; x < 2; x++) for (int y = 0; y < 2; y++) Edge(list, Corner(b, x, y, 0), Corner(b, x, y, 1), spacing);
-        }
-
-        private static void Edge(List<Vector3> list, Vector3 from, Vector3 to, float spacing)
-        {
-            float length = Vector3.Distance(from, to);
-            for (float d = spacing; d < length - 0.01f; d += spacing) list.Add(Vector3.Lerp(from, to, d / length));
-        }
 
         private static void AddPoint(GameObject prefab, Vector3 localPos, string label)
         {

@@ -1,4 +1,4 @@
-﻿using BepInEx;
+using BepInEx;
 using HarmonyLib;
 using System;
 using System.Collections;
@@ -37,7 +37,7 @@ namespace VerdantsAscent
         public static VaPieces Instance;
         public const string PluginGUID = "com.Fire.adminprefabs";
         public const string PluginName = "FiresAdminPrefabs";
-        public const string PluginVersion = "1.1.411";   // 1.1.411 ([generator] M22 / [lead]): Core-far lookups quiet (GetType(name, false) in Core's assembly; Core's Far\ moves to EBM 1.2.210); VA distant prefabs pushed to EbmApi.SetDistantDrawn (EBM 1.2.210+); one Info line when the FgnApi auto-tune bind is used. 1.1.410: FgnApi.IsAutoTuneSettled.
+        public const string PluginVersion = "1.1.434";   // 1.1.434 ([ghost], lead 11-16 via [generator], VA DN dedi log): Pickable_Mushroom_Random_Farm_bal maps to Moss_bal like its non-farm sibling (was "1 Pickable(s) still have no item").   // 1.1.433 ([ghost], lead 11-16; Fire: FTS goes, placed windows must not vanish, clean in any mod combination): the 34 FiresGlass windows move into FAP (Managers\VAFiresGlass.cs): [visual]'s linear firesglass / firesglass_linux bundle in FapBundles (one per platform: PickPlatformTwins), same prefab names = same hashes, registered by the existing injection (skips a name another mod has), each set up as FTS did (collider, Piece, square icon, 2 Crystal + 1 Fine wood at the workbench), a normal player piece on the Hammer (never admin-gated, never lazy); with FTS installed its duplicate Hammer entries are removed. Panes only (no light projector). One Info line per world load: "[FiresGlass] N/34 windows registered ...".   // was 1.1.432:   // 1.1.432 ([generator], lead 11-16, Fire's client log: 117 x "No mesh data available for mesh Sphere on particle system ..." at the main menu): ClientNonReadableRenderMeshes keeps readable every mesh a particle system uses (ParticleSystemRenderer mesh / GetMeshes, shape mesh / meshRenderer / skinnedMeshRenderer) and never drops the CPU copy of Unity's shared primitive meshes (Sphere, Cube, Capsule, Cylinder, Plane, Quad), so particle systems in this or a later bundle can read them (VAExternalBundleLoader.MakeRenderMeshesNonReadable). 1.1.431 ([ghost], Fire 11-16, Arbby's Discord report): (1) Infinity Hammer freeze-select no longer jumps on the first nudge: the offset-centre shift is measured from the rotation the piece had when it froze (zero at freeze time, so IH's nudge step is exact), scaled by the ghost's scale; (2) FAP-made snap points are corners + centres only: no points along the edges (up to 231 on 10-20 m pieces), the [Hammer] Snap edge point spacing key is removed.   // was 1.1.430 ([generator], lead 11-16, Fire: "something WERE DOING is overriding the render distance and shortening it"): a bundle prefab on the cull-only LODGroup (no impostor: under 4 m) no longer vanishes inside the loaded area; its cull distance is max(BundleCullDistance, the loaded radius / lodBias), re-applied live when the graphics settings change.   // 1.1.429 ([ghost], lead 11-16 RigPerf-Full arrival: all 22 post-load FAP [Hitch] rows were the icon ProcessQueue on a cold cache): the icon flush + render drain start while the world loads and run at FapInitBudget 40 ms/frame behind the loading screen; in play 1 render per frame, only on frames under 16.7 ms; one Info line says where the drain ran. | was 1.1.428 ([ghost], lead 11-13 overnight): the lazy-bundle look-ahead walks only zones that entered the ring (and zones that were empty when walked), not all 49 zones on every zone change and every 10 s; one Debug line says why it scanned or skipped. // 1.1.427 ([ghost], Fire 11-12 "all ashwood or black marble variants should have an icon"): MissingRenderAssets no longer refuses vanilla's own empty MeshFilters (LOD low slots, destruction chunks: ashwood_wall_beam_26_alt has m_Mesh 0 on 5 of 8 in the 1.0 rip); the proxy leaves empty renderers out. // 1.1.426 ([ghost], [visual] G2): VAFarBakeSource hands EBM the baked-blueprint meshes (coarsest LOD per zone) by cache name through EbmApi.RegisterFarBakeSource / RaiseFarBakeReady (reflection, EBM 1.2.341+); VA_BakeParent leaves RegisterFarSkip when EBM takes them. Also: build-menu rows holding only repair/remove = Debug (was a player-visible Warning); icon renders refused for a prefab's own missing meshes/materials counted as "refused", not "UNEXPECTED other-null". // 1.1.425 ([ghost], [generator] Core 0.2.1234): DistantRenderer.Recheck (reflection) after each registration sync and when a lazy prefab becomes real; the registration gate reads ZNetScene's named-prefab table instead of GetPrefab (which realized lazy stubs). // 1.1.424 ([ghost], lead 11-12, Fire run_3: FAP init coroutines = 57 of 79 post-arrival hitch frames): hammer scan / stand-ins no longer wait for spawn, run under the loading screen at 40 ms/frame and at 2 ms/frame after (FapInitBudget, one Info line each), HashSet instead of List.Contains per stand-in add. // 1.1.423 ([ghost], lead 11-12): [Diagnostics] BuildMenuNativeTrace (default off) now gates the trace hooks by Prepare() (off = never patched); snap-default Player.Update prefix reads only with a piece in hand. Distant registration (Fire 8:4x PM): a prefab registers only when it resolves in this game's ZNetScene, synced at world load + first spawn. (The OnGUI-off-while-closed item was already done in 1.1.325.) // 1.1.422 ([ghost], lead 11-12: PatchAll 618 ms; Fire 11-12 "proven-better defaults ship ON" + "FAP as clean as possible on frame time"): 3 diagnostic probes (Destroy Watch, Light Load Probe, Asset Load Window) behind [Diagnostics] keys OFF = never patched; ItemStand hide returns before its renderer walk when idle and only re-enables what FAP disabled (it was switching EBM-covered stand renderers back on every 4 s); [Startup] Settings File Written Once At Startup default ON (1,498 -> 645 ms); one Info "[Startup] patch census" line (FAP patch methods vs distinct targets, targets with 2+ FAP patches, targets other mods also patch, 10 slowest classes); measure only.   // was 1.1.421: 1.1.421 ([ghost], lead 11-12: FAP ~1.7 s outside Awake): process-clock stamps at class ready, Awake start and end on the "FAP Awake took" line (measure only).   // was 1.1.420: 1.1.420 ([ghost], lead 11-12 sp8 A/B): the [Startup] key Patch Only Classes With Harmony Attributes is removed (no gain: PatchAll 590 vs 596 ms); Settings File Written Once At Startup stays (FAP Awake 1,498 -> 645 ms measured), default OFF until Fire OKs a default change.   // was 1.1.419: 1.1.419 ([ghost], lead 11-12): finer startup timing inside config + sync + bridges; two Startup keys, both OFF until the load-in A/B: Settings File Written Once At Startup, Patch Only Classes With Harmony Attributes.   // was 1.1.418: 1.1.418 ([ghost], lead 11-12: full stack +11 s in the chainloader): one Info line at FinishInit, "FAP Awake took N ms (PatchAll M ms over T types: C patch classes, X methods; bundles K ms). Parts: ..." (measure only, nothing reordered).   // was 1.1.417: 1.1.417 ([ghost], lead 11-12, profiler-proven ~7 ms of the town frame): no SoundWatch MonoBehaviour per piece with a sound (23,942 Update calls a frame); only pieces with a fap_sound override are watched, on ONE flat list at 2 Hz, joined at load, on Save and by a routed change notice.   // was 1.1.416: 1.1.416 ([saddles] 11-11, [generator] MATERIALS_FAP): bundle materials the same every session: FAP_RepairCopy names from template + descriptor (not creation order); same-named game materials picked by a stable rank (not first-wins); a prefab read before the paced repair is repaired on demand (GetPrefab); late-queued impostors baked too. 1.1.415 ([saddles] 11-11, Fire: "only meant to add them to new pieces"): the Distant tag (DistantPieceRenderer.RegisterPiece) runs on placement (Piece.SetCreator) only, no longer on every existing piece at load. 1.1.414 ([saddles] 11-10): local LZ4 bundle cache (VABundleLz4Cache, [Bundles] Local LZ4 Cache default on; VAPieces 1.0.1 ships LZMA); the bake hold points the reference position at the spawn; shared Hammer icons redrawn from their own model ([Hammer] Redraw shared icons). 1.1.413 (supersedes withdrawn 1.1.412, contains it; [ghost]'s EBM 1.2.210): EbmApi.RegisterPrefabSourceLookup(FapExternalPrefabs.SourceBundleOf) pushed at world load. 1.1.412: Horizon/Shadow Caster Cull + Vegetation LOD removed (in EBM 1.2.210), VA distant prefabs via EbmApi.RegisterFarSkip.
         // ConfigSync's minimum for connecting clients: a FIXED constant, raised only when a synced key's name, type or meaning changes
         // (1.1.218 moved synced keys to new sections). Not PluginVersion, which forced every update in lockstep.
         private const string MinimumSyncVersion = "1.1.218";
@@ -74,12 +74,72 @@ namespace VerdantsAscent
 
         public ConfigSync configSync;
 
+        // 1.1.418 ([ghost], lead 11-12: the full stack loads +11 s slower in the chainloader): FAP's startup timed by part, one Info line at FinishInit.
+        // Measure only; nothing is reordered or skipped.
+        // 1.1.421 ([ghost], lead 11-12: "FAP ~1.7 s outside Awake (assembly load / JIT)"): the Awake stopwatch starts inside Awake, so what came
+        // before it was never timed. Process-relative stamps (ms since the process started, the same base as Core's "started at process +N ms"):
+        // class ready = this type's static constructor (the assembly and type are loaded), Awake start (after AddComponent + Awake's JIT), Awake end.
+        // Core's line gives its end (start + Awake), so "Core end -> FAP class ready" is the YamlDotNet Detector + FAP assembly load. Measure only.
+        private static readonly double s_classReadyMs = ProcessMs();
+        private static double s_awakeStartMs;
+        private static double ProcessMs()
+        {
+            try { return (DateTime.Now - System.Diagnostics.Process.GetCurrentProcess().StartTime).TotalMilliseconds; } catch { return -1; }
+        }
+        static VaPieces() { }   // explicit: the stamp above runs when the type is first touched (BepInEx's AddComponent), not earlier
+
+        private static System.Diagnostics.Stopwatch s_awakeSw;
+        private static readonly System.Text.StringBuilder s_laps = new System.Text.StringBuilder();
+        private static long s_lapAt, s_patchMs, s_bundlesMs;
+        private static int s_typesSeen, s_patchClasses, s_patchMethods;
+        private static void Lap(string what)
+        {
+            if (s_awakeSw == null) return;
+            long now = s_awakeSw.ElapsedMilliseconds, d = now - s_lapAt;
+            s_lapAt = now;
+            if (d >= 5) s_laps.Append(what).Append(' ').Append(d).Append(" ms, ");   // parts under 5 ms are left out of the line
+        }
+
+        // 1.1.419 ([ghost], lead 11-12: 1.1.418's line read "config + sync + bridges 822 ms, PatchAll 591 ms"). Two startup savings, each its own key,
+        // both OFF until the load-in A/B (Fire's rule: new keys ship off):
+        //  - SaveOnce: BepInEx's ConfigFile rewrites the whole settings file on every NEW Bind while SaveOnConfigSet is on (FiresFixes measured the same,
+        //    StartupConfigSaves.cs "once per setting"). On = SaveOnConfigSet is off from here to the end of Awake's config section, then ONE Save().
+        //    The file written equals what the last of those saves wrote (same entries, values and orphans); explicit Config.Save() calls still write.
+        //    SaveOnConfigSet is put back right after, so any later Bind or Set behaves as before.
+        //  - 1.1.420 (lead 11-12, sp8 A/B): the second key, "Patch Only Classes With Harmony Attributes", is REMOVED. Measured no gain (PatchAll 590 vs
+        //    596 ms, identity held at 155 patch classes / 208 methods): the cost is the real patches, not the no-op types. Its cfg entry is left as an
+        //    orphan in old files (BepInEx keeps it, nothing reads it).
+        internal static BepInEx.Configuration.ConfigEntry<bool> StartupSaveOnce;
+        private static bool s_settingsHeld, s_settingsWasSaveOnSet;
+
+        private void BeginSettingsHold()
+        {
+            StartupSaveOnce = Config.Bind("Startup", "Settings File Written Once At Startup", /* 1.1.422: ON (Fire 11-12: proven-better defaults ship on; measured FAP Awake 1,498 -> 645 ms, sp8) */ true,
+                "FAP writes its settings file once at startup instead of once per setting. Same file; about 0.9 s faster load (measured).");
+            if (!StartupSaveOnce.Value) return;
+            s_settingsWasSaveOnSet = Config.SaveOnConfigSet;
+            Config.SaveOnConfigSet = false;
+            s_settingsHeld = true;
+        }
+
+        private void EndSettingsHold()
+        {
+            if (!s_settingsHeld) return;
+            s_settingsHeld = false;
+            Config.SaveOnConfigSet = s_settingsWasSaveOnSet;
+            try { Config.Save(); } catch (Exception ex) { Logger.LogWarning("settings file write at startup failed: " + ex.Message); }
+        }
+
+
         private void Awake()
         {
+            s_awakeStartMs = ProcessMs();   // 1.1.421
+            s_awakeSw = System.Diagnostics.Stopwatch.StartNew(); s_lapAt = 0; s_laps.Length = 0;
             Instance = this;
             Log = Logger;
             VerdantsAscent.Utilities.VAImguiGuard.RegisterWithCore();   // 1.1.306: FAP windows count as an open screen for Core's input gate
             PreBindConfigMoves();   // 1.1.218: moved settings re-keyed before any bind
+            BeginSettingsHold();   // 1.1.419: right after the moves; binds its two Startup keys, holds the per-bind file writes only when its key is on
             FiresCore.Input.FiresInputBlock.LogTag = "FAP";
 
             TryRun("VAFapBanner.PrintBig", VAFapBanner.PrintBig);
@@ -100,24 +160,31 @@ namespace VerdantsAscent
             if (!IsDedicatedServer) TryRun("VALootModeContextProvider", () => FiresCore.UI.ContextMenu.FiresContextMenu.Register(new Patches.VALootModeContextProvider()));   // 1.1.394 loot chests + debris: Vanilla function / Decor
             if (!IsDedicatedServer) TryRun("VALootModeBuildMenu", () => Api.FapPieceMenu.RegisterProvider("fap_loot_mode", Patches.VALootPieceMode.BuildMenuRows));   // 1.1.395: Place as storage / vanilla on the build-menu right-click
             if (!IsDedicatedServer) TryRun("VASoundContextProvider", () => FiresCore.UI.ContextMenu.FiresContextMenu.Register(new Utilities.VASoundContextProvider()));   // 1.1.297 (Sound: per placed piece)
+            Lap("setup + context menus");
 
             // Stand-in MonoBehaviour types must exist before bundle prefabs try to
             // resolve their captured script attachments.
             VARuntimeMonoStub.LoadAll();
+            Lap("mono stubs");
 
             // Bundles load across frames and are force-completed by the barrier in
             // the ZNetScene.Awake prefix; loading synchronously here froze startup
             // for minutes on large asset folders.
+            long bundles0 = s_awakeSw.ElapsedMilliseconds;
             VAExternalBundleLoader.BeginLoadAllBundlesAsync();
+            s_bundlesMs = s_awakeSw.ElapsedMilliseconds - bundles0;
+            Lap("bundles (begin)");
 
             // Overrides must be on disk-loaded before the renderer builds its first
             // scan list, or previously configured pieces are missed.
             VAFapPieceOverrides.Load();
+            Lap("piece overrides");
             VAFapPieceShaderOverrider.Initialize();
+            Lap("shader overrider");
             DistantPieceRenderer.Initialize();
+            Lap("distant renderer");
             TryRun("FapCoreFar.InitIfFatAbsent", () => VerdantsAscent.Utilities.FapCoreFar.InitIfFatAbsent(Config));   // 1.1.405: Core far systems when FAT is absent
-            TryRun("FapHorizonCull.Bind", () => VerdantsAscent.Utilities.FapHorizonCull.Bind(Config));                  // 1.1.405: terrain-horizon cull (default off)
-            TryRun("FapVegLod.Bind", () => VerdantsAscent.Utilities.FapVegLod.Bind(Config));                            // 1.1.405: vegetation LOD switch sooner (1.0 = vanilla)
+            Lap("core far");
 
             configSync = new ConfigSync(PluginGUID)
             {
@@ -126,16 +193,28 @@ namespace VerdantsAscent
                 MinimumRequiredVersion = MinimumSyncVersion   // 1.1.218: a fixed constant, raised only when a synced key changes
             };
             configSync.lockedConfigChanged += ConfigManager.Instance.OnConfigLockChanged;
+            Lap("ConfigSync create");
             VAFapServerPresence.Hook(configSync);
+            Lap("server presence hook");
             ConfigManager.Instance.Initialize(Config);
+            Lap("ConfigManager binds");
             Managers.FapCoreSettingsOwned.Bind(Config);   // 1.1.345: Core's "New piece faces away from you", owned here
+            VerdantsAscent.Utilities.FapDiagnosticKeys.Bind(Config);   // 1.1.422: [Diagnostics] probe keys (OFF = their patches are never applied); inside the settings hold
+            Lap("core settings bind");
             try { global::VerdantsAscent.Utilities.VALightPresetStore.EnsureLoaded(); } catch (System.Exception ex) { Logger.LogWarning("light presets at load: " + ex.Message); }   // 1.1.264: built-ins seeded at load
+            Lap("light presets load");
             CleanUpConfigFile();
+            Lap("config cleanup + layout binds");
             BindConfigsToSync();
+            Lap("ConfigSync entries");
 
             TryRun("VAFapAssetSync.Init", VerdantsAscent.Sync.VAFapAssetSync.Init);
+            Lap("asset sync init");
             TryRun("ServerPushBridge register", RegisterServerPushBridge);
             TryRun("MonsterPresetBridge register", VerdantsAscent.Utilities.VAMonsterPresetApi.Register);
+            Lap("bridges");
+            EndSettingsHold();   // 1.1.419: "Settings File Written Once At Startup" writes the file once here (off = nothing held)
+            Lap("settings file write (held)");
 
             if ((bool)(UnityEngine.Object)ZNet.instance && ZNet.instance.IsDedicated())
                 StartCoroutine(DelayedDedicatedServerInit());
@@ -161,19 +240,29 @@ namespace VerdantsAscent
 
         private void FinishInit()
         {
+            EndSettingsHold();   // 1.1.419 fallback (no-op when Awake already ended the hold)
             // 1.1.185 (FAP 1.1.184 didn't load: one patch class aimed at a method vanilla doesn't have, and the client's single
             // PatchAll threw on it, so nothing after it initialised): every client and server patches type by type, a failing
             // class logged and skipped, the rest applied.
+            Lap("wait before patching");   // a dedicated server's FinishInit runs after ZNetScene/ObjectDB exist (DelayedDedicatedServerInit)
+            long patch0 = s_awakeSw != null ? s_awakeSw.ElapsedMilliseconds : 0;
             PatchAllExceptClientOnlyTypes(skipClientOnly: IsDedicatedServer);
+            if (s_awakeSw != null) s_patchMs = s_awakeSw.ElapsedMilliseconds - patch0;
+            Lap("PatchAll");
 
             if (!IsDedicatedServer)
             {
                 TryRun("Help content registration", VAFapHelpContent.Register);
                 TryRun("Build menu tabs", Patches.VABuildUiCategoryTags.Register);
                 TryRun("Infinity Tools tab", Patches.VAInfinityToolsTab.Register);   // 1.1.317: after FAP's source, so FAP keeps its tables
+                Lap("help + build tabs");
             }
 
             Debug.Log($"{PluginName}: Init complete (dedicated: {IsDedicatedServer}, headless: {IsHeadless})");
+            // 1.1.418: one Info line. PatchAll = CreateClassProcessor over every type in the assembly; "patch classes" = types that patched at least
+            // one method, "methods" = methods patched. Bundles = the async BEGIN only (the finish is the ZNetScene.Awake barrier).
+            if (s_awakeSw != null)
+                Logger.LogInfo($"FAP Awake took {s_awakeSw.ElapsedMilliseconds} ms (PatchAll {s_patchMs} ms over {s_typesSeen} types: {s_patchClasses} patch classes, {s_patchMethods} methods; bundles {s_bundlesMs} ms; settings written once {(StartupSaveOnce != null && StartupSaveOnce.Value ? "on" : "off")}). Parts: {s_laps.ToString().TrimEnd(' ', ',')}. Process clock: class ready at +{s_classReadyMs:0} ms, Awake started at +{s_awakeStartMs:0} ms ({s_awakeStartMs - s_classReadyMs:0} ms between), ended at +{ProcessMs():0} ms");
             StartCoroutine(WaitForZNetReady());
         }
 
@@ -186,8 +275,16 @@ namespace VerdantsAscent
                 if (DeferredPatchTypes.Contains(type)) continue;
                 try
                 {
-                    harmony.CreateClassProcessor(type).Patch();
+                    long t0 = System.Diagnostics.Stopwatch.GetTimestamp();   // 1.1.422 census
+                    var done = harmony.CreateClassProcessor(type).Patch();
+                    long dt = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
                     patched++;
+                    s_typesSeen++;   // 1.1.418: real counts for the timing line (the log line below keeps its old wording)
+                    if (done != null && done.Count > 0)
+                    {
+                        s_patchClasses++; s_patchMethods += done.Count;
+                        NotePatchClass(type, done, dt);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -202,6 +299,46 @@ namespace VerdantsAscent
                 }
             }
             Debug.Log($"[{PluginName}] {(skipClientOnly ? "Dedicated server" : "Client")}: patched {patched} types, skipped {skipped} client-only types, {failed} failed.");
+            SayPatchCensus();
+        }
+
+        // 1.1.422 ([ghost], lead 11-12: FAP PatchAll 618 ms over 155 classes / 208 methods): measure only. Harmony rebuilds a target's whole replacement
+        // method on EVERY Patch call that touches it (all earlier patches on it included, ours and other mods'). So the census says whether the 618 ms
+        // is per-target build cost (distinct targets ~ applications: nothing to batch) or repeated rebuilds of targets several FAP classes share
+        // (batching them into one Patch per target would save the repeats). One Info line at FinishInit, plus the 10 slowest patch classes.
+        private static readonly List<KeyValuePair<string, long>> s_classTicks = new List<KeyValuePair<string, long>>();
+        private static void NotePatchClass(Type type, List<MethodInfo> done, long ticks)
+        {
+            s_classTicks.Add(new KeyValuePair<string, long>(type.Name + " (" + done.Count + ")", ticks));   // targets are read once, at the end (SayPatchCensus)
+        }
+        private static void SayPatchCensus()
+        {
+            try
+            {
+                int distinct = 0, ours = 0, shared = 0, othersToo = 0;
+                foreach (var orig in harmony.GetPatchedMethods())
+                {
+                    distinct++;
+                    var info = Harmony.GetPatchInfo(orig);
+                    if (info == null) continue;
+                    int mine = 0, all = 0;
+                    foreach (var p in info.Prefixes) { all++; if (p.owner == PluginGUID) mine++; }
+                    foreach (var p in info.Postfixes) { all++; if (p.owner == PluginGUID) mine++; }
+                    foreach (var p in info.Transpilers) { all++; if (p.owner == PluginGUID) mine++; }
+                    foreach (var p in info.Finalizers) { all++; if (p.owner == PluginGUID) mine++; }
+                    ours += mine;
+                    if (mine > 1) shared++;
+                    if (all > mine) othersToo++;
+                }
+                s_classTicks.Sort((a, b) => b.Value.CompareTo(a.Value));
+                double ms = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                var sb = new System.Text.StringBuilder();
+                for (int i = 0; i < s_classTicks.Count && i < 10; i++) sb.Append(s_classTicks[i].Key).Append(' ').Append((s_classTicks[i].Value * ms).ToString("0.0")).Append(" ms, ");
+                Log.LogInfo($"[Startup] patch census: {ours} FAP patch methods on {distinct} distinct target(s); {shared} target(s) carry 2+ FAP patches " +
+                            $"(each extra one rebuilt that target again); {othersToo} target(s) also carry other mods' patches (each FAP rebuild re-emits theirs). " +
+                            $"Slowest patch classes (methods): {sb.ToString().TrimEnd(' ', ',')}");
+            }
+            catch (Exception e) { Log.LogInfo("[Startup] patch census failed: " + e.Message); }
         }
 
         // 1.1.212 (Fire's server: EWP's LoadDefaultValueGroups NRE'd on FAP's missing-script prefabs, so EWP never
@@ -215,6 +352,7 @@ namespace VerdantsAscent
 
         private void Start()
         {
+            EndSettingsHold();   // 1.1.419 fallback: if Awake stopped early, the held settings file is still written and saving is back on
             foreach (var type in DeferredPatchTypes)
             {
                 try
@@ -566,7 +704,8 @@ namespace VerdantsAscent
             public static void Run(Piece __instance)
             {
                 if (__instance == null) return;
-                DistantPieceRenderer.RegisterPiece(__instance);
+                // 1.1.415 (Fire 11-11): DistantPieceRenderer.RegisterPiece moved to the Piece.SetCreator postfix (placement only). Here it ran on every
+                // existing piece as zones loaded: SetDistant + ForceSendZDO on each registered piece at every arrival.
                 VATowerNearChunks.OnPieceAwake(__instance); VAPrefabChildren.OnPieceAwake(__instance);
             }
         }
@@ -598,7 +737,8 @@ namespace VerdantsAscent
             {
                 TryRun("VAFapPieceShaderOverrider.ApplyAllAtInit", VAFapPieceShaderOverrider.ApplyAllAtInit);
                 if (!IsDedicatedServer) TryRun("VATowerNearChunks.WarmNearIndex", VATowerNearChunks.WarmNearIndex);   // 1.1.402: on the loading screen, not inside a create
-                TryRun("DistantPieceRenderer.PushToEbm", () => DistantPieceRenderer.PushToEbm("world loading"));   // 1.1.411: EBM is loaded by now
+                TryRun("DistantPieceRenderer.SyncForWorld", () => DistantPieceRenderer.SyncForWorld("world loading"));   // 1.1.423: register only prefabs this game has (ZNetScene is up now); pushes to EBM too (1.1.411)
+                TryRun("EbmPrefabSource.Push", EbmPrefabSource.Push);   // 1.1.413 ([ghost]'s EBM 1.2.210): EBM no longer reads FAP by name
             }
         }
 

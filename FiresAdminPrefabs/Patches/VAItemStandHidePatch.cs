@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 using VerdantsAscent.Managers;
@@ -54,19 +55,47 @@ namespace VerdantsAscent.Patches
 
             // Same test as vanilla ItemStand.HaveAttachment.
             bool hasAttachedItem = zdo.GetInt(ZDOVars.s_item) != 0;
-            bool renderersEnabled = !(wantHide && hasAttachedItem);
+            bool hideNow = wantHide && hasAttachedItem;
 
-            // Filter by stand-layer so the attached item's renderers (on a
-            // different layer) are untouched.
+            // 1.1.422 ([ghost], lead 11-12; Fire: FAP as clean as possible on frame time): vanilla calls UpdateVisual on every stand every 4 s. With
+            // nothing to hide and nothing FAP hid before, return before any renderer walk (it was a GetComponentsInChildren array per stand per 4 s).
+            // And FAP only ever re-enables renderers IT disabled: the old pass set enabled = true on every disabled stand-layer renderer, which would
+            // undo another mod's hiding (EBM's coverage draws covered stand meshes itself and may switch Unity's renderer off).
+            s_hiddenByFap.TryGetValue(stand, out var mine);
+            if (!hideNow)
+            {
+                if (mine == null) return;
+                int restored = 0;
+                for (int i = 0; i < mine.Count; i++) { var r = mine[i]; if (r != null && !r.enabled) { r.enabled = true; restored++; } }
+                s_hiddenByFap.Remove(stand);
+                if (!s_restoreSaid) { s_restoreSaid = true; VaPieces.Log?.LogInfo($"[ItemStands] stand mesh shown again on '{Utils.GetPrefabName(stand.gameObject)}' ({restored} renderer(s) FAP had hidden); further restores are Debug lines"); }
+                else VaPieces.Log?.LogDebug($"[ItemStands] stand mesh shown again on '{Utils.GetPrefabName(stand.gameObject)}' ({restored} renderer(s))");
+                return;
+            }
+
+            // Hide: filter by stand-layer so the attached item's renderers (on a different layer) are untouched; record only what FAP switched off.
             int standLayer = stand.gameObject.layer;
             var renderers = stand.GetComponentsInChildren<MeshRenderer>(includeInactive: true);
             for (int i = 0; i < renderers.Length; i++)
             {
                 var r = renderers[i];
-                if (r == null) continue;
+                if (r == null || !r.enabled) continue;   // already off (someone else's, or ours from before): not ours to record
                 if (r.gameObject.layer != standLayer) continue;
-                if (r.enabled != renderersEnabled) r.enabled = renderersEnabled;
+                r.enabled = false;
+                if (mine == null) { mine = new List<MeshRenderer>(2); s_hiddenByFap[stand] = mine; }
+                mine.Add(r);
             }
+            if (s_hiddenByFap.Count > 4096) PruneDead();
+        }
+
+        // 1.1.422: stands whose stand-layer renderers FAP switched off, and exactly which ones
+        private static readonly Dictionary<ItemStand, List<MeshRenderer>> s_hiddenByFap = new Dictionary<ItemStand, List<MeshRenderer>>();
+        private static bool s_restoreSaid;
+        private static void PruneDead()
+        {
+            var dead = new List<ItemStand>();
+            foreach (var kv in s_hiddenByFap) if (kv.Key == null) dead.Add(kv.Key);
+            foreach (var d in dead) s_hiddenByFap.Remove(d);
         }
 
         public static int ReapplyAll()

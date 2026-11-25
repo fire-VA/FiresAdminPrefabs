@@ -21,9 +21,33 @@ namespace VerdantsAscent.Utilities
         internal static int Baked, Failed, Skipped;
         private const float MinImpostorHeight = 4f;   // 1.1.166: metres; below this a prefab keeps the cull-only LODGroup
 
-        internal static void Queue(GameObject prefab) { if (prefab != null && !s_pending.Contains(prefab)) s_pending.Add(prefab); }
+        // 1.1.416 ([lead] via [generator] MATERIALS_FAP 11-11): a prefab queued after the startup BakeAll (a lazy realize, a late dependency) used to
+        // never get its impostor, so whether a prefab had one depended on load order. After the first pass a late queue starts a small bake of its own.
+        private static bool s_firstPassDone, s_running;
+        internal static void Queue(GameObject prefab)
+        {
+            if (prefab == null || s_pending.Contains(prefab)) return;
+            s_pending.Add(prefab);
+            if (s_firstPassDone && !s_running && VaPieces.Instance != null) VaPieces.Instance.StartCoroutine(BakeAll());
+        }
 
         internal static IEnumerator BakeAll()
+        {
+            if (s_running) yield break;
+            s_running = true;
+            try
+            {
+                while (true)
+                {
+                    int before = s_pending.Count;
+                    yield return BakePending();
+                    if (s_pending.Count == 0 || s_pending.Count >= before) break;   // done, or nothing taken (key off / no shader): never spin
+                }
+            }
+            finally { s_running = false; s_firstPassDone = true; }
+        }
+
+        private static IEnumerator BakePending()
         {
             if (s_pending.Count == 0 || !(ConfigManager.Instance?.configBundleImpostors?.Value ?? true)) yield break;
             // A dedicated server (or any -nographics process) renders nothing: there is nothing to bake, and nobody to see it.
@@ -47,14 +71,18 @@ namespace VerdantsAscent.Utilities
             {
                 var list = new List<GameObject>(s_pending);
                 s_pending.Clear();
+                // 1.1.424 (Fire run_3: BakePending 27-58 ms frames at arrival): paced by time, not by a count of PerFrame bakes; 40 ms/frame under
+                // the loading screen, 2 ms/frame after (one bake still runs whole, so a slice can be one bake long)
+                var budget = new FapInitBudget("FAP tree impostor bake (VABundleImpostors.BakePending)");
                 for (int i = 0; i < list.Count; i++)
                 {
                     var env = Environment.Capture(); env.Apply();
                     try { BakeOne(list[i], cam, rt, shader); }
                     catch (Exception e) { Failed++; Debug.LogWarning($"{VaPieces.PluginName}: impostor bake failed for '{list[i]?.name}': {e.Message}"); }
                     finally { env.Restore(); }
-                    if ((i + 1) % PerFrame == 0) yield return null;
+                    if (budget.Over() && i + 1 < list.Count) { yield return null; budget.NextFrame(); }
                 }
+                budget.Done();
             }
             finally
             {

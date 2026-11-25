@@ -409,11 +409,11 @@ namespace VerdantsAscent.Managers
             // spins cheaply, yielding each frame, so login stays responsive; the work then streams
             // in over the seconds after spawn. Bundle PREFAB registration stays at ZNetScene.Awake
             // (VABakeBundle.RegisterAllAsync) so placed baked-bundle ZDOs still instantiate.
-            if (deferUntilSpawn)
-            {
-                while ((UnityEngine.Object)Player.m_localPlayer == (UnityEngine.Object)null)
-                    yield return null;
-            }
+            // 1.1.424 ([ghost], lead 11-12, Fire's run_3: these slices were 57 of his 79 post-arrival hitch frames): the work no longer waits for
+            // the local player. It starts at ZNetScene-ready and runs under the loading screen at FapInitBudget.LoadingBudgetMs per frame (Fire's
+            // rule: a longer load beats post-load hitches); whatever is left after the world shows runs at 2 ms per frame. deferUntilSpawn is
+            // kept as a parameter for the callers but no longer spins.
+            var budget = new VerdantsAscent.Utilities.FapInitBudget("FAP hammer scan + stand-ins (InitializeHeavyWorkCoroutine)");
 
             // Phase 0: blueprint scan and stub registration. It yields as it walks the blueprint files, then
             // starts the ghost cache bake without waiting for it. A non-admin never places blueprints, and
@@ -425,7 +425,7 @@ namespace VerdantsAscent.Managers
 
             int injected = 0;
             int registered = 0;
-            var frameStopwatch = Stopwatch.StartNew();
+            budget.NextFrame();   // the blueprint scan above paced itself; a fresh slice for the prefab walk
 
             // Snapshot the prefab list so the foreach iterator stays valid
             // even if some patch elsewhere mutates ZNetScene.m_prefabs
@@ -463,11 +463,7 @@ namespace VerdantsAscent.Managers
                 if (IsClutterPrefab(prefab))
                 {
                     _injectedPrefabHashes.Add(hash);
-                    if (frameStopwatch.ElapsedMilliseconds >= InitFrameBudgetMs)
-                    {
-                        yield return null;
-                        frameStopwatch.Restart();
-                    }
+                    if (budget.Over()) { yield return null; budget.NextFrame(); }
                     continue;
                 }
 
@@ -479,12 +475,9 @@ namespace VerdantsAscent.Managers
                 if (addedFreshPiece) injected++;
 
                 // Frame budget - hand back to Unity once we've burned through it.
-                if (frameStopwatch.ElapsedMilliseconds >= InitFrameBudgetMs)
-                {
-                    yield return null;
-                    frameStopwatch.Restart();
-                }
+                if (budget.Over()) { yield return null; budget.NextFrame(); }
             }
+            yield return null; budget.NextFrame();   // 1.1.424: the curated pass + reports below get their own frame
 
             // Curated MVBP-parity pass - a handful of vanilla prefabs players
             // expect from MoreVanillaBuildPrefabs kept silently missing from
@@ -506,6 +499,7 @@ namespace VerdantsAscent.Managers
                 _registeredForNonAdmins = true;
                 _initializing = false;
                 ShaderReplacement.FlushPendingNatureShaders();
+                budget.Done();
                 Debug.Log($"{VaPieces.PluginName}: registered {registered} piece(s) on the hammer for a non-admin "
                     + "(RegisterPiecesForNonAdmins). They stay out of the build menu; other mods can still treat them as build pieces.");
                 try
@@ -522,7 +516,7 @@ namespace VerdantsAscent.Managers
             // Yield between major sub-passes - the stand-in factories below
             // instantiate GameObjects, which is itself heavy work.
             yield return null;
-            frameStopwatch.Restart();
+            budget.NextFrame();
 
             // Second pass: a hammer-tab stand-in for every ClutterSystem entry.
             // Stand-ins are FAP-owned GameObjects that never spawn - placement
@@ -530,7 +524,7 @@ namespace VerdantsAscent.Managers
             // the vanilla clutter templates are never mutated.
             int vanillaClutterAdded = RegisterClutterAsStandins(pieceTable);
             yield return null;
-            frameStopwatch.Restart();
+            budget.NextFrame();
 
             // FX clear brush - admin tool that scrubs FAP_persist + destroys
             // EWP-persistent FX placed by FAP. Goes in the FX (Vanilla) tab
@@ -548,13 +542,13 @@ namespace VerdantsAscent.Managers
             // Placement spawns a vanilla itemstand/itemstandh with the chosen
             // item pre-attached via the s_item ZDO field.
             yield return InitializeItemStandStandinsCoroutine(pieceTable);
-            frameStopwatch.Restart();
+            budget.NextFrame();
 
             // Monsters tab - a placeable stand-in for every Character prefab.
             // Placement dispatches to VAMonsterSpawner; right-click opens the
             // Configure-monster UI for per-spawn overrides.
             yield return InitializeMonsterStandinsCoroutine(pieceTable);
-            frameStopwatch.Restart();
+            budget.NextFrame();
 
             // 1.1.351 (Fire 10-31): Dungeons tab - a whole-dungeon and an empty-entrance stand-in per vanilla location with an interior.
             try { Utilities.VAFapDungeons.RegisterStandins(pieceTable); }
@@ -601,27 +595,27 @@ namespace VerdantsAscent.Managers
             // The tail from here used to run in one frame after the stand-ins, 355 ms at "world settling" where the player
             // already sees the world ([ghost], Tools\FAP_CLIENT_LOAD_COST.md #5): each step now gets its own frame, and
             // the dimension push is budgeted like the scan above. Same steps, same order, same results.
-            yield return null;
+            yield return null; budget.NextFrame();
             VAHammerTabOrganizer.SaveCurrentLayout(_eligibleByName);
-            yield return null;
+            yield return null; budget.NextFrame();
 
             // AFTER the FAP tabs claim their prefabs: materialize the vanilla
             // categories as folders too (Misc, Crafting, Building*, Furniture...),
             // seeded with whatever isn't listed anywhere else - so vanilla tabs
             // can be reorganized and reordered from disk like any custom tab.
             VAHammerTabOrganizer.EnsureVanillaTabFolders(GetHammerPieceTable());
-            yield return null;
+            yield return null; budget.NextFrame();
 
             // Infinity Hammer zoop needs a per-prefab dimension to know its step
             // size, and IH only ships them for vanilla pieces - push collider
             // AABBs for our injected pieces so zoop works on them out of the box.
-            yield return VerdantsAscent.Patches.InfinityHammerMeasureGuard.PushDimensionsForInjectedCoroutine(_eligibleByName, InitFrameBudgetMs);
-            yield return null;
+            yield return VerdantsAscent.Patches.InfinityHammerMeasureGuard.PushDimensionsForInjectedCoroutine(_eligibleByName, (long)budget.BudgetMs < 1 ? 1 : (long)budget.BudgetMs);   // 1.1.424: loading 40 / play 2 ms
+            yield return null; budget.NextFrame();
 
             // Queue icon rendering for every injected piece without an authored
             // Sprite. The renderer paces itself at one icon per frame.
             QueueIconRenders();
-            yield return null;
+            yield return null; budget.NextFrame();
 
             // Surface the new pieces in the live UI. The player may not exist
             // yet on first world load (this ran at ZNetScene-ready time, before
@@ -638,6 +632,7 @@ namespace VerdantsAscent.Managers
 
             _initializing = false;
             ShaderReplacement.FlushPendingNatureShaders();
+            budget.Done();
         }
 
         // Yielding variant of RegisterItemStandsAsStandins. 3,042 stand-ins
@@ -658,7 +653,9 @@ namespace VerdantsAscent.Managers
 
             int verticalAdded = 0;
             int horizontalAdded = 0;
-            var stopwatch = Stopwatch.StartNew();
+            var budget = new VerdantsAscent.Utilities.FapInitBudget("FAP item-stand stand-ins (InitializeItemStandStandinsCoroutine)");
+            // 1.1.424: m_pieces.Contains was an O(n) List scan with Unity == before every one of ~3k adds (quadratic); a set mirrors the table here
+            var onTable = new HashSet<GameObject>(pieceTable.m_pieces);
 
             // Snapshot the registry so concurrent additions don't trip
             // the enumerator across our yield windows.
@@ -672,7 +669,7 @@ namespace VerdantsAscent.Managers
                 {
                     var verticalStandin = VAItemStandStandinFactory.GetOrCreate(
                         entry, VAItemStandStandinFactory.Orientation.Vertical, verticalCat);
-                    if (verticalStandin != null && !pieceTable.m_pieces.Contains(verticalStandin))
+                    if (verticalStandin != null && onTable.Add(verticalStandin))
                     {
                         pieceTable.m_pieces.Add(verticalStandin);
                         verticalAdded++;
@@ -682,19 +679,16 @@ namespace VerdantsAscent.Managers
                 {
                     var horizontalStandin = VAItemStandStandinFactory.GetOrCreate(
                         entry, VAItemStandStandinFactory.Orientation.Horizontal, horizontalCat);
-                    if (horizontalStandin != null && !pieceTable.m_pieces.Contains(horizontalStandin))
+                    if (horizontalStandin != null && onTable.Add(horizontalStandin))
                     {
                         pieceTable.m_pieces.Add(horizontalStandin);
                         horizontalAdded++;
                     }
                 }
 
-                if (stopwatch.ElapsedMilliseconds >= InitFrameBudgetMs)
-                {
-                    yield return null;
-                    stopwatch.Restart();
-                }
+                if (budget.Over()) { yield return null; budget.NextFrame(); }
             }
+            budget.Done();
 
             // Always logged: the proof line for the lazy stand-in meshes (FAP 1.1.149, MEMORY_LEADS #5).
             Debug.Log($"[FAP] item stands: {verticalAdded + horizontalAdded} stand-ins ({verticalAdded} wall + {horizontalAdded} shelf from {VAItemStandRegistry.Count} items), meshes deferred until selected ({VAItemStandStandinFactory.VisualsBuilt} built so far)");
@@ -712,12 +706,13 @@ namespace VerdantsAscent.Managers
             VAEnemySpawners.AddRow();
             int found = VAMonsterRegistry.RebuildFromScene();
             int added = 0;
-            var stopwatch = Stopwatch.StartNew();
+            var budget = new VerdantsAscent.Utilities.FapInitBudget("FAP monster stand-ins (InitializeMonsterStandinsCoroutine)");
+            var onTable = new HashSet<GameObject>(pieceTable.m_pieces);   // 1.1.424: O(1) instead of List.Contains per add
 
             foreach (var entry in VAMonsterRegistry.All)
             {
                 var standin = VAMonsterStandinFactory.GetOrCreate(entry, monstersCat);
-                if (standin != null && !pieceTable.m_pieces.Contains(standin))
+                if (standin != null && onTable.Add(standin))
                 {
                     pieceTable.m_pieces.Add(standin);
                     added++;
@@ -725,15 +720,12 @@ namespace VerdantsAscent.Managers
                 if (VAEnemySpawners.Wanted(entry))
                 {
                     var spawnerPick = VAMonsterStandinFactory.GetOrCreateSpawner(entry, monstersCat);
-                    if (spawnerPick != null && !pieceTable.m_pieces.Contains(spawnerPick)) { pieceTable.m_pieces.Add(spawnerPick); added++; }
+                    if (spawnerPick != null && onTable.Add(spawnerPick)) { pieceTable.m_pieces.Add(spawnerPick); added++; }
                 }
 
-                if (stopwatch.ElapsedMilliseconds >= InitFrameBudgetMs)
-                {
-                    yield return null;
-                    stopwatch.Restart();
-                }
+                if (budget.Over()) { yield return null; budget.NextFrame(); }
             }
+            budget.Done();
 
             var spawnerClearStandin = VerdantsAscent.Utilities.VAFapMonsterClearTool.EnsureStandin(monstersCat);
             if (spawnerClearStandin != null && !pieceTable.m_pieces.Contains(spawnerClearStandin))
@@ -1211,6 +1203,7 @@ namespace VerdantsAscent.Managers
         // component reference between scan and now.
         private static void QueueIconRenders()
         {
+            if (ConfigManager.Instance?.configRedrawSharedIcons?.Value == true) VAPieceIconRenderer.RedrawSharedIcons(new List<GameObject>(_eligibleByName.Values), GetHammerPieceTable()?.m_pieces);   // [saddles] 11-09
             int queued = 0;
             foreach (var prefab in _eligibleByName.Values)
             {
@@ -1333,6 +1326,9 @@ namespace VerdantsAscent.Managers
             // Ignore gate - checked early so we don't waste the rest
             // of the filter on a prefab the user has explicitly hidden.
             if (VAHammerTabOrganizer.IsIgnored(prefab.name)) { why = "on the HammerTabs Ignore list"; return false; }
+
+            // 1.1.433: the FiresGlass windows are normal player pieces with a cost (VAFiresGlass puts them on the Hammer), never admin-hammer entries
+            if (VAFiresGlass.IsWindow(prefab)) { why = "FiresGlass window (a player piece of its own, VAFiresGlass)"; return false; }
 
             // RemovedPrefabPlaceholders stubs (the removed castle tower) keep old saves loading; they are not pieces.
             if (VAExternalBundleLoader.IsRemovedPrefabPlaceholder(prefab)) { why = "removed-prefab placeholder"; return false; }

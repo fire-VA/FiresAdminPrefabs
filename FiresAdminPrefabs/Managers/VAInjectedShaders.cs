@@ -413,9 +413,19 @@ namespace VerdantsAscent.Managers
                 if (material == null || material.shader == null || !material.shader.isSupported) continue;
                 string name = material.name;
                 if (string.IsNullOrEmpty(name) || MockedName(name) != null || name.EndsWith(InstanceSuffix, StringComparison.Ordinal)) continue;
-                if (IsStandIn(material.shader.name) || s_gameMaterials.ContainsKey(name)) continue;
+                if (IsStandIn(material.shader.name)) continue;
+                // 1.1.416 ([lead] via [generator] MATERIALS_FAP 11-11): same-named materials used to be first-wins in FindObjectsOfTypeAll order, which
+                // changes between sessions. The pick is now the lowest stable rank (shader | main texture | colour), so the same set always gives the same one.
+                if (s_gameMaterials.TryGetValue(name, out var held) && string.CompareOrdinal(Rank(held), Rank(material)) <= 0) continue;
                 s_gameMaterials[name] = material;
             }
+        }
+
+        private static string Rank(Material m)
+        {
+            string tex = m.HasProperty("_MainTex") && m.mainTexture != null ? m.mainTexture.name : "";
+            string col = m.HasProperty("_Color") ? ColorUtility.ToHtmlStringRGBA(m.color) : "";
+            return m.shader.name + "|" + tex + "|" + col;
         }
 
         private static Snapshot Capture(Material material)

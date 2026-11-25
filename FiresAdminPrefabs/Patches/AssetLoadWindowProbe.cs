@@ -18,6 +18,8 @@ namespace VerdantsAscent.Patches
     /// </summary>
     internal static class AssetLoadWindowProbe
     {
+        // 1.1.422: [Diagnostics] Asset Load Window, OFF = none of the patches below are applied (each class's Prepare)
+        private static bool AlOn => VerdantsAscent.Utilities.FapDiagnosticKeys.On(VerdantsAscent.Utilities.FapDiagnosticKeys.AssetLoadWindow);
         private static bool s_armed;
         private static float s_armedAt;
         private static int s_disarmFrame = -1;
@@ -91,15 +93,16 @@ namespace VerdantsAscent.Patches
 
         // ── Arming: the scene load starts ─────────────────────────────────────────────────────────────────────────────
         [HarmonyPatch(typeof(SceneManager), nameof(SceneManager.LoadScene), new[] { typeof(string) })]
-        private static class LoadSceneName { private static void Prefix(string sceneName) { Arm("SceneManager.LoadScene('" + sceneName + "')"); } }
+        private static class LoadSceneName { private static bool Prepare() => AlOn; private static void Prefix(string sceneName) { Arm("SceneManager.LoadScene('" + sceneName + "')"); } }
 
         [HarmonyPatch(typeof(SceneManager), nameof(SceneManager.LoadSceneAsync), new[] { typeof(string) })]
-        private static class LoadSceneAsyncName { private static void Prefix(string sceneName) { Arm("SceneManager.LoadSceneAsync('" + sceneName + "')"); } }
+        private static class LoadSceneAsyncName { private static bool Prepare() => AlOn; private static void Prefix(string sceneName) { Arm("SceneManager.LoadSceneAsync('" + sceneName + "')"); } }
 
         // Belt and braces: arm on ZNetScene.Awake too (if the load went through another overload), and close 3 frames later.
         [HarmonyPatch(typeof(ZNetScene), "Awake")]
         private static class ZNetSceneAwake
         {
+            private static bool Prepare() => AlOn;
             [HarmonyPriority(Priority.First)]
             private static void Prefix() { if (!s_armed) Arm("ZNetScene.Awake"); }
             // 1.1.249: R2 showed the error 2 frames after Awake; 30 frames covers the scene sweep with room.
@@ -108,31 +111,31 @@ namespace VerdantsAscent.Patches
 
         // ── The loads ─────────────────────────────────────────────────────────────────────────────────────────────────
         [HarmonyPatch(typeof(Resources), nameof(Resources.Load), new[] { typeof(string), typeof(Type) })]
-        private static class ResLoad { private static void Prefix(string path) { Note("Resources.Load", path); } }
+        private static class ResLoad { private static bool Prepare() => AlOn; private static void Prefix(string path) { Note("Resources.Load", path); } }
 
         [HarmonyPatch(typeof(AssetBundle), nameof(AssetBundle.LoadAsset), new[] { typeof(string), typeof(Type) })]
-        private static class BundleLoadAsset { private static void Prefix(AssetBundle __instance, string name) { Note("AssetBundle.LoadAsset", (__instance != null ? __instance.name : "?") + "/" + name); } }
+        private static class BundleLoadAsset { private static bool Prepare() => AlOn; private static void Prefix(AssetBundle __instance, string name) { Note("AssetBundle.LoadAsset", (__instance != null ? __instance.name : "?") + "/" + name); } }
 
         [HarmonyPatch(typeof(AssetBundle), nameof(AssetBundle.LoadAssetAsync), new[] { typeof(string), typeof(Type) })]
-        private static class BundleLoadAssetAsync { private static void Prefix(AssetBundle __instance, string name) { Note("AssetBundle.LoadAssetAsync", (__instance != null ? __instance.name : "?") + "/" + name); } }
+        private static class BundleLoadAssetAsync { private static bool Prepare() => AlOn; private static void Prefix(AssetBundle __instance, string name) { Note("AssetBundle.LoadAssetAsync", (__instance != null ? __instance.name : "?") + "/" + name); } }
 
         [HarmonyPatch(typeof(AssetBundle), nameof(AssetBundle.LoadAllAssets), new[] { typeof(Type) })]
-        private static class BundleLoadAll { private static void Prefix(AssetBundle __instance) { Note("AssetBundle.LoadAllAssets", __instance != null ? __instance.name : "?"); } }
+        private static class BundleLoadAll { private static bool Prepare() => AlOn; private static void Prefix(AssetBundle __instance) { Note("AssetBundle.LoadAllAssets", __instance != null ? __instance.name : "?"); } }
 
         [HarmonyPatch(typeof(AssetBundle), nameof(AssetBundle.LoadFromFile), new[] { typeof(string) })]
-        private static class BundleFromFile { private static void Prefix(string path) { Note("AssetBundle.LoadFromFile", path); } }
+        private static class BundleFromFile { private static bool Prepare() => AlOn; private static void Prefix(string path) { Note("AssetBundle.LoadFromFile", path); } }
 
         [HarmonyPatch(typeof(AssetBundle), nameof(AssetBundle.LoadFromFileAsync), new[] { typeof(string) })]
-        private static class BundleFromFileAsync { private static void Prefix(string path) { Note("AssetBundle.LoadFromFileAsync", path); } }
+        private static class BundleFromFileAsync { private static bool Prepare() => AlOn; private static void Prefix(string path) { Note("AssetBundle.LoadFromFileAsync", path); } }
 
         [HarmonyPatch(typeof(AssetBundle), nameof(AssetBundle.LoadFromMemory), new[] { typeof(byte[]) })]
-        private static class BundleFromMemory { private static void Prefix(byte[] binary) { Note("AssetBundle.LoadFromMemory", (binary?.Length ?? 0) + " B"); } }
+        private static class BundleFromMemory { private static bool Prepare() => AlOn; private static void Prefix(byte[] binary) { Note("AssetBundle.LoadFromMemory", (binary?.Length ?? 0) + " B"); } }
 
         // 1.1.249 (R2: the error fell between a TextCore TextSettings being CREATED and its OnEnable's Resources.Load): name the creator.
         [HarmonyPatch(typeof(ScriptableObject), nameof(ScriptableObject.CreateInstance), new[] { typeof(Type) })]
-        private static class SoCreate { private static void Prefix(Type type) { Note("ScriptableObject.CreateInstance", type?.FullName ?? "?"); } }
+        private static class SoCreate { private static bool Prepare() => AlOn; private static void Prefix(Type type) { Note("ScriptableObject.CreateInstance", type?.FullName ?? "?"); } }
 
         [HarmonyPatch(typeof(AssetBundle), nameof(AssetBundle.LoadFromStream), new[] { typeof(System.IO.Stream) })]
-        private static class BundleFromStream { private static void Prefix() { Note("AssetBundle.LoadFromStream", "stream"); } }
+        private static class BundleFromStream { private static bool Prepare() => AlOn; private static void Prefix() { Note("AssetBundle.LoadFromStream", "stream"); } }
     }
 }

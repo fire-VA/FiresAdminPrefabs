@@ -60,6 +60,8 @@ namespace VerdantsAscent.Utilities
         {
             manifest = null;
             if (VaPieces.IsDedicatedServer) return false;
+            // 1.1.433: the FiresGlass windows are set up at injection (VAFiresGlass.Setup); a lazy stub would skip that, so their bundle always loads whole
+            if (Managers.VAFiresGlass.IsOurBundle(bundleLabel)) return false;
             var cfg = ConfigManager.Instance;
             if (cfg == null || cfg.configLazyBundlesPreloadAll == null || cfg.configLazyBundlesPreloadAll.Value) return false;
             if (!VALazyBundleManifest.IsCurrent(bundleLabel, bundlePath, out manifest)) return false;
@@ -293,6 +295,15 @@ namespace VerdantsAscent.Utilities
         private static readonly AccessTools.FieldRef<ZNetScene, Dictionary<int, GameObject>> NamedPrefabs =
             AccessTools.FieldRefAccess<ZNetScene, Dictionary<int, GameObject>>("m_namedPrefabs");
 
+        // 1.1.425 ([ghost]): "does this game have the prefab?" without the GetPrefab postfix above, which would REALIZE a stub (a sync bundle
+        // load) just to answer. DistantPieceRenderer's registration gate asks this; a stub counts as present (it is this game's prefab).
+        internal static bool PrefabKnown(ZNetScene scene, string name)
+        {
+            if (scene == null || string.IsNullOrEmpty(name)) return false;
+            var named = NamedPrefabs(scene);
+            return named != null && named.TryGetValue(name.GetStableHashCode(), out var go) && go != null;
+        }
+
         private static void SwapIn(Stub stub, GameObject real)
         {
             var scene = ZNetScene.instance;
@@ -306,6 +317,9 @@ namespace VerdantsAscent.Utilities
             }
             // The Hammer: same slot, FAP's category from the stub, FAP's own hammer preparation on the real prefab.
             if (stub.Entry.hasPiece) VAVanillaPieceManager.ReplaceRealizedPiece(stubGo, real);
+            // 1.1.425 ([generator] Core 0.2.1234): a far-drawn rule for this prefab may be pending in Core (it forwards only once the prefab is real
+            // and the world holds one); the real prefab now resolves, so ask Core to look again.
+            DistantPieceRenderer.RecheckInCore(real.name);
         }
 
         // Every way a prefab is asked for by name or hash (ZNetScene.CreateObject, blueprints, the baker, other mods): a stub
@@ -348,6 +362,13 @@ namespace VerdantsAscent.Utilities
         private static readonly HashSet<string> s_queued = new HashSet<string>(StringComparer.Ordinal);
         private static bool s_pumping;
         private static long s_scanTicks; private static int s_scanObjects, s_scanFrames;
+        // 1.1.428: zones of the current ring already walked with objects in them (never walked again while in the ring), and the ring itself
+        private static readonly HashSet<Vector2s> s_walked = new HashSet<Vector2s>();
+        private static readonly HashSet<Vector2s> s_ring = new HashSet<Vector2s>();
+        private static Vector2s s_center;
+        private static readonly Comparison<Vector2s> s_byDistance = (a, b) =>
+            ((a.x - s_center.x) * (a.x - s_center.x) + (a.y - s_center.y) * (a.y - s_center.y)).CompareTo((b.x - s_center.x) * (b.x - s_center.x) + (b.y - s_center.y) * (b.y - s_center.y));
+        private static int s_skips; private static float s_nextWhyLine; private static string s_scanWhy;
 
         [HarmonyPatch(typeof(Player), "Update"), HarmonyPostfix]
         private static void Player_Update(Player __instance)
@@ -358,20 +379,39 @@ namespace VerdantsAscent.Utilities
             {
                 var zone = ZoneSystem.GetZone(__instance.transform.position);
                 bool moved = !s_haveZone || zone.x != s_lastZone.x || zone.y != s_lastZone.y;
-                if (!moved && !s_rescan && Time.unscaledTime < s_nextCatchUp) return;
+                bool retry = s_rescan || Time.unscaledTime >= s_nextCatchUp;
+                if (!moved && !retry) return;
                 s_haveZone = true; s_lastZone = zone; s_rescan = false;
                 s_nextCatchUp = Time.unscaledTime + 10f;
                 int zones = ConfigManager.Instance?.configLazyBundlesLookAheadZones?.Value ?? 3;
-                s_scanZones.Clear();
+                // 1.1.428 ([ghost], lead 11-13 overnight: a periodic O(n) walk on a timer is the EBM Reconcile 6-7 s hitch pattern): the look-ahead used to
+                // walk ALL (2r+1)^2 zones (49 at r=3) on every zone change AND every 10 s even standing still, FindSectorObjects over thousands of ZDOs per
+                // zone at a dense dock. A zone whose objects were already looked at is never walked again while it stays in the ring: a zone change walks
+                // only the zones that ENTERED the ring; the 10 s catch-up and the after-pump pass walk only zones that were EMPTY when walked (their
+                // objects had not arrived yet = the "objects streaming in" case the timer was for). Leaving the ring forgets a zone, so coming back walks it.
+                // Nothing is lost: s_lastUse (refreshed by the old full walk) has no reader (SwapOut has no caller), so only the queueing of stubs matters.
+                s_ring.Clear();
                 for (int y = -zones; y <= zones; y++)
                     for (int x = -zones; x <= zones; x++)
-                        s_scanZones.Add(new Vector2s(zone.x + x, zone.y + y));
-                s_scanZones.Sort((a, b) => ((a.x - zone.x) * (a.x - zone.x) + (a.y - zone.y) * (a.y - zone.y)).CompareTo((b.x - zone.x) * (b.x - zone.x) + (b.y - zone.y) * (b.y - zone.y)));
+                        s_ring.Add(new Vector2s(zone.x + x, zone.y + y));
+                s_walked.IntersectWith(s_ring);   // zones that left the ring are forgotten
+                s_scanZones.Clear();
+                foreach (var z in s_ring) if (!s_walked.Contains(z)) s_scanZones.Add(z);
+                if (s_scanZones.Count == 0)
+                {
+                    s_skips++;
+                    if (Time.unscaledTime >= s_nextWhyLine) { s_nextWhyLine = Time.unscaledTime + 30f; VaPieces.Log?.LogDebug($"[LazyBundles] look-ahead skipped ({(moved ? "zone change" : "catch-up")}): all {s_ring.Count} zone(s) of the ring already walked; {s_skips} skip(s) since the last line"); s_skips = 0; }
+                    return;
+                }
+                s_center = zone;
+                s_scanZones.Sort(s_byDistance);
                 s_scanIndex = 0;
                 s_scanTicks = 0; s_scanObjects = 0; s_scanFrames = 0;
+                s_scanWhy = moved ? "zone change" : "catch-up of zones empty when walked";
             }
             s_scan.Clear();
             ZDOMan.instance.FindSectorObjects(s_scanZones[s_scanIndex], new SimulationDistance(0, 0), s_scan);
+            if (s_scan.Count > 0) s_walked.Add(s_scanZones[s_scanIndex]);   // empty = objects not here yet: retried by the catch-up
             s_scanObjects += s_scan.Count;
             foreach (var zdo in s_scan)
             {
@@ -389,7 +429,7 @@ namespace VerdantsAscent.Utilities
             if (Time.unscaledTime >= s_nextTimingLine)
             {
                 s_nextTimingLine = Time.unscaledTime + 60f;
-                VaPieces.Log?.LogDebug($"[LazyBundles] look-ahead: {s_scanObjects} object(s) in {s_scanZones.Count} zone(s) over {s_scanFrames} frame(s), {s_scanTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency:0.0} ms total");
+                VaPieces.Log?.LogDebug($"[LazyBundles] look-ahead ({s_scanWhy}): {s_scanObjects} object(s) in {s_scanZones.Count} of {s_ring.Count} ring zone(s) (the rest already walked) over {s_scanFrames} frame(s), {s_scanTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency:0.0} ms total");
             }
             if (s_queue.Count > 0 && !s_pumping && VaPieces.Instance != null)
             {

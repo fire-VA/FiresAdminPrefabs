@@ -15,6 +15,64 @@ namespace VerdantsAscent.Managers
     // many renderers that share a material.
     public static class VAMaterialRepair
     {
+        // 1.1.416 ([lead] via [generator] MATERIALS_FAP 11-11): prefabs still waiting for RepairManyAsync (by instance id).
+        private static readonly HashSet<int> s_pendingRepair = new HashSet<int>();
+
+        // A prefab asked for by hash or name before the paced pass reached it is repaired now, so EBM's material index (and its bake
+        // cache key) always sees the repaired state, never the shipped one.
+        // GetPrefab is hot ([lead] 11-11): the two postfixes are NOT attribute patches. They are installed by RepairManyAsync only while it has
+        // pending prefabs, on their own Harmony id, and removed the moment the set empties. No bundle prefabs (the rig) = never installed.
+        // While installed, the common path is one static bool read.
+        private const string OnDemandHarmonyId = "com.Fire.adminprefabs.repair-on-getprefab";
+        private static HarmonyLib.Harmony s_onDemandHarmony;
+        private static volatile bool s_anyPending;
+
+        private static void InstallOnDemand()
+        {
+            if (s_onDemandHarmony != null) return;
+            try
+            {
+                var h = new HarmonyLib.Harmony(OnDemandHarmonyId);
+                var post = new HarmonyLib.HarmonyMethod(typeof(VAMaterialRepair), nameof(OnGetPrefab));
+                h.Patch(HarmonyLib.AccessTools.Method(typeof(ZNetScene), nameof(ZNetScene.GetPrefab), new[] { typeof(int) }), postfix: post);
+                h.Patch(HarmonyLib.AccessTools.Method(typeof(ZNetScene), nameof(ZNetScene.GetPrefab), new[] { typeof(string) }), postfix: post);
+                s_onDemandHarmony = h;
+            }
+            catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: VAMaterialRepair on-demand hook not installed ({ex.Message}); the paced pass still runs"); }
+        }
+
+        private static void RemoveOnDemand()
+        {
+            s_anyPending = false;
+            var h = s_onDemandHarmony;
+            if (h == null) return;
+            s_onDemandHarmony = null;
+            try { HarmonyLib.Harmony.UnpatchID(OnDemandHarmonyId); }   // only this id's patches; FAP's own id is untouched
+            catch (Exception ex) { VaPieces.Log?.LogDebug($"[VAMaterialRepair] on-demand hook removal threw: {ex.Message}"); }
+        }
+
+        private static void OnGetPrefab(GameObject __result)
+        {
+            if (!s_anyPending) return;
+            RepairIfPending(__result);
+        }
+
+        private static bool s_onDemandLogged;
+        private static void RepairIfPending(GameObject prefab)
+        {
+            if (prefab == null || !s_pendingRepair.Contains(prefab.GetInstanceID())) return;
+            try
+            {
+                RepairPrefab(prefab);
+                if (!s_onDemandLogged)
+                {
+                    s_onDemandLogged = true;
+                    VaPieces.Log?.LogInfo($"[VAMaterialRepair] '{prefab.name}' was asked for before the paced repair reached it; repaired on demand so every reader sees the same materials (1.1.416)");
+                }
+            }
+            catch (Exception ex) { Debug.LogWarning($"{VaPieces.PluginName}: VAMaterialRepair on-demand repair threw on '{prefab.name}': {ex.Message}"); }
+        }
+
         // Per-session cache of materials we've already inspected. The
         // value is `true` if we repaired it, `false` if we examined it
         // and decided no action was needed. Either way, we skip on
@@ -288,12 +346,19 @@ namespace VerdantsAscent.Managers
             bool emitSummary)
         {
             if (prefabs == null) yield break;
+            // 1.1.416 ([lead] via [generator] MATERIALS_FAP 11-11): every prefab waiting for this pass is marked pending; a GetPrefab on one of them
+            // (EBM indexing a zone, vanilla CreateObject, any mod) repairs it on the spot first, so nobody ever reads a prefab before its repair.
+            var list = new List<GameObject>(prefabs);
+            foreach (var p in list) if (p != null) s_pendingRepair.Add(p.GetInstanceID());
+            prefabs = list;
+            if (s_pendingRepair.Count > 0) { s_anyPending = true; InstallOnDemand(); }
             yield return null;
 
             var frameTimer = Stopwatch.StartNew();
             foreach (var prefab in prefabs)
             {
                 if (prefab == null) continue;
+                if (!s_pendingRepair.Contains(prefab.GetInstanceID())) continue;   // 1.1.416: already repaired on demand
                 try { RepairPrefab(prefab); }
                 catch (Exception ex)
                 {
@@ -307,6 +372,7 @@ namespace VerdantsAscent.Managers
                 }
             }
 
+            RemoveOnDemand();   // 1.1.416: pass done, every pending prefab repaired: GetPrefab is unpatched again
             // 1.1.164: the no-LOD bundle prefabs' impostors, baked after every prefab is repaired (a couple a frame).
             yield return VerdantsAscent.Utilities.VABundleImpostors.BakeAll();
 
@@ -323,6 +389,7 @@ namespace VerdantsAscent.Managers
         public static void RepairPrefab(GameObject prefab)
         {
             if (prefab == null) return;
+            if (s_pendingRepair.Remove(prefab.GetInstanceID()) && s_pendingRepair.Count == 0) s_anyPending = false;   // 1.1.416 (the hook is removed by RepairManyAsync, never from inside GetPrefab)
             TotalPrefabsScanned++;
 
             EnsureVanillaShaderCache();
@@ -688,6 +755,93 @@ namespace VerdantsAscent.Managers
 
         internal static int LodGroupsAuthored, LodGroupsAdded, LodGroupsSkipped;
 
+        // 1.1.430 ([generator], lead 11-16; Fire: "something WERE DOING is overriding the render distance and shortening it"). A bundle prefab with no
+        // LODGroup of its own gets a one-level cull LODGroup (EnsureCullLodGroup below). Only prefabs 4 m or taller later get a baked impostor
+        // (VABundleImpostors.BakeOne: MinImpostorHeight), so every smaller bundle prefab, building pieces included, used to simply VANISH past
+        // BundleCullDistance (200 m by default) while it was still inside the loaded area (level 6 = 416 m near, 544 m total). Now a cull-only
+        // prefab is never culled inside the area the player's own view distance loads: its cull distance is max(BundleCullDistance, that radius
+        // divided by QualitySettings.lodBias, since Unity scales the LOD test by lodBias). The player's own setting is used on purpose: the
+        // server can only grant less, never more, so nothing that is loaded can be culled. Re-applied to the prefabs AND the placed copies when
+        // the graphics settings or the key change. One Info line each time the distance in use changes.
+        private static readonly Dictionary<string, GameObject> s_cullPrefabs = new Dictionary<string, GameObject>(StringComparer.Ordinal);
+        private static readonly HarmonyLib.AccessTools.FieldRef<ZNetScene, Dictionary<ZDO, ZNetView>> s_instances = HarmonyLib.AccessTools.FieldRefAccess<ZNetScene, Dictionary<ZDO, ZNetView>>("m_instances");
+        private static bool s_cullHooked;
+        private static float s_lastCullSaid = -1f;
+
+        /// <summary>Radius in metres the player's own view distance loads (the corner of the square for the classic levels).</summary>
+        private static float LoadedRadiusMeters()
+        {
+            try
+            {
+                var gsm = GraphicsSettingsManager.Instance;
+                if (gsm == null) return 0f;
+                SimulationDistance sd = gsm.GetSimulationDistance();
+                float zone = ZoneSystem.instance != null ? ZoneSystem.instance.m_zoneSize : 64f;
+                float r = (sd.TotalSimulationDistance + 0.5f) * zone;
+                return sd.IsClassic ? r * 1.41421356f : r;
+            }
+            catch { return 0f; }
+        }
+
+        internal static float EffectiveCullDistance(float configured)
+        {
+            if (configured <= 0f) return 0f;   // 0 = never culled, as before
+            float bias = Mathf.Max(0.01f, QualitySettings.lodBias);
+            return Mathf.Max(configured, LoadedRadiusMeters() / bias);
+        }
+
+        private static void HookCullReapply()
+        {
+            if (s_cullHooked) return;
+            s_cullHooked = true;
+            // the event's own add accessor: the publicized game DLL also exposes its backing field under the same name (CS0229)
+            try { typeof(GraphicsSettingsManager).GetEvent("GraphicsSettingsChanged")?.AddEventHandler(null, (Action)ReapplyCullDistance); }
+            catch (Exception ex) { VaPieces.Log?.LogDebug($"[BundleCull] graphics-settings hook not attached: {ex.Message}"); }
+            var key = ConfigManager.Instance?.configBundleCullDistance;
+            if (key != null) key.SettingChanged += (_, __) => ReapplyCullDistance();
+        }
+
+        /// <summary>Re-sets the cull-only LODGroups (one level, no impostor) on the registered prefabs and every placed copy.</summary>
+        internal static void ReapplyCullDistance()
+        {
+            try
+            {
+                float configured = ConfigManager.Instance?.configBundleCullDistance?.Value ?? 0f;
+                float dist = EffectiveCullDistance(configured);
+                int prefabs = 0, placed = 0;
+                foreach (var kv in s_cullPrefabs) if (SetCullOnly(kv.Value != null ? kv.Value.GetComponent<LODGroup>() : null, dist)) prefabs++;
+                var scene = ZNetScene.instance;
+                if (scene != null && s_cullPrefabs.Count > 0)
+                {
+                    foreach (ZNetView nv in s_instances(scene).Values)
+                    {
+                        if (nv == null) continue;
+                        string name = Utils.GetPrefabName(nv.gameObject);
+                        if (!s_cullPrefabs.ContainsKey(name)) continue;
+                        if (SetCullOnly(nv.GetComponent<LODGroup>(), dist)) placed++;
+                    }
+                }
+                if (!Mathf.Approximately(dist, s_lastCullSaid))
+                {
+                    s_lastCullSaid = dist;
+                    VaPieces.Log?.LogInfo($"[BundleCull] cull distance in use {(dist <= 0f ? "never" : dist.ToString("0") + " m")} (BundleCullDistance {configured:0} m, loaded radius {LoadedRadiusMeters():0} m, lodBias {QualitySettings.lodBias:0.##}): {prefabs} prefab(s), {placed} placed piece(s) updated");
+                }
+            }
+            catch (Exception ex) { VaPieces.Log?.LogDebug($"[BundleCull] re-apply threw: {ex.Message}"); }
+        }
+
+        // A cull-only group has exactly one level (the impostor bake turns it into two; those keep their own impostor distances).
+        private static bool SetCullOnly(LODGroup group, float distance)
+        {
+            if (group == null) return false;
+            var lods = group.GetLODs();
+            if (lods.Length != 1) return false;
+            float size = group.size > 0f ? group.size : 1f;
+            lods[0].screenRelativeTransitionHeight = VerdantsAscent.Utilities.VABakeLodPolicy.ScreenRelativeHeightAt(distance, size);
+            group.SetLODs(lods);
+            return true;
+        }
+
         private static void EnsureCullLodGroup(GameObject prefab)
         {
             if (!VAExternalBundleLoader.TryGetSourceBundle(prefab.name, out _)) return;
@@ -703,9 +857,11 @@ namespace VerdantsAscent.Managers
             float size = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
             if (size <= 0.01f) size = 1f;
             var group = prefab.AddComponent<LODGroup>();
-            group.SetLODs(new[] { new LOD(VerdantsAscent.Utilities.VABakeLodPolicy.ScreenRelativeHeightAt(distance, size), renderers.ToArray()) });
+            group.SetLODs(new[] { new LOD(VerdantsAscent.Utilities.VABakeLodPolicy.ScreenRelativeHeightAt(EffectiveCullDistance(distance), size), renderers.ToArray()) });
             group.RecalculateBounds();
             LodGroupsAdded++;
+            s_cullPrefabs[prefab.name] = prefab;   // 1.1.430: re-applied live when the loaded radius or the key changes
+            HookCullReapply();
             VerdantsAscent.Utilities.VABundleImpostors.Queue(prefab);   // 1.1.164: its far level becomes a baked impostor
             if (LodGroupsAdded <= 12 || prefab.name.StartsWith("Poplar", StringComparison.Ordinal))
                 VaPieces.Log?.LogDebug($"[VAMaterialRepair] {prefab.name}: no LODGroup in its bundle; added a cull LODGroup ({renderers.Count} renderer(s), size {size:0.0} m, culled past {distance:0} m)");
@@ -1047,7 +1203,9 @@ namespace VerdantsAscent.Managers
                     string key = template.GetInstanceID() + "|" + DescriptorKey(matDesc);
                     if (_repairCopies.TryGetValue(key, out var shared) && shared != null) return shared;
                     var copy = new Material(template);
-                    copy.name = $"FAP_RepairCopy_({category})_{_repairCopies.Count}";
+                    // 1.1.416 ([lead] via [generator] MATERIALS_FAP 11-11): the name comes from the template + descriptor, not the creation order, so it is the same every
+                    // session whatever order lazy realizes run in (EBM keys its cache on the material name).
+                    copy.name = $"FAP_RepairCopy_({category})_{template.name}_{((uint)DescriptorKey(matDesc).GetStableHashCode()):X8}";
                     if (matDesc != null) ApplyDescriptorProperties(copy, matDesc);
                     _repairCopies[key] = copy;
                     return copy;
@@ -1327,6 +1485,7 @@ namespace VerdantsAscent.Managers
         // One-line summary for the end-of-injection log.
         public static string FormatSummary()
         {
+            if (LodGroupsAdded > 0) ReapplyCullDistance();   // 1.1.430: once after the repair pass, so the [BundleCull] line reports the real counts
             string baseLine = $"from vanilla original={TotalMaterialsFromVanilla}, prefabs={TotalPrefabsScanned}, materials={TotalMaterialsScanned}, repaired={TotalMaterialsRepaired} (null-slot={TotalMaterialsNullSlot}, null-shader={TotalMaterialsNullShader}, error-shader={TotalMaterialsErrorShader}), unrepairable={TotalMaterialsUnrepairable}";
             baseLine += $", LODGroups: {LodGroupsAuthored} bundle prefab(s) with their own, {LodGroupsAdded} given a cull LODGroup, {LodGroupsSkipped} skipped";
             if (TotalMaterialsTextureByName > 0)

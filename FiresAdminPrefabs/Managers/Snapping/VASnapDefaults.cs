@@ -154,11 +154,15 @@ namespace VerdantsAscent.Managers.Snapping
         // modifier check (Player.UpdatePlacementGhost), and it runs inside Player.Update before this postfix, so Shift+Q used to
         // step back one point first and then save THAT point. The postfix puts the selection back before saving it.
         private static int s_snapAtFrameStart = -1;
+        private static bool s_snapRead;
 
         [HarmonyPatch(typeof(Player), "Update"), HarmonyPrefix]
         private static void Player_Update_Prefix(Player __instance)
         {
-            if (__instance == Player.m_localPlayer) s_snapAtFrameStart = ManualSnap(__instance);
+            // 1.1.423 ([ghost], lead 11-12): only with a piece in hand (the only time the postfix acts); -1 otherwise, so a ghost that appears
+            // during this Update is never "reverted" to a stale index (-1 is vanilla's Auto, a real value, so a separate flag says "read").
+            s_snapRead = __instance == Player.m_localPlayer && Ghost(__instance) != null;
+            if (s_snapRead) s_snapAtFrameStart = ManualSnap(__instance);
         }
 
         // The key, checked while a piece is in hand (KeyBinding: live config, silent while a text field has focus).
@@ -168,7 +172,7 @@ namespace VerdantsAscent.Managers.Snapping
             if (__instance != Player.m_localPlayer || Ghost(__instance) == null) return;
             var key = ConfigManager.Instance?.configSnapDefaultKey;
             if (key == null || !key.IsPressed()) return;
-            if (ManualSnap(__instance) != s_snapAtFrameStart)
+            if (s_snapRead && ManualSnap(__instance) != s_snapAtFrameStart)
             {
                 VerdantsAscent.VaPieces.Log?.LogDebug($"{VaPieces.PluginName}: [SnapDefault] the default key also moved the snap point ({s_snapAtFrameStart} -> {ManualSnap(__instance)}); kept {s_snapAtFrameStart}");
                 ManualSnap(__instance) = s_snapAtFrameStart;

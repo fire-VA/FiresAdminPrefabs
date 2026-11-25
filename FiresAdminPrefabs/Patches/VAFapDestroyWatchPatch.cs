@@ -47,6 +47,7 @@ namespace VerdantsAscent.Patches
         [HarmonyPatch(typeof(ZNetView), "OnDestroy")]
         public static class ZNetView_OnDestroy_Watch_Patch
         {
+            private static bool Prepare() => VerdantsAscent.Utilities.FapDiagnosticKeys.On(VerdantsAscent.Utilities.FapDiagnosticKeys.DestroyWatch);   // 1.1.422: [Diagnostics] Destroy Watch, OFF = not patched
             [HarmonyPrefix]
             public static void Prefix(ZNetView __instance)
             {
@@ -60,6 +61,7 @@ namespace VerdantsAscent.Patches
         [HarmonyPatch(typeof(ZNetScene), "Destroy")]
         public static class ZNetScene_Destroy_Watch_Patch
         {
+            private static bool Prepare() => VerdantsAscent.Utilities.FapDiagnosticKeys.On(VerdantsAscent.Utilities.FapDiagnosticKeys.DestroyWatch);   // 1.1.422: [Diagnostics] Destroy Watch, OFF = not patched
             [HarmonyPrefix]
             public static void Prefix(GameObject go)
             {
@@ -73,6 +75,7 @@ namespace VerdantsAscent.Patches
         [HarmonyPatch(typeof(WearNTear), "Destroy")]
         public static class WearNTear_Destroy_Watch_Patch
         {
+            private static bool Prepare() => VerdantsAscent.Utilities.FapDiagnosticKeys.On(VerdantsAscent.Utilities.FapDiagnosticKeys.DestroyWatch);   // 1.1.422: [Diagnostics] Destroy Watch, OFF = not patched
             [HarmonyPrefix]
             public static void Prefix(WearNTear __instance)
             {
@@ -86,6 +89,7 @@ namespace VerdantsAscent.Patches
         [HarmonyPatch(typeof(TreeBase), "RPC_Damage")]
         public static class TreeBase_RPC_Damage_Watch_Patch
         {
+            private static bool Prepare() => VerdantsAscent.Utilities.FapDiagnosticKeys.On(VerdantsAscent.Utilities.FapDiagnosticKeys.DestroyWatch);   // 1.1.422: [Diagnostics] Destroy Watch, OFF = not patched
             [HarmonyPrefix]
             public static void Prefix(TreeBase __instance, HitData hit)
             {
@@ -100,6 +104,7 @@ namespace VerdantsAscent.Patches
         [HarmonyPatch(typeof(ZNetView), "Destroy")]
         public static class ZNetView_Destroy_Watch_Patch
         {
+            private static bool Prepare() => VerdantsAscent.Utilities.FapDiagnosticKeys.On(VerdantsAscent.Utilities.FapDiagnosticKeys.DestroyWatch);   // 1.1.422: [Diagnostics] Destroy Watch, OFF = not patched
             [HarmonyPrefix]
             public static void Prefix(ZNetView __instance)
             {
